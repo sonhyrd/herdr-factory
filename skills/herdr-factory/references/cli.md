@@ -53,7 +53,8 @@ this command needs a repo: herdr-factory --repo <name> <command>
 |---|---|
 | Is the install healthy? | `herdr-factory doctor`, then `herdr-factory --repo <r> doctor --deep` |
 | What's in flight right now? | `herdr-factory --repo <r> status` (add `runs --all` for history) |
-| Why is *this* run stuck? | `curl -s 127.0.0.1:8765/repos/<r>/obligations?key=<KEY>` (§10), then `--repo <r> timeline <KEY>` and `--repo <r> logs 200` |
+| Why is *this* run stuck? | `herdr-factory --repo <r> explain <KEY>` (the narrative), then `--repo <r> timeline <KEY>` and `--repo <r> logs 200`; raw JSON: `curl -s 127.0.0.1:8765/repos/<r>/obligations?key=<KEY>` (§10) |
+| Hand the diagnosis to an agent | `herdr-factory --repo <r> triage <KEY>` — launches the operator's agent CLI pre-briefed (`--print` to just emit the briefing) |
 | What happened to this item? | `herdr-factory --repo <r> timeline <KEY>` |
 | Make it run now | `herdr-factory --repo <r> tick` (one pass) or `--repo <r> run --follow` (foreground, streaming) |
 | Un-park an `attention` run | `herdr-factory --repo <r> resume <KEY>` |
@@ -80,6 +81,8 @@ this command needs a repo: herdr-factory --repo <name> <command>
 | `status` | yes | in-process DB + one `/health` ping | header, ACTIVE table, FINISHED table, server + supervisor lines (§6 anatomy) |
 | `runs [--all]` | yes | in-process DB | one line per run, no header. `--all` = last 100 by `created_at DESC`; default = active only (`ended_at IS NULL`) |
 | `timeline <key>` | yes | in-process DB | events of the ticket's **most recent run only**, `<ISO ts>  <type>  <detail JSON>` |
+| `explain <key> [--source <n>]` | yes | in-process DB + one `/health` ping | the plain-language rendering of the obligations view (§6 anatomy): the run's phase story or park reason, every pending retry with its next attempt time, armed clocks, bounce counters, and ready-made next commands |
+| `triage <key> [--source <n>] [--print]` | yes | in-process DB, then an **interactive launch** | writes a briefing (the `explain` narrative + recent events + locations + playbook paths + ground rules) into the run's `.memory/herdr-factory/` (state dir when no worktree), then launches the repo `agent:` **command** (flags dropped — a human is present) in your terminal, cwd = the worktree. `--print` prints the briefing instead. No active run → a one-line pointer, exit 0; a missing harness binary → exit 1 naming it and suggesting `--print` |
 | `eligible` | yes | in-process (hits every source) | `JSON.stringify(out, null, 2)` of `{source, key, summary, type}`; `[]` when nothing is eligible |
 | `logs [n]` | yes | in-process (file) | last `Number(n) || 50` lines of `<stateRoot>/<repo>/logs/<UTC-date>.log`. `logs 0` and `logs abc` both mean 50. Missing file → `no log for today at <path>`, exit 0 |
 | `auth status` | yes | in-process (env only, **no network**) | one line per source; presence of each source's declared secrets |
@@ -308,6 +311,43 @@ auth status — repo proj:
 
 Presence-only: a **wrong** token still shows `✓`. Use `doctor --repo <r> --deep` to actually exercise it. Which secrets each source declares is in [work-sources.md](./work-sources.md).
 
+### `explain`
+
+The plain-language rendering of the obligations view (`src/core/explain.ts` over `runObligations`) — identity line, then the phase story (or the park's reason-code narrative with its rescue class), then the deliver-lane debts, bounce counters, and ready-made next commands:
+
+```
+RWR-18147 — run #58 on belt tickets-to-prs (attention)
+
+The run is parked: the work step's pane never became available (work: layout pane fix/work never became available).
+The engine already re-attempted the spawn on its own (3 of 3 respawn windows used) — this park means the pane is genuinely not coming up.
+Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.
+
+Owed to the world (durable, retried until delivered):
+  · status write-back → In Progress: attempt 4, next try in ~12m.
+      last error: HTTP 401 unauthorized
+
+Next:
+  herdr-factory --repo proj resume RWR-18147   # refunds the respawn budget
+  herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all
+```
+
+Semantics worth knowing:
+
+- **Retry clocks render against `deps.now()`**; a past-due retry prints `due now (the next tick runs it)`. When no server is ticking, a trailing `note:` says every clock above only advances on a tick — the single most misread "stuck" state.
+- **No active run** is not an error (exit 0): with a prior run it prints `<key>: no active run — the newest run #<id> ended <age> ago (<outcome>).` plus a `timeline` pointer; with no run at all it points at `eligible`/`claim`.
+- Exit 1 only for the usual resolution errors: missing `--repo`, or `<key>: active in multiple sources (…) — pass --source <name>`.
+- The same lines appear in the TUI: `d` on a run → the detail's **"What's happening"** section (fed by `GET /obligations`, so it needs the server; the CLI path reads the DB directly).
+- An `attention` run explains its own `attention_reason_code` (the full code table is in [troubleshooting.md](./troubleshooting.md) §3); an unknown/plugin code falls back to the stored reason text plus the guard's derived rescue class.
+
+### `triage`
+
+`explain`'s escalation: a briefing file plus an interactive session. The briefing (markdown) carries the `explain` narrative verbatim, the last 15 events, the run/worktree/config/log locations, this skill's `references/troubleshooting.md` + `references/cli.md` paths (readable as plain markdown by any harness), and ground rules — resume is safe once cause is agreed; `teardown`/`bounce`/proxy `step-done` require the operator's explicit OK. Launch details worth knowing:
+
+- The harness is the **repo-level** `agent:` block's `command` only (per-belt/per-step overrides are ignored — triage is not a belt step), and the configured worker **flags are dropped on purpose**: they set the unattended posture (`--dangerously-skip-permissions`), and a triage session has the operator present.
+- The session runs **in the invoking terminal** (`stdio: inherit`), never in a herdr pane — so it works when herdr or the server is down. The opening prompt tells the agent to read the briefing file and propose one next command.
+- The attention note a park posts to the work source ends with both ready-made commands: `resume <KEY>` and `triage <KEY>`.
+- Note for an agent reading this: if YOU are the harness the operator launched via `triage`, the briefing file named in your opening prompt is your starting context — read it before running anything.
+
 ---
 
 ## 7. `run` vs `serve` vs `start`
@@ -368,7 +408,7 @@ Install-time shell knobs, read by `install.sh` only and never by the CLI: `HERDR
 5. `update` is channel-aware (README says "hard reset to the branch's upstream"; only true off `stable`).
 6. `--repo` is accepted after the subcommand as well as before.
 7. `claim`/`teardown` print success text even when nothing happened.
-8. There is no CLI command for `obligations` or the intent ledger — HTTP only (§10).
+8. `explain <KEY>` is the CLI rendering of `obligations`; the RAW obligations JSON and the intent-ledger rows/nudges remain HTTP only (§10).
 
 ---
 
@@ -386,7 +426,7 @@ Base URL `http://127.0.0.1:<HERDR_FACTORY_PORT|8765>`. OpenAPI document at **`/d
 | `POST /repos/{repo}/belt-apply` · `POST /shutdown` | apply a belt change · graceful stop |
 | `GET /evidence/*` | what the `local` evidence publisher serves |
 
-Prefer `obligations` over log archaeology when diagnosing one run: it is the engine's own answer to "what is this run owed and what is watching it", and it exists nowhere else on the CLI. Example:
+Prefer `obligations` over log archaeology when diagnosing one run: it is the engine's own answer to "what is this run owed and what is watching it". `--repo <r> explain <KEY>` prints the same view as a narrative (§6) — reach for the raw JSON when you need the exact facts (clock epochs, intent ids to `retry`/`fulfil`, guard fact keys) rather than the story. Example:
 
 ```sh
 curl -s "127.0.0.1:8765/repos/reckon-frontend/obligations?key=RWR-18374"

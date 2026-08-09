@@ -35,6 +35,9 @@ export interface WorkItemDetail {
   beltSteps: string[];
   /** The run's per-step rows (may cover only the steps reached so far). */
   steps: WorkItemDetailStep[];
+  /** The `explainRun` narrative (core/explain.ts) — why the run is where it is, rendered from the
+   *  obligations fetch. Absent when the server (or the run) isn't there; the section is omitted. */
+  explain?: string[];
 }
 
 /** Compact, human duration (largest two units) for ages and per-step elapsed time. */
@@ -76,6 +79,11 @@ export function formatWorkItemDetail(detail: WorkItemDetail, timelineLines: stri
   if (detail.createdAt != null) out.push(`${field("age")}${humanDuration(nowSec - detail.createdAt)}`);
   if (detail.attentionReason) out.push(`  ⚠ attention: ${detail.attentionReason}`);
   if (detail.problem) out.push(`  ⚠ problem: ${detail.problem.detail}`);
+
+  if (detail.explain?.length) {
+    out.push("", "What's happening");
+    for (const line of detail.explain) out.push(line ? `  ${line}` : "");
+  }
 
   out.push("", "Steps");
   const byName = new Map(detail.steps.map((s) => [s.step, s]));

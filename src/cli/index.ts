@@ -19,7 +19,10 @@ import { claimTicket, reconcileRepo, reconcileRun, resumeRun, teardownTicket, wi
 import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/kinds/evidence-publish.ts";
 import { intentRetryDelay } from "../intents/registry.ts";
 import { applySignal, type SignalBody, type SignalResult } from "../core/signals.ts";
+import { runObligations } from "../core/obligations.ts";
+import { explainRun, fmtDur } from "../core/explain.ts";
 import { runForeground } from "./run.ts";
+import { triageRun } from "./triage.ts";
 import { MEMORY_DIR } from "../core/step.ts";
 import * as service from "../watchers/service.ts";
 import { buildDeps, today } from "../build-deps.ts";
@@ -654,6 +657,66 @@ program
       for (const ev of deps.store.timeline(deps.config.repoName, key)) {
         console.log(`${new Date(ev.ts * 1000).toISOString()}  ${ev.type}${ev.detail ? `  ${ev.detail}` : ""}`);
       }
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("explain <key>")
+  .description("why the run is where it is — its clocks, retries, and what would move it")
+  .option("--source <name>", "disambiguate when the key is active in more than one source")
+  .action(cliAction("explain", async (key: string, opts: { source?: string }) => {
+    try {
+      const deps = await buildDeps(requireRepo());
+      const repo = deps.config.repoName;
+      const run = resolveActiveRun(deps, key, opts.source); // throws on cross-source ambiguity
+      if (!run) {
+        const last = deps.store.latestRunForTicket(repo, key);
+        if (!last) {
+          console.log(`${key}: no run recorded — \`eligible\` lists what is claimable, \`claim ${key}\` starts one`);
+        } else {
+          const when = last.endedAt ? `ended ${fmtDur(deps.now() - last.endedAt)} ago (${last.outcome ?? last.phase})` : `is in phase ${last.phase}`;
+          console.log(`${key}: no active run — the newest run #${last.id} ${when}.`);
+          console.log(`Next: herdr-factory --repo ${repo} timeline ${key}   # its full event history`);
+        }
+        return;
+      }
+      for (const line of explainRun({ ob: runObligations(deps, run), repoName: repo, now: deps.now() })) console.log(line);
+      // The clocks and retries above only advance when something ticks the repo — say so when
+      // nothing does, because "the backoff never fires" reads exactly like "the factory is stuck".
+      const info = readServerInfo();
+      const healthy = info ? await pingHealth(info.port) : false;
+      if (!healthy) {
+        console.log("");
+        console.log(
+          "note: no server is ticking this repo — every clock and retry above advances only when a tick runs (`herdr-factory start`, or `tick` for one pass).",
+        );
+      }
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("triage <key>")
+  .description("open your agent CLI on a stuck run, pre-briefed with the engine's own diagnosis")
+  .option("--source <name>", "disambiguate when the key is active in more than one source")
+  .option("--print", "print the briefing instead of launching the agent")
+  .action(cliAction("triage", async (key: string, opts: { source?: string; print?: boolean }) => {
+    try {
+      const deps = await buildDeps(requireRepo());
+      const run = resolveActiveRun(deps, key, opts.source); // throws on cross-source ambiguity
+      if (!run) {
+        const last = deps.store.latestRunForTicket(deps.config.repoName, key);
+        console.log(
+          last
+            ? `${key}: no active run to triage — the newest run #${last.id} ended (${last.outcome ?? last.phase}). \`timeline ${key}\` has its history.`
+            : `${key}: no run recorded — nothing to triage`,
+        );
+        return;
+      }
+      await triageRun(deps, run, { print: !!opts.print });
     } catch (e) {
       fail(e);
     }

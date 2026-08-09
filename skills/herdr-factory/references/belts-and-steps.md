@@ -79,8 +79,8 @@ Notes that matter when composing:
 - `layout_wait` only attaches when the step sets `tab`+`pane`; `capture_cap` only attaches to a step
   that produces `evidence`. Guard order is load-bearing: heartbeat is declared before budget so a
   stall diagnosis wins a double-trip.
-- Escalation reason codes you will see in `status` and in the HTTP `obligations` endpoint
-  (`GET /repos/<repo>/obligations?key=<KEY>` — there is no `obligations` CLI command): `step_budget`, `step_stalled`,
+- Escalation reason codes you will see in `status`, in the HTTP `obligations` endpoint
+  (`GET /repos/<repo>/obligations?key=<KEY>`), and narrated by `explain <KEY>`: `step_budget`, `step_stalled`,
   `read_only_violation`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
   Park texts and remediations → [troubleshooting.md](./troubleshooting.md).
 
@@ -388,7 +388,7 @@ and is cumulative for the run's life — it has no automatic refund. Only a huma
 `bounce_limit` park refunds, and because the counter is per-target it refunds **belt-wide** (every
 step's counter). The HTTP obligations endpoint (`GET /repos/<repo>/obligations?key=<KEY>`, add
 `&source=` to disambiguate) lists `bounceCaps: [{step, count, max}]` for every step with a non-zero
-count — there is no `obligations` CLI command.
+count; `explain <KEY>` prints the same counters as a `Rework bounces so far:` line.
 
 Rejection messages: `no running step to bounce from`; `step "X" is not in belt "B"`;
 `X is not before Y — bounces only go backward`; `the Y step may not bounce to X`. Every bounce is

@@ -432,7 +432,7 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   `max_bounces` backstop keeps a disagreement loop from running forever.
 - **Attention is a workflow, not a dead end.** When something needs a person — budget exceeded,
   stalled commits, a closed PR, a pane that never appeared — the run parks: desktop notification,
-  the pane relabelled `⚠ ATTENTION`, the reason (with a ready-made resume command) posted to the
+  the pane relabelled `⚠ ATTENTION`, the reason (with ready-made resume + triage commands) posted to the
   work source, and an hourly re-notify so it can't go stale silently. `resume <KEY>` puts it right
   back where it was, with fresh clocks — and re-prompts the step's own idle agent, so a step that
   finished but never signalled `step-done` completes on resume instead of quietly re-parking.
@@ -440,7 +440,11 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   A layout-pane wait self-heals before it ever needs a person: no pane means no agent (so no
   `step-done` could rescue it), so the engine re-attempts the spawn across a bounded number of
   extra wait windows — auto-un-parking a run already parked that way — and only parks for a human
-  once that budget is spent.
+  once that budget is spent. And no park (or backoff, or watch) has to be decoded from logs:
+  **`explain <KEY>`** narrates why a run is where it is — the armed clocks, the background
+  retries with their next attempt time, and the exact command that would move it — and
+  **`triage <KEY>`** opens your own agent CLI on the run, pre-briefed with that diagnosis, when
+  you want a conversation instead of a printout.
 - **Crash-safe by construction.** All state is on-disk SQLite and the reconciler is idempotent —
   a tick can be killed anywhere and the next one converges. The server is a coordinator, not a
   source of truth: every command falls back to running in-process when it's down, so a worker's
@@ -1138,6 +1142,8 @@ file existence — are validated at load with readable errors.
 ```
 # inspect & operate a repo
 herdr-factory --repo <name> status | eligible | runs [--all] | timeline <KEY> | logs [n] | tick
+herdr-factory --repo <name> explain <KEY> [--source <name>]         # why the run is where it is — clocks, retries, what would move it
+herdr-factory --repo <name> triage <KEY> [--print]                  # open YOUR agent CLI on a stuck run, pre-briefed with the diagnosis
 herdr-factory --repo <name> run [--follow]                          # run the factory in the FOREGROUND, streaming live progress
 herdr-factory --repo <name> claim <KEY> [--belt <name>]
 herdr-factory --repo <name> teardown <KEY> [--source <name>]
@@ -1166,8 +1172,26 @@ herdr-factory doctor [--deep] [--repo <name>]
 The mutating/nudge commands (`tick`, `claim`, `teardown`, `resume`, `step-done`, `ask-human`,
 `bounce`) route through the running server when it's up — a warm, in-process reconcile — and fall
 back to executing directly against the DB when it isn't; reads (`status`, `eligible`, `runs`,
-`timeline`, `logs`) always go straight to the DB. `--source` disambiguates a key active in more
-than one source; `claim --belt` is required only when the repo has more than one belt.
+`timeline`, `logs`, `explain`) always go straight to the DB. `--source` disambiguates a key active
+in more than one source; `claim --belt` is required only when the repo has more than one belt.
+
+`explain <KEY>` answers "why does this run look stuck?" in plain language: the run's current story
+(what it waits on, which budget/stall/layout clock is armed and when it fires), every background
+debt still being retried — status write-backs, evidence uploads, queued signals — with attempt
+counts and the next retry time, the bounce counters, and the ready-made command that would move it
+(`resume`, a reply, a credential refresh). A park explains its own reason code and whether the
+engine can still rescue it by itself. It also warns when no server is ticking the repo — the
+commonest reason a backoff never fires. The same narrative appears in the TUI: press `d` on a run.
+
+`triage <KEY>` goes one step further: when reading isn't enough, it opens a **conversation**. It
+writes a briefing — the `explain` narrative, the run's recent events, where the worktree and logs
+live, the skill's playbook paths, and ground rules (diagnose first; never `teardown`/`bounce`
+without your OK) — then launches your configured agent harness interactively in your terminal,
+pointed at it. The harness comes from the repo's [`agent:`](#agent-optional) block (`claude` by
+default) with the worker flags deliberately dropped — you are present to approve actions.
+`--print` prints the briefing instead of launching (any harness, tmux, pipes). It runs in your
+terminal, not a herdr pane, so it works even when herdr itself is the problem. Attention notes
+posted to the work source advertise it alongside the resume command.
 
 `run` is the **foreground first-run** path — the fastest way to see the factory work before you
 install the background supervisor. It reconciles the repo on its configured cadence (the same
@@ -1206,10 +1230,12 @@ cursor.
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
   Press `d` for Detail, which is contextual: on a **run** it opens the work item's full detail — the
-  untruncated summary, type, source/belt, branch, live status and worker state, PR, age, plus the
-  belt's step-by-step progress (with per-step timing) and the event timeline; on a **repo** it opens
-  general AWS SSO/source-auth diagnostics followed by configuration, work counts, and a live
-  source/pickup health check for every belt.
+  untruncated summary, type, source/belt, branch, live status and worker state, PR, age, a
+  **"What's happening" narrative** (the same plain-language story `explain <KEY>` prints: what the
+  run waits on, which clocks are armed, what retries in the background, and what would move it),
+  plus the belt's step-by-step progress (with per-step timing) and the event timeline; on a
+  **repo** it opens general AWS SSO/source-auth diagnostics followed by configuration, work counts,
+  and a live source/pickup health check for every belt.
 - **Config** — a repo list `[1]` and a full `config.yml` editor split across four bordered panels:
   `[2]` config (repo · limits · secrets · evidence), `[3]` work sources, `[4]` layouts (the
   repo-level [layout](#layouts) library — nest into a layout to edit its tabs and panes; belts

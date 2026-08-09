@@ -930,7 +930,7 @@ async function escalateAttention(
     await src.client
       .postNote(
         run.ticketKey,
-        `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\nResume with: herdr-factory --repo ${deps.config.repoName} resume ${run.ticketKey}`,
+        `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\nResume with: herdr-factory --repo ${deps.config.repoName} resume ${run.ticketKey}\nOr let your agent diagnose it: herdr-factory --repo ${deps.config.repoName} triage ${run.ticketKey}`,
       )
       .catch((e) => deps.log("warn", `${run.ticketKey}: attention note not posted to ${src.name}: ${err(e)}`));
   }

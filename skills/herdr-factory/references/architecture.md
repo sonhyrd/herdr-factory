@@ -346,7 +346,7 @@ Two engine-universal watches are not GuardSpecs:
 1. **A live agent is never parked by a timer.** A guard declaring `vetoWhenWorking` resolves the step's own pane state on a trip; `working` converts the park into an `extend` (`<step> past <window> but still working — extending`). The documented trade is that a working-but-wedged agent escapes the stall timer.
 2. **Liveness never acts on uncertainty.** A `HerdrUnreachableError` in the observe lane — the watchdog veto, the dead-pane check, the resolver state read — **defers the whole pass**. The one exception is the read-only baseline's **freeze** check: unreachable herdr there defers only the freeze (the pane is read as not-working and the baseline keeps tracking HEAD), never the pass. A respawn needs a fresh, unmemoized, confirmed absence **twice, ≥ 45 s apart**.
 
-The full park-reason table with remediation is in [troubleshooting.md](./troubleshooting.md); `GET /repos/:repo/obligations?key=<KEY>` reports every armed guard with its live facts and its `rescue` class (`terminal-signal | respawn | human | none`).
+The full park-reason table with remediation is in [troubleshooting.md](./troubleshooting.md); `GET /repos/:repo/obligations?key=<KEY>` reports every armed guard with its live facts and its `rescue` class (`terminal-signal | respawn | human | none`), and `herdr-factory --repo <r> explain <KEY>` renders the same view as a plain-language narrative with next commands.
 
 ---
 

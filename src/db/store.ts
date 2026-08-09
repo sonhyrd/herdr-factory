@@ -383,6 +383,15 @@ export class Store {
     return row ? toRun(row) : undefined;
   }
 
+  /** The newest run for a ticket key, active or ended — `explain`'s fallback when nothing is
+   *  active (same "most recent run" notion as `timeline`). */
+  latestRunForTicket(repo: string, key: string): Run | undefined {
+    const row = this.db
+      .prepare(`${RUN_SELECT} WHERE r.repo = ? AND r.ticket_key = ? ORDER BY r.id DESC LIMIT 1`)
+      .get(repo, key) as RunRow | undefined;
+    return row ? toRun(row) : undefined;
+  }
+
   /** Active (in-flight) runs on a belt — the belt-delete guard's input. "In progress" here is any
    *  run with ended_at IS NULL, INCLUDING parked attention/waiting_for_human runs (they still hold
    *  a worktree and are mid-flight), not just the working ones countOccupying counts. */

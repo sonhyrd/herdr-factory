@@ -30,10 +30,11 @@ In order. Each step rules out a whole class of cause; stop when one produces a f
 | 1 | `herdr-factory --repo <r> doctor --deep` | Install, service, server liveness, config validity, source auth + live health, evidence publisher. `--repo` is a global option — `herdr-factory --repo <r> doctor` and `herdr-factory doctor --repo <r>` both work; without it, **zero** repo checks run (§5) |
 | 2 | `herdr-factory --repo <r> status` | Belts (priority + `INACTIVE`), sources, every active run with phase/step, live herdr pane state per run, per-step ✓/● ticks, plus `server:` / `supervisor:` lines. |
 | 3 | `curl -s 127.0.0.1:8765/health \| jq '.repos'` | **Is this repo being served, and is its tick loop alive?** `doctor` does not check either (§5). Look at `name`, `lastTickAt`, `tickStale`. |
-| 4 | `herdr-factory --repo <r> timeline <KEY>` | What the run actually did — the domain event log (`claimed`, `step_spawned`, `layout_wait_retry`, `bounced`, `attention`, `resumed`, `error`, …). |
-| 5 | `curl -s '127.0.0.1:8765/repos/<r>/obligations?key=<KEY>' \| jq` | **The single best "why is this run waiting"**: undelivered write-backs, pending evidence uploads, an unconsumed agent signal, the pending human question with its poll clock, live ledger rows, and every armed guard with live facts + its `rescue` class. Read-only, lock-free. No CLI equivalent — curl it. |
-| 6 | `herdr-factory --repo <r> logs 300` | Today's engine log: the claim-gate lines, watchdog deferrals, intent deferrals, lock-lost errors. Only today's file (§6). |
-| 7 | `herdr-factory --repo <r> eligible` | What each belt's source *would* offer right now (JSON, per-belt labels applied, `match` **not** applied). |
+| 4 | `herdr-factory --repo <r> explain <KEY>` | **The plain-language "why is this run waiting"**: the phase/park story, every pending retry with its next attempt time, armed clocks, bounce counters, ready-made next commands — plus a warning when no server is ticking the repo. Reads the DB directly (works with the server down). |
+| 5 | `herdr-factory --repo <r> timeline <KEY>` | What the run actually did — the domain event log (`claimed`, `step_spawned`, `layout_wait_retry`, `bounced`, `attention`, `resumed`, `error`, …). |
+| 6 | `curl -s '127.0.0.1:8765/repos/<r>/obligations?key=<KEY>' \| jq` | The RAW form of `explain`: undelivered write-backs, pending evidence uploads, an unconsumed agent signal, the pending human question with its poll clock, live ledger rows, and every armed guard with live facts + its `rescue` class. Read-only, lock-free. Reach for it when you need exact facts (clock epochs, intent ids) rather than the narrative. |
+| 7 | `herdr-factory --repo <r> logs 300` | Today's engine log: the claim-gate lines, watchdog deferrals, intent deferrals, lock-lost errors. Only today's file (§6). |
+| 8 | `herdr-factory --repo <r> eligible` | What each belt's source *would* offer right now (JSON, per-belt labels applied, `match` **not** applied). |
 
 Two facts that shape all triage: **the CLI reads config and the DB fresh on every invocation; the
 resident server does not** — so `doctor`/`status`/`eligible` can be perfectly green while the server
@@ -101,11 +102,14 @@ Belts are walked in `priority` order (lower first, ties keep config order); the 
 
 ```sh
 herdr-factory --repo <r> status                                  # the parked runs
+herdr-factory --repo <r> explain <KEY>                           # the park narrated: reason, rescue, next commands
+herdr-factory --repo <r> triage <KEY>                            # or hand it to an agent, pre-briefed (--print to just emit the briefing)
 herdr-factory --repo <r> timeline <KEY>                          # the `attention` event + its detail
 curl -s '127.0.0.1:8765/repos/<r>/obligations?key=<KEY>' | jq '.run, .watches'
 ```
 
-`obligations` reports each armed guard's `rescue` class: `terminal-signal` (a genuine `step-done` or
+`explain` narrates the park's reason code and its rescue; `obligations` is the raw form, reporting
+each armed guard's `rescue` class: `terminal-signal` (a genuine `step-done` or
 `bounce` un-parks it automatically on the next pass), `respawn` (bounded auto-retry),
 `human` (only `resume`/`teardown`), `none`. Then route by code using **§3**.
 
@@ -420,8 +424,9 @@ holding all the workspace slots (Q1b).
 records an `attention` event, flags the run's pane with an `⚠ ATTENTION <KEY>` title +
 `hf_state=attention` token (display-only `pane report-metadata` — the pane's real label, which a step's
 `pane:` target resolves by, is never touched), fires a herdr notify,
-and (unless `skipSourceNote`) posts a note on the work item ending
-``Resume with: herdr-factory --repo <repo> resume <KEY>``.
+and (unless `skipSourceNote`) posts a note on the work item ending with the ready-made
+``Resume with: herdr-factory --repo <repo> resume <KEY>`` and
+``Or let your agent diagnose it: herdr-factory --repo <repo> triage <KEY>`` lines.
 
 | `attention_reason_code` | Raised by | Reason text the user sees | Auto-rescue | How to clear |
 |---|---|---|---|---|
@@ -506,7 +511,7 @@ Each with the by-hand check.
 | **The service PATH is frozen at `herdr-factory install` time** | macOS: `plutil -extract EnvironmentVariables.PATH raw ~/Library/LaunchAgents/com.herdr-factory.server.plist`. Linux: `grep '^Environment="PATH=' ~/.config/systemd/user/herdr-factory.service`. A tool installed later is invisible to `serve` even though your shell finds it — re-run `install`. A PATH lacking `/bin` breaks the probe itself (`spawn sh ENOENT` on every row) |
 | **No DB integrity/schema check** — `database` is `existsSync` only | `PRAGMA integrity_check;` `PRAGMA foreign_key_check;` `SELECT * FROM schema_version ORDER BY version;` |
 | **Live auth rejection is invisible in shallow mode**, and the in-memory auth gate is never read | `doctor --deep`; `curl -s '.../repos/<r>/status?refresh=1'` |
-| **Nothing about stuck/parked runs**; and only `evidence_publish` intents are surfaced (transitions, reply polls, `waiting`/`failed` rows are ignored) | `status`, `timeline <KEY>`, `GET /repos/<r>/obligations?key=<KEY>`, `GET /repos/<r>/intents` (the last two are HTTP-only — no CLI equivalent) |
+| **Nothing about stuck/parked runs**; and only `evidence_publish` intents are surfaced (transitions, reply polls, `waiting`/`failed` rows are ignored) | `status`, `explain <KEY>`, `timeline <KEY>`, `GET /repos/<r>/obligations?key=<KEY>`, `GET /repos/<r>/intents` (the raw obligations JSON and the intent rows are HTTP-only) |
 | **No writability/disk checks**, and `aws` presence is never checked despite every S3 remediation telling you to run `aws sso login` | `df -h`; `command -v aws` |
 | **`repo.github` vs real origin mismatch is never flagged** — `repo.github` unconditionally wins, so a stale value silently sends PRs at the wrong repo while the row prints ✓ | Compare with `git -C <repo.path> remote get-url origin` |
 | **`evidence uploads` can crash the whole command** (it isn't wrapped in the error-catching helper): a locked/corrupt DB makes `doctor` print no groups at all | If `doctor` exits with a bare error and no output, suspect the DB |
@@ -539,7 +544,7 @@ hits loopback HTTP, and with `--repo` creates/migrates the DB, creates state+log
 |---|---|
 | Repo isn't picking up work | repo log: `at capacity`, poll skips, auth-pause lines |
 | Nothing happens at all / stale ticks | supervisor log + `/health` `tickStale` |
-| A step never advances | repo log + `GET /repos/<r>/obligations?key=<KEY>` |
+| A step never advances | `explain <KEY>` + repo log + `GET /repos/<r>/obligations?key=<KEY>` |
 | Status not moving in Jira/GitHub | repo log `transition deferred …` + `GET /intents?kind=source_transition` |
 | Evidence links broken | repo log `evidence publish` lines + `doctor --deep` + TUI amber |
 | Duplicate agents in one worktree | repo log, grep `lock … lost mid-hold` (error level) |
@@ -836,9 +841,9 @@ court, waiting for the next run-locked pass (`handoff_at IS NOT NULL AND consume
 A permanently failing intent surfaces as: a throttled herdr notification (only `evidence_publish`
 implements notify today); the repo log line `<key>: <kind> intent deferred (attempt N): <error>`; the
 amber `⚠` problem flag on the run's TUI dashboard card (evidence only, and only once `error_class` is set —
-a never-attempted row is deliberately not a problem); `doctor`'s `evidence uploads` row; and the
-`obligations` endpoint (`GET /repos/<r>/obligations?key=<KEY>` — HTTP only, there is no `obligations`
-CLI command).
+a never-attempted row is deliberately not a problem); `doctor`'s `evidence uploads` row; the
+`obligations` endpoint (`GET /repos/<r>/obligations?key=<KEY>`); and `explain <KEY>`'s "Owed to the
+world" section (attempt count, next retry time, the credential fix for an auth-class failure).
 
 Retrying:
 

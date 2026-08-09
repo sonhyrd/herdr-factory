@@ -1247,7 +1247,8 @@ records the event, fires a notification, **flags the run's active pane** with an
 lifecycle hook and can't be set externally, so a display cue is the persistent signal — published as
 metadata so the pane's real label, which a step's `pane:` target resolves by, is never touched), and
 **posts the reason to the work source**
-(`postNote` — a Jira comment / local note, including the ready-made resume command). While
+(`postNote` — a Jira comment / local note, including the ready-made `resume` and `triage`
+commands). While
 parked, the run **re-notifies every `attention_renotify_seconds`** (default 1h) and — for a
 belt with a PR — keeps polling for a merge (which still tears it down). The operator
 un-parks it with **`herdr-factory --repo <name> resume <KEY>`**: back to its active step (budget/
@@ -1509,6 +1510,8 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agen
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
 herdr-factory --repo <name> runs [--all] | timeline <KEY> | logs [n]   # read the DB / repo log
+herdr-factory --repo <name> explain <KEY> [--source <name>]   # why the run is where it is, in plain language
+herdr-factory --repo <name> triage <KEY> [--print]            # open the operator's agent CLI on the run, pre-briefed
 # machine-wide (no --repo)
 herdr-factory serve                       # the resident daemon: tick every repo + Hono API (+ /doc, /ui)
 herdr-factory ensure-up [--restart]       # supervisor one-shot: auto-update + (re)start serve if down/wedged/outdated
@@ -1535,9 +1538,35 @@ recorded) so any `/status` reader sees it; the needs-a-human red (attention/fail
 up — a warm, in-process reconcile in ~ms — and **fall back to direct in-process execution** when
 it isn't (`viaServerOrLocal`). Because the DB is the source of truth and the tick/run locks
 coordinate any actor, the fallback is fully correct: a worker's `step-done` lands even while the
-server is restarting, and the next tick is the backstop. **Read** commands (`status`/`runs`/`eligible`/`timeline`) stay direct-DB (always correct,
+server is restarting, and the next tick is the backstop. **Read** commands (`status`/`runs`/`eligible`/`timeline`/`explain`) stay direct-DB (always correct,
 no server needed); the server exposes the same reads as JSON (`GET /repos/:repo/…`) for the future
 web UI ([§16](#16-web-ui-future)).
+
+`explain <KEY>` is the plain-language face of the obligations view ([§12](#12-server--supervision)'s
+`GET /repos/:repo/obligations`): it resolves the run (`--source` disambiguates, an ended run gets a
+one-line pointer to `timeline`), computes `runObligations`, and renders it through the pure
+`src/core/explain.ts` — the run's phase story (or its attention park, keyed by
+`attention_reason_code` with its rescue class), every deliver-lane debt with its attempt count and
+next-retry time, the armed clocks (budget/stall/layout-wait) with when they fire, counted bounces,
+and ready-made next commands. It ends with a warning when no server is ticking the repo (backoffs
+and clocks only advance on ticks — the single most misread "stuck" state). The renderer is a
+zero-heavy-import leaf shared verbatim by the TUI run detail's "What's happening" section (the
+narrative shape lives in `src/core/obligations-shape.ts` so the TUI's eager startup graph never
+touches the engine — see `test/tui-startup-graph.test.ts`), and is unit-tested per
+phase/reason-code in `test/explain.test.ts`.
+
+`triage <KEY>` (`src/cli/triage.ts`) escalates from reading to a conversation: it composes a
+briefing (the `explain` narrative, the last events, the worktree/config/log locations, the shipped
+skill's playbook paths, and ground rules that forbid `teardown`/`bounce`/proxy signals without the
+operator's explicit OK), writes it into the run's `.memory/herdr-factory/` (or the repo state dir
+pre-worktree), and launches the repo-level `agent:` **command** interactively in the operator's own
+terminal — `stdio: "inherit"`, cwd = the run's worktree. The worker **flags are deliberately
+dropped** (they configure the unattended posture; a triage session has a human present), and it is
+deliberately **not a herdr pane** — no pane/agent lifecycle is managed, so it works when herdr or
+the server is the thing that's broken and stays outside the §4 ownership boundary. `--print` emits
+the briefing instead of launching. Attention notes posted by `escalateAttention` advertise the
+command next to `resume`. The engine never launches it — triage is always operator-invoked, keeping
+tokens off the factory floor.
 
 `eligible` lists todo items **across all sources** (each annotated with its `source`). `doctor`
 reports three groups: **managed** (node runtime ≥26 — vendored or ambient; **auto-update** — the

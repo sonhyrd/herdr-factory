@@ -9,10 +9,16 @@
 import type { StepConfig } from "../config.ts";
 import type { Deps } from "./deps.ts";
 import type { GuardSpec, Run } from "../types.ts";
+import type { RunObligations } from "./obligations-shape.ts";
 import { firstStep, stepByName } from "./step.ts";
 import { effectiveWatchClock } from "./watches.ts";
 import { BOUNCE_CAP } from "../steps/registry.ts";
 import { ENGINE_WATCHES } from "../steps/engine-watches.ts";
+
+// The answer's SHAPE lives in obligations-shape.ts (a zero-import leaf the TUI and the explain
+// renderer can reach without dragging this module's engine graph); re-exported here so engine-side
+// callers keep one import site.
+export type { RunObligations } from "./obligations-shape.ts";
 
 /** A guard's rescue class, derived from its declaration — how a park it raised is un-parked. */
 export function guardRescueClass(g: GuardSpec): "terminal-signal" | "respawn" | "human" | "none" {
@@ -20,47 +26,6 @@ export function guardRescueClass(g: GuardSpec): "terminal-signal" | "respawn" | 
   if ((g.autoRespawnLimit ?? 0) > 0) return "respawn";
   // exclusive_resource never parks at all; anything else without a rescue declaration is human-only.
   return g.kind === "exclusive_resource" ? "none" : "human";
-}
-
-export interface RunObligations {
-  run: {
-    id: number;
-    key: string;
-    phase: string;
-    step: string | null;
-    belt: string | null;
-    workSource: string | null;
-    prNumber: number | null;
-    resolverActive: boolean;
-    attentionReason: string | null;
-    attentionReasonCode: string | null;
-  };
-  /** Deliver-lane: durable intents the engine still owes the world for this run. */
-  intents: {
-    transitions: { toState: string; toStatus: string; attempts: number; nextAttemptAt: number; lastError: string | null; staleUnhandled: boolean }[];
-    evidenceUploads: { keyPrefix: string; attempts: number; nextAttemptAt: number; errorKind: string | null; lastError: string | null }[];
-    pendingSignal: { signal: string; step: string | null; toStep: string | null; createdAt: number } | null;
-    humanQuestion: { id: number; step: string | null; posted: boolean; pollAttempts: number; pollErrors: number; nextPollAt: number } | null;
-    /** Live ledger rows (pending/waiting) + resolved ones whose run reaction is still owed. */
-    ledger: { id: number; kind: string; status: string; nextAttemptAt: number; deadlineAt: number | null; handoffOwed: boolean; lastError: string | null }[];
-  };
-  /** Observe-lane: what is watching the run right now. */
-  watches: {
-    /** The step whose guards are armed (the active step, or the first step while claiming). */
-    step: string | null;
-    guards: {
-      kind: string;
-      escalationReason: string;
-      rescue: string;
-      /** Live facts per kind: budget/layout_wait clocks, heartbeat progress, read-only baseline,
-       *  counter positions — whatever the guard measures, keyed by fact name. */
-      facts: Record<string, string | number | boolean | null>;
-    }[];
-    /** Engine-universal watches (pane liveness, pass staleness) with their live facts. */
-    engine: { kind: string; watches: string; rescue: string; facts: Record<string, string | number | null> }[];
-    /** Bounce-cap counters (keyed by TARGET step) that have counted at least one bounce. */
-    bounceCaps: { step: string; count: number; max: number }[];
-  };
 }
 
 export function runObligations(deps: Deps, run: Run): RunObligations {

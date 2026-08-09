@@ -5,6 +5,7 @@
 // "server not running" instead of throwing.
 import { readFileSync } from "node:fs";
 import { serverInfoPath } from "../config-paths.ts";
+import type { RunObligations } from "../core/obligations-shape.ts";
 
 interface ServerInfo {
   pid: number;
@@ -126,6 +127,15 @@ export interface TimelineEvent {
 
 export function fetchTimeline(repo: string, key: string): Promise<{ timeline: TimelineEvent[] } | null> {
   return getJson<{ timeline: TimelineEvent[] }>(`/repos/${encodeURIComponent(repo)}/timeline?key=${encodeURIComponent(key)}`);
+}
+
+/** The engine's "why is this run waiting and what would move it" answer (GET /obligations).
+ *  null when there is no server, no active run for the key, or the fetch fails — the detail view
+ *  simply omits its narrative section then. The shape import is a zero-import leaf, so this module
+ *  stays out of the engine graph. */
+export function fetchObligations(repo: string, key: string, source?: string): Promise<RunObligations | null> {
+  const q = `key=${encodeURIComponent(key)}${source ? `&source=${encodeURIComponent(source)}` : ""}`;
+  return getJson<RunObligations>(`/repos/${encodeURIComponent(repo)}/obligations?${q}`);
 }
 
 /** Result of a mutating action: ok, or a reason to show the user. */

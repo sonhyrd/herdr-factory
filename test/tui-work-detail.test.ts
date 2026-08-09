@@ -83,4 +83,55 @@ describe("work item detail panel", () => {
     expect(find(lines, /^ {2}● work +waiting for human$/)).toBeTruthy();
     expect(lines).toContain("  (no events)");
   });
+
+  it("renders the explain narrative between the overview and the steps, indenting non-blank lines", () => {
+    const detail: WorkItemDetail = {
+      key: "HF-9",
+      summary: "A thing",
+      issueType: null,
+      workSource: "jira",
+      belt: "ship",
+      branch: null,
+      phase: "attention",
+      step: "work",
+      prNumber: null,
+      outcome: null,
+      worker: null,
+      attentionReason: "work step over budget",
+      problem: null,
+      createdAt: null,
+      beltSteps: ["work"],
+      steps: [{ step: "work", done: false, startedAt: null, doneAt: null, pass: 1 }],
+      explain: ["The run is parked: the work step ran past its time budget.", "", "Next:", "  herdr-factory --repo proj resume HF-9"],
+    };
+    const lines = formatWorkItemDetail(detail, [], 0);
+    const heading = lines.indexOf("What's happening");
+    expect(heading).toBeGreaterThan(0);
+    expect(heading).toBeLessThan(lines.indexOf("Steps"));
+    expect(lines).toContain("  The run is parked: the work step ran past its time budget.");
+    expect(lines[heading + 2]).toBe(""); // blank narrative lines stay blank, not indented
+    expect(lines).toContain("    herdr-factory --repo proj resume HF-9");
+  });
+
+  it("omits the section when the narrative is absent", () => {
+    const detail: WorkItemDetail = {
+      key: "HF-9",
+      summary: null,
+      issueType: null,
+      workSource: null,
+      belt: null,
+      branch: null,
+      phase: "running",
+      step: null,
+      prNumber: null,
+      outcome: null,
+      worker: null,
+      attentionReason: null,
+      problem: null,
+      createdAt: null,
+      beltSteps: [],
+      steps: [],
+    };
+    expect(formatWorkItemDetail(detail, [], 0)).not.toContain("What's happening");
+  });
 });

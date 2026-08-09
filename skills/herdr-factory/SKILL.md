@@ -82,14 +82,24 @@ Read the state before theorising. In order:
 
 ```sh
 herdr-factory --repo <name> status            # phases, steps, PRs, server + supervisor state
+herdr-factory --repo <name> explain <KEY>     # why this run is where it is, narrated — with next commands
 herdr-factory --repo <name> timeline <KEY>    # the event log for this item's MOST RECENT run
-curl -s "127.0.0.1:8765/repos/<name>/obligations?key=<KEY>"  # why this run is waiting, precisely
+curl -s "127.0.0.1:8765/repos/<name>/obligations?key=<KEY>"  # the raw form of explain, precise facts
 herdr-factory --repo <name> logs              # today's dispatcher log
 ```
 
-`obligations` is the single best answer to "why is this run not moving": it lists undelivered status
-write-backs, pending evidence uploads, unconsumed agent signals, an outstanding human question, and
-every armed guard with its live clock and whether it can auto-rescue.
+`explain` is the first answer to "why is this run not moving": the phase or park story, every
+background retry with its next attempt time, armed clocks, and the ready-made command that would
+move it (it also warns when no server is ticking the repo). `obligations` is its raw JSON — the
+undelivered write-backs, pending uploads, unconsumed signals, the outstanding human question, and
+every armed guard with its live clock and whether it can auto-rescue — for when you need exact
+facts (intent ids, clock epochs) rather than the narrative.
+
+`triage <KEY>` hands the diagnosis to an agent: it writes a briefing (the `explain` narrative,
+recent events, file locations, this skill's playbook paths, ground rules) and launches the repo's
+configured harness interactively on it. If you were launched BY `triage`, read the briefing file
+named in your opening prompt first, and never run `resume`/`teardown`/`bounce`/`step-done` without
+the operator's explicit OK in the conversation.
 
 Triage by symptom — each row has a full playbook in
 [references/troubleshooting.md](references/troubleshooting.md):

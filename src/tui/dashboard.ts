@@ -18,13 +18,15 @@ import { BoxRenderable, ScrollBoxRenderable, StyledText, TextRenderable, bg, fg,
 import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";
 import { listConfiguredRepos } from "../config-paths.ts";
-import { fetchEligible, fetchHealth, fetchStatus, fetchTimeline, postClaim, postTeardown, postTick, serverPort, type ActiveRun, type EligibleItem, type RepoStatus } from "./api.ts";
+import { fetchEligible, fetchHealth, fetchObligations, fetchStatus, fetchTimeline, postClaim, postTeardown, postTick, serverPort, type ActiveRun, type EligibleItem, type RepoStatus } from "./api.ts";
 import { foldEligible, withoutClaimed } from "./eligible-cache.ts";
 import { updateWarning } from "../watchers/update-status.ts";
 import { BORDER, theme } from "./theme.ts";
 import type { ChooseFn, ConfirmFn, PromptFn, ShowInfoFn, TabView } from "./types.ts";
 import { LEGEND, MIN_COLUMN_WIDTH, buildLanes, layoutKanban, looseLane, stateIcon, type BoardRun, type KanbanCell, type Tone } from "./kanban.ts";
 import { formatWorkItemDetail } from "./work-detail.ts";
+// A LEAF module (type-only imports) — safe in the TUI's eager startup graph.
+import { explainRun } from "../core/explain.ts";
 
 function fmtTime(ts: number): string {
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or milliseconds
@@ -598,7 +600,11 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     if (!serverUp || !t.key) return;
     const title = `${t.key} — detail`;
     const modal = showInfo(title, ["Loading work item detail…"]);
-    const [st, tl] = await Promise.all([fetchStatus(t.repo, true), fetchTimeline(t.repo, t.key)]);
+    const [st, tl, ob] = await Promise.all([
+      fetchStatus(t.repo, true),
+      fetchTimeline(t.repo, t.key),
+      fetchObligations(t.repo, t.key, t.source ?? undefined),
+    ]);
     const timelineLines = (tl?.timeline ?? []).map(timelineLine);
     const run = st?.active.find((r) => r.ticketKey === t.key && (!t.source || r.workSource === t.source));
     if (!run) {
@@ -629,6 +635,9 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
         createdAt: run.createdAt,
         beltSteps: belt?.steps ?? [],
         steps: run.steps.map((s) => ({ step: s.step, done: s.done, startedAt: s.startedAt ?? null, doneAt: s.doneAt ?? null, pass: s.pass ?? 1 })),
+        // The narrative shares core/explain.ts with the CLI's `explain <KEY>`; obligations timestamps
+        // are epoch seconds, so `now` converts from the ms wall clock the TUI otherwise uses.
+        explain: ob ? explainRun({ ob, repoName: t.repo, now: Math.floor(Date.now() / 1000), heading: false }) : undefined,
       },
       timelineLines,
       Date.now(),
