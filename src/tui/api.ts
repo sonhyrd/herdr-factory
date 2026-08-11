@@ -141,12 +141,19 @@ export function fetchObligations(repo: string, key: string, source?: string): Pr
 /** Result of a mutating action: ok, or a reason to show the user. */
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
-async function post(path: string, body?: unknown): Promise<ActionResult> {
+/** Outcome of a POST whose BODY matters: `ok: true` means the call itself succeeded and `body` holds
+ *  what the handler answered — which may still report a refusal of its own. The two levels are
+ *  deliberate: `resume`/`retry-now` answer 200 with `{ ok: false, message }` for "nothing to do here",
+ *  which a transport-only result would show as success. */
+export type Posted<T> = { ok: true; body: T } | { ok: false; error: string };
+
+async function postBody<T>(path: string, body?: unknown): Promise<Posted<T>> {
   const info = readInfo();
   if (!info) return { ok: false, error: "server not running" };
   try {
-    // Claim/tick can do real work, so allow a generous timeout (the UI stays responsive — the await
-    // doesn't block the event loop, and the banner shows progress).
+    // Claim/tick/retry-now can do real work (a retry-now flushes uploads inline), so allow a generous
+    // timeout — the UI stays responsive, since the await doesn't block the event loop and the action
+    // line shows progress.
     const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
       method: "POST",
       signal: AbortSignal.timeout(120_000),
@@ -156,10 +163,16 @@ async function post(path: string, body?: unknown): Promise<ActionResult> {
     const text = await res.text();
     const json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     if (!res.ok) return { ok: false, error: typeof json.error === "string" ? json.error : `server returned ${res.status}` };
-    return { ok: true };
+    return { ok: true, body: json as T };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** POST where only "did it work" matters — the body is discarded. */
+async function post(path: string, body?: unknown): Promise<ActionResult> {
+  const r = await postBody<unknown>(path, body);
+  return r.ok ? { ok: true } : r;
 }
 
 export function postTick(repo: string): Promise<ActionResult> {
@@ -170,6 +183,29 @@ export function postClaim(repo: string, key: string, belt?: string): Promise<Act
 }
 export function postTeardown(repo: string, key: string, source?: string | null): Promise<ActionResult> {
   return post(`/repos/${encodeURIComponent(repo)}/teardown`, source ? { key, source } : { key });
+}
+
+/** Un-park an `attention` run (the engine refuses, with a `message`, for any other phase). */
+export interface ResumeOutcome {
+  ok: boolean;
+  phase?: string;
+  message?: string;
+}
+export function postResume(repo: string, key: string, source?: string | null): Promise<Posted<ResumeOutcome>> {
+  return postBody<ResumeOutcome>(`/repos/${encodeURIComponent(repo)}/resume`, source ? { key, source } : { key });
+}
+
+/** Make backed-off retries due now + flush them. `requeued` counts rows that were actually waiting
+ *  out a backoff; `flushed` is false when a tick held the repo lock (that pass delivers them). */
+export interface RetryNowOutcome {
+  ok: boolean;
+  requeued?: number;
+  flushed?: boolean;
+  message?: string;
+}
+export function postRetryNow(repo: string, key?: string | null, source?: string | null): Promise<Posted<RetryNowOutcome>> {
+  const body = key ? (source ? { key, source } : { key }) : {};
+  return postBody<RetryNowOutcome>(`/repos/${encodeURIComponent(repo)}/retry-now`, body);
 }
 
 export interface ReloadOutcome {

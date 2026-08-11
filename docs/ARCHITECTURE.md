@@ -819,6 +819,21 @@ stuck row — the happy path never probes) and, the moment they're live again, r
 row due-now (`requeueIntentsByCause` on `publisher:<type>`, mirroring `retryTransitionsForSource`) so
 the same pass uploads it instead of waiting out the up-to-1h backoff — no manual retry, no waiting.
 
+**The operator due-now** (`retryIntentsNow`) covers what that automation cannot: a cause the engine
+has no probe for. Only `auth`-classified S3 failures self-heal; a timeout, an unknown SDK error, a
+source that was briefly 500ing all classify `transient`, and after a fix there is nothing to shorten
+the doubling curve. `POST /repos/:repo/retry-now` (CLI `retry-now [KEY]`, `s` on the TUI board) makes
+every **backed-off** pending row in the repo — or one run's, with `key` — due immediately and then
+runs `flushDurableIntents` (Phase 0 as a callable unit) under the **repo tick lock**, so the rows land
+on that request instead of on the next tick; when a tick already holds the lock the answer says so
+(`flushed: false`) and that pass delivers them. Semantics deliberately match the automatic path:
+due-now only, `attempts` untouched — a still-broken cause backs straight off to where it was rather
+than restarting the curve on every keypress. Rows already due are not counted, which is what makes
+`requeued: 0` a real diagnostic ("the delay is not a backoff"). `waiting` rows are never touched —
+those are external-trigger waits the kernel doesn't retry. Unlike `resume` this takes no run lock and
+reads no phase: it only touches deliver-lane rows, which is precisely why it works for a healthy run
+whose evidence bytes are the one thing stuck (`resume` refuses anything not parked for `attention`).
+
 Two things make that recovery actually reachable from a **resident** process, both easy to regress:
 `evidenceClient` builds its credential provider with **`ignoreCache: true`** (`evidenceCredentialInit`,
 test-pinned), because `@smithy/core`'s shared-ini loader memoizes `~/.aws/config` in a module-level
@@ -1270,6 +1285,11 @@ nudge. The observed state is recorded on the `resumed` event, so a `nudged:false
 A `working` pane is left mid-turn, and a dead one is respawned by the liveness path.
 Parked runs hold **no claim slot** (§6). Teardown remains the abandon path.
 
+Resume is **`attention`-only** by design (it moves `run.phase`), so it is not the tool for a run that
+is fine except for a background retry sitting out its backoff — the deliver-lane sibling `retry-now`
+is (§6, the operator due-now). The TUI's `s` picks between them from the highlighted card's phase, so
+an operator needs one key rather than the distinction.
+
 The capture lock stays **machine-global** (one dev-server / browser across all
 repos), acquired with a TTL via the CLI.
 
@@ -1504,6 +1524,7 @@ sets up the supervisor itself, not a repo.
 herdr-factory --repo <name> tick | status | eligible
 herdr-factory --repo <name> claim <KEY> [--belt <name>] | teardown <KEY> [--source <name>]
 herdr-factory --repo <name> resume <KEY> [--source <name>]        # un-park an `attention` run
+herdr-factory --repo <name> retry-now [KEY] [--source <name>]     # backed-off retries due now + flush (after fixing the cause)
 herdr-factory --repo <name> step-done <KEY> <step> [--source <name>]  # agent → dispatcher (event-nudges)
 herdr-factory --repo <name> ask-human <KEY> <step> --question[-file] …  # agent → park until a human replies
 herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agent → send work back for rework
@@ -1616,8 +1637,10 @@ what the old per-repo `watch` did, but collapsed into a single process plus a lo
   guard** — a second `serve` loses with `EADDRINUSE` (the server emits `error`) and exits.
 - **Routes.** `GET /health` (incl. per-repo `lastTickAt` + `tickStale` — the wedged-tick
   watchdog signal) · `POST /reload` (re-discover repos / reload config) · `POST /shutdown`
-  (graceful drain) · `POST /repos/:repo/{tick,step-done,ask-human,bounce,resume,claim,teardown}`
-  (the mutating CLI paths) · `GET /repos/:repo/{status,runs,eligible,timeline}` (reads for the
+  (graceful drain) · `POST /repos/:repo/{tick,step-done,ask-human,bounce,resume,retry-now,claim,teardown}`
+  (the mutating CLI paths — `retry-now` is the bulk operator due-now: re-queue the repo's, or one
+  run's, backed-off pending intents and flush them under the tick lock, §6) ·
+  `GET /repos/:repo/{status,runs,eligible,timeline}` (reads for the
   web UI) · `GET /repos/:repo/obligations?key=` ("why is this run waiting and what would move
   it": the run's undelivered outbox intents + pending signal/question, and its armed watches —
   the active step's guards with live clocks/counters and rescue class, the engine-universal
@@ -1761,7 +1784,8 @@ command it finds there (which makes the suite a live check of the §14 agent-CLI
   `budget_seconds`/`stall_seconds`/`layout_wait_seconds`). `core/layout.ts:345` mixes `deps.now()*1000`
   with `Date.now()`, so an injected clock is unsafe on the layout path; the un-compressible waits
   (`RETRY_BASE_SECONDS` 60, `PANE_ABSENCE_CONFIRM_SECONDS` 45, tick-stale ≥900s) are handled with the
-  operator endpoints (`POST /intents/:id/retry`, `/intents/recover`) or marked slow.
+  operator endpoints (`POST /intents/:id/retry`, `/intents/recover`, `/repos/:repo/retry-now` — the
+  bulk due-now + flush) or marked slow.
 - **Assertion surface**, in order of preference: the SQLite rows (`runs` + `run_products`,
   `run_steps`, `events`, `intents`, `guard_counters`, `work_items`) → `GET /repos/:repo/obligations`
   → the filesystem (worktree reaped, branch deleted, evidence bytes, the human inbox) → the argv

@@ -112,6 +112,45 @@ describe("intents store — enqueue/dedup/FIFO/lease mechanics", () => {
     expect(store.fulfilIntent(wait.id)).toBeUndefined(); // second fulfil is a no-op
   });
 
+  it("retryIntentsNow (operator bulk due-now) counts only backed-off pending rows, keeps attempts, and scopes by run", () => {
+    const { store, setNow } = makeStore();
+    // A second run, so the run-scoped form can be shown NOT to touch its sibling.
+    const other = store.createRun({ repo: "r", workSource: "src", belt: "b", ticketKey: "K-2" });
+    const upload = enqueue(store, { dedupKey: "a", causeScope: "publisher:s3" });
+    const writeBack = enqueue(store, { dedupKey: "b", kind: "source_transition" });
+    const alreadyDue = enqueue(store, { dedupKey: "c" });
+    const otherRun = enqueue(store, { dedupKey: "d", scope: `run:${other.id}`, runId: other.id, ticketKey: "K-2" });
+    const waiting = enqueue(store, { dedupKey: "w", status: "waiting" });
+    store.recordIntentAttempt(upload.id, "timed out reaching S3", "transient", 3600);
+    store.recordIntentAttempt(writeBack.id, "500", "transient", 3600);
+    store.recordIntentAttempt(otherRun.id, "500", "transient", 3600);
+    setNow(1100);
+
+    // Run-scoped: only run 1's backed-off rows. `alreadyDue` was never stuck, so it isn't counted;
+    // the sibling run is untouched.
+    expect(store.retryIntentsNow("r", { runId: 1 })).toBe(2);
+    expect(store.getIntent(upload.id)!.nextAttemptAt).toBe(1100);
+    expect(store.getIntent(writeBack.id)!.nextAttemptAt).toBe(1100);
+    expect(store.getIntent(alreadyDue.id)!.nextAttemptAt).toBe(1000);
+    expect(store.getIntent(otherRun.id)!.nextAttemptAt).toBe(1000 + 3600);
+    // Attempts survive: a still-broken cause backs off to where it was, not to the start of the curve.
+    expect(store.getIntent(upload.id)!.attempts).toBe(1);
+    // A second press re-queues nothing (everything is already due) — the count stays honest.
+    expect(store.retryIntentsNow("r", { runId: 1 })).toBe(0);
+
+    // Repo-wide picks up the sibling run; `waiting` rows (external-trigger waits) are never retried.
+    expect(store.retryIntentsNow("r")).toBe(1);
+    expect(store.getIntent(otherRun.id)!.nextAttemptAt).toBe(1100);
+    expect(store.getIntent(waiting.id)!.status).toBe("waiting");
+    expect(store.retryIntentsNow("other-repo")).toBe(0);
+
+    // A backed-off row owing an unconsumed handoff is in the RUN's court — skipped, like dueIntents.
+    const owed = enqueue(store, { dedupKey: "h" });
+    store.recordIntentAttempt(owed.id, "500", "transient", 3600);
+    store.markIntentHandoff(owed.id, "stale");
+    expect(store.retryIntentsNow("r")).toBe(0);
+  });
+
   it("abandonIntentsForRun drops only live rows of the given kinds; a repo-scoped handoff self-acknowledges", () => {
     const { store } = makeStore();
     const keep = enqueue(store, { kind: "keep", dedupKey: "x" });

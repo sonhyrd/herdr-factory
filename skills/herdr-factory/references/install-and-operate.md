@@ -371,6 +371,7 @@ a confirm modal, and the result lands on the bottom action line:
 | `d` | **repo** row → repo detail (AWS SSO, per-source auth, per-belt steps/health/eligible counts); **run** card → full work-item detail (overview + step progress + timeline) | repo, run |
 | `t` | run one reconcile tick on that row's repo — `Run a reconcile tick on "<repo>"?` | any card/row |
 | `c` | claim the item — picks the belt automatically when the source has exactly one, otherwise asks | `ready` cards |
+| `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk due-now** (`Retry "<scope>"'s backed-off background jobs now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now — flushed`, or `— a tick is mid-pass`, or `"<scope>": no backed-off jobs were waiting`). A run card scopes to that run; a repo row is repo-wide | run, repo, ready |
 | `x` | tear the run down — `Tear down "<key>" (removes its worktree)?` | run cards |
 | `r` | refresh now | anywhere |
 

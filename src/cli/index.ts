@@ -15,7 +15,7 @@ import { initRepo } from "../init.ts";
 import { afterDoctorHint, afterInstallHint, afterStartHint } from "../onboarding.ts";
 import { systemClock, type Run, type SourceType } from "../types.ts";
 import type { Deps } from "../core/deps.ts";
-import { claimTicket, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
+import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/kinds/evidence-publish.ts";
 import { intentRetryDelay } from "../intents/registry.ts";
 import { applySignal, type SignalBody, type SignalResult } from "../core/signals.ts";
@@ -435,6 +435,46 @@ program
         return;
       }
       console.log(`${key}: resumed -> ${d.phase}`);
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("retry-now [key]")
+  .description("stop waiting out a backoff: make this repo's backed-off retries (or just one run's) due now and flush them — run it after fixing the cause, e.g. `aws sso login`")
+  .option("--source <name>", "disambiguate when the key is active in more than one source")
+  .action(cliAction("retry-now", async (key: string | undefined, opts: { source?: string }) => {
+    try {
+      const repo = requireRepo();
+      const { data } = await viaServerOrLocal(
+        { method: "POST", path: `/repos/${encodeURIComponent(repo)}/retry-now`, body: { key, source: opts.source } },
+        async () => {
+          const deps = await buildDeps(repo);
+          let runId: number | undefined;
+          if (key) {
+            const run = resolveActiveRun(deps, key, opts.source);
+            if (!run) return { ok: false, requeued: 0, flushed: false, message: `${key}: no active run` };
+            runId = run.id;
+          }
+          const requeued = deps.store.retryIntentsNow(repo, { runId });
+          // Same contract as the route: re-queue, then flush under the tick lock so the rows land now.
+          const flushed = await withTickLock(deps, () => flushDurableIntents(deps));
+          return { ok: true, requeued, flushed };
+        },
+      );
+      const d = data as { ok?: boolean; requeued?: number; flushed?: boolean; message?: string };
+      if (d.ok === false) {
+        console.log(d.message ?? "retry-now failed");
+        return;
+      }
+      const n = d.requeued ?? 0;
+      const scope = key ?? repo;
+      if (n === 0) {
+        console.log(`${scope}: no backed-off retries were waiting`);
+        return;
+      }
+      console.log(`${scope}: ${n} backed-off retr${n === 1 ? "y" : "ies"} made due now${d.flushed ? " and flushed" : " (a tick is mid-pass — it will deliver them)"}`);
     } catch (e) {
       fail(e);
     }

@@ -114,9 +114,14 @@ Triage by symptom — each row has a full playbook in
 | config edits do nothing | `herdr-factory reload` (or the server never picked the repo up at boot) |
 | server up but nothing ticks | wedged tick loop — `doctor` does **not** catch this; check `/health`'s per-repo `lastTickAt` |
 
-Nudges, least to most destructive: `reload` → `tick` → `step-done` → `resume <KEY>` → intent retry →
-`restart` → `teardown <KEY>`. **`teardown` destroys the worktree and branch** — never reach for it to
-"reset" a run without saying so first.
+Nudges, least to most destructive: `reload` → `tick` → `retry-now [KEY]` → `step-done` →
+`resume <KEY>` → intent retry → `restart` → `teardown <KEY>`. **`teardown` destroys the worktree and
+branch** — never reach for it to "reset" a run without saying so first.
+
+`retry-now` is the one to reach for when the cause is already fixed and only a **backoff** is left
+(uploads, source write-backs — they double to one attempt per hour): it makes the repo's, or one run's,
+backed-off retries due now and flushes them, changing nothing else about the run. Only AWS creds
+recover on their own.
 
 ## Ground rules
 

@@ -6,8 +6,9 @@
 // rather than by tinting the whole card — see kanban.ts for the two rules the board keeps. Cards are
 // navigable (↑↓ within a column, ←→ across columns) and contextual keys act on the highlighted card,
 // each behind the shell's confirmation modal:  t = tick a repo,  c = claim a ready item,  x = teardown
-// an active run,  d = open repo/work detail,  ↵ = timeline,  r = refresh. Auto-refreshes every 3s while
-// active; when the server is down it lists the repos with a hint and actions no-op.
+// an active run,  s = resume a parked run / retry its (or the repo's) backed-off background jobs now,
+// d = open repo/work detail,  ↵ = timeline,  r = refresh. Auto-refreshes every 3s while active; when
+// the server is down it lists the repos with a hint and actions no-op.
 //
 // Refresh is flicker-free: quick status paints first, eligible source queries fold in afterward, and
 // both passes reconcile in place — reusing existing text renderables and only rewriting content or
@@ -18,7 +19,7 @@ import { BoxRenderable, ScrollBoxRenderable, StyledText, TextRenderable, bg, fg,
 import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";
 import { listConfiguredRepos } from "../config-paths.ts";
-import { fetchEligible, fetchHealth, fetchObligations, fetchStatus, fetchTimeline, postClaim, postTeardown, postTick, serverPort, type ActiveRun, type EligibleItem, type RepoStatus } from "./api.ts";
+import { fetchEligible, fetchHealth, fetchObligations, fetchStatus, fetchTimeline, postClaim, postResume, postRetryNow, postTeardown, postTick, serverPort, type ActiveRun, type EligibleItem, type RepoStatus } from "./api.ts";
 import { foldEligible, withoutClaimed } from "./eligible-cache.ts";
 import { updateWarning } from "../watchers/update-status.ts";
 import { BORDER, theme } from "./theme.ts";
@@ -102,6 +103,9 @@ interface Target {
   key?: string;
   source?: string | null;
   belt?: string;
+  /** The run's phase (run cards only) — `s` routes on it: an `attention` run is resumed, anything
+   *  else gets its backed-off retries made due now. */
+  phase?: string;
   /** A detail too long for a card; surfaced on the action line when the card is highlighted. */
   note?: { text: string; tone: Tone };
 }
@@ -440,7 +444,7 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
             return item && { repo: name, kind: "eligible", key: item.key, source: item.source, belt: item.belt };
           }
           const run = beltRuns.find((r) => r.ticketKey === card.key);
-          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, note: runNote(run) };
+          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
         });
       }
       // Runs whose belt is no longer configured have no steps to make columns from — one full-width lane.
@@ -449,7 +453,7 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
         if (boards++) blank();
         pushBoard([looseLane("unassigned (no belt)", unassigned.map(toBoardRun), nowSec)], (card) => {
           const run = unassigned.find((r) => r.ticketKey === card.key);
-          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, note: runNote(run) };
+          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
         });
       }
     }
@@ -541,6 +545,48 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     setAction(`claiming ${t.key}…`, theme.text.secondary);
     const r = await postClaim(t.repo, t.key, belt);
     setAction(r.ok ? `✓ claimed "${t.key}" onto "${belt}"` : `✗ claim failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
+    void refresh();
+  }
+
+  /**
+   * `s` — the operator's "I fixed it, go now" key. It routes on what the highlighted thing needs:
+   *
+   *  - a run parked for `attention` → **resume**: un-park it back to where it was and re-dispatch
+   *    (the CLI's `resume`), re-basing the step's clocks and refunding its guard budgets;
+   *  - any other run → **retry now** for that run's backed-off deliver-lane rows. A run can be
+   *    perfectly healthy with a background job stuck (the amber ⚠ card: evidence URLs published,
+   *    bytes still retrying) — resume refuses such a run (phase, not deliver lane), and no shipped
+   *    intent kind opts into resume's due-now refund anyway, so this is what it needs instead;
+   *  - a repo row (or a ready card) → **retry now** repo-wide, which is the shape of the usual cause:
+   *    one expired `aws sso login` blocks every run's evidence upload at once.
+   *
+   * Without this the only cure for a backoff that has doubled its way to the hour cap was to wait it
+   * out, since the engine only auto-recovers causes it can probe (AWS creds classified `auth`).
+   */
+  async function doResumeOrRetry(t: Target): Promise<void> {
+    if (!serverUp) return setAction("server not running", theme.status.warn);
+    if (t.kind === "run" && t.key && t.phase === "attention") {
+      if (!(await confirm(`Resume "${t.key}" (un-park it and pick up where it left off)?`))) return;
+      setAction(`resuming ${t.key}…`, theme.text.secondary);
+      const r = await postResume(t.repo, t.key, t.source);
+      if (!r.ok) setAction(`✗ resume failed: ${r.error}`, theme.status.bad);
+      else if (!r.body.ok) setAction(`✗ ${t.key}: ${r.body.message ?? "could not be resumed"}`, theme.status.warn);
+      else setAction(`✓ resumed "${t.key}" → ${r.body.phase ?? "running"}`, theme.status.good);
+      void refresh();
+      return;
+    }
+    const perRun = t.kind === "run" && t.key != null;
+    const scope = perRun ? `"${t.key}"` : `"${t.repo}"`;
+    if (!(await confirm(`Retry ${scope}'s backed-off background jobs now (uploads, source write-backs)?`))) return;
+    setAction(`retrying ${perRun ? t.key : t.repo}…`, theme.text.secondary);
+    const r = await postRetryNow(t.repo, perRun ? t.key : undefined, t.source);
+    if (!r.ok) setAction(`✗ retry failed: ${r.error}`, theme.status.bad);
+    else if (!r.body.ok) setAction(`✗ ${r.body.message ?? "nothing to retry"}`, theme.status.warn);
+    else if ((r.body.requeued ?? 0) === 0) setAction(`${scope}: no backed-off jobs were waiting`, theme.text.secondary);
+    else {
+      const n = r.body.requeued!;
+      setAction(`✓ ${scope}: ${n} job${n === 1 ? "" : "s"} due now${r.body.flushed ? " — flushed" : " — a tick is mid-pass"}`, theme.status.good);
+    }
     void refresh();
   }
 
@@ -679,6 +725,10 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
         break;
       case "c":
         if (t?.kind === "eligible") void doClaim(t);
+        key.preventDefault();
+        break;
+      case "s":
+        if (t) void doResumeOrRetry(t);
         key.preventDefault();
         break;
       case "d":

@@ -1471,6 +1471,39 @@ export class Store {
     return Number(info.changes) > 0;
   }
 
+  /**
+   * Operator due-now in BULK — the "I have fixed the cause, go now" button (the /retry-now endpoint,
+   * `retry-now` CLI, `s` on the TUI board): every BACKED-OFF pending row in the repo, or just one
+   * run's, becomes due immediately. The manual counterpart of `requeueIntentsByCause` for the causes
+   * the engine cannot probe for itself — a transient-classified upload, a network that came back, a
+   * source that stopped 500ing — where the only alternative is waiting out the doubling curve to its
+   * hour cap. Covers both the ledger kinds and the source write-backs (same table, kind
+   * `source_transition`).
+   *
+   * Semantics deliberately match the automatic recovery path: due-now ONLY. `attempts` is not reset,
+   * so a cause that is still broken backs straight off to where it was instead of restarting the
+   * curve on every keypress, and each row keeps its failure history. Rows already due are not
+   * counted (nothing was un-stuck), which is what makes "0 jobs were waiting" an honest answer.
+   * `waiting` rows are untouched — those are external-trigger waits the kernel never retries; they
+   * resolve through /fulfil or their deadline. A row owing an unconsumed handoff is skipped for the
+   * same reason `dueIntents` skips it: it is in the RUN's court, so re-queueing it would promise a
+   * delivery the flush is right to withhold. Returns how many were re-queued.
+   */
+  retryIntentsNow(repo: string, opts: { runId?: number } = {}): number {
+    const t = this.now();
+    const scoped = opts.runId != null;
+    const info = this.db
+      .prepare(
+        `UPDATE intents SET next_attempt_at = ?, updated_at = ?
+         WHERE repo = ? AND status = 'pending' AND next_attempt_at > ?
+         AND (handoff_at IS NULL OR consumed_at IS NOT NULL)${scoped ? " AND run_id = ?" : ""}`,
+      )
+      .run(t, t, repo, t, ...(scoped ? [opts.runId!] : []));
+    const requeued = Number(info.changes);
+    if (requeued > 0) telemetryEvent("store.intent.retry_now", { repo, "run.id": opts.runId, "intent.requeued": requeued });
+    return requeued;
+  }
+
   /** Drop a run's live intents at teardown (optionally only some kinds — e.g. evidence bytes die
    *  with the worktree, while terminal write-backs must outlive the run). Returns the count. */
   abandonIntentsForRun(runId: number, reason: string, kinds?: readonly string[]): number {

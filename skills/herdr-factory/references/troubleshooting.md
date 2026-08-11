@@ -294,10 +294,10 @@ herdr-factory --repo <r> timeline <KEY> | grep -E 'evidence_uploaded|evidence_up
 
 | Branch | Signature | Fix |
 |---|---|---|
-| AWS creds expired | `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'` | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is backed off — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it: `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}` |
+| AWS creds expired | `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'` | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is backed off — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it now: `herdr-factory --repo <r> retry-now` (or `s` on the TUI board, or `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}`) |
 | **You logged in and it's STILL auth-stuck** | `doctor --deep` says the publisher is **writable** (a fresh process resolves creds fine) while the server keeps deferring the same row | The server can't see your credentials, or is holding a stale view of where they come from. Two distinct causes — check both:<br>1. **A credential helper the SDK can't read.** The resident server is launchd-spawned: creds `assume`/`aws-vault` export into your *shell*, and granted's SSO token in the **macOS keychain**, are both invisible to it. Prove it with `env -u AWS_ACCESS_KEY_ID -u AWS_SESSION_TOKEN aws sts get-caller-identity --profile <p>` — "Token has expired and refresh failed" means the server sees the same. Fix: a **dedicated** `credential_process` profile (below) and point `evidence.profile` at it.<br>2. **A pre-`ignoreCache` server.** Builds before that fix memoized `~/.aws/config` for the process's whole life, so a profile added/repointed while it ran never resolved. `herdr-factory restart` (and `update` to get the fix). |
 | Permanent failure | `error_class = 'permanent'`, event `evidence_upload_failed`, notify `herdr-factory: <key> evidence publish failed`, amber `⚠` on the run's TUI dashboard card. **The run is untouched — this is never a park** | `doctor --deep` shows the real reason (bucket/region/access-denied/command exit) |
-| Transient retrying | `<n> pending — retrying (last: …)`, notify is deliberately **silent** | Backoff is 60 s doubling to a 3600 s cap and **never gives up** |
+| Transient retrying | `<n> pending — retrying (last: …)`, notify is deliberately **silent** | Backoff is 60 s doubling to a 3600 s cap and **never gives up**. Nothing auto-recovers a `transient` row (only `auth` is probed), so once you have fixed the cause use `herdr-factory --repo <r> retry-now [KEY]` — or `s` on the TUI board — instead of waiting out the curve |
 | Dropped at teardown | `<KEY>: N evidence upload(s) dropped at teardown — bytes never reached S3 (likely SSO was down through merge)` | Unrecoverable; the worktree is gone. Fix creds before the next run |
 | Worktree removed first | intent failed with `evidence dir gone (torn down before publish)` | Same |
 | No files | `evidence-upload: no files in the evidence dir — nothing to publish` | The capture step wrote nothing; see the capture prompt/skill |
@@ -772,7 +772,8 @@ Prefer the supported surfaces — they take the right locks and record events. A
 - `DELETE FROM locks WHERE name = 'capture' AND expires_at <= unixepoch();` — an already-expired
   row. Prefer `herdr-factory capture-lock release capture <owner>`.
 - `UPDATE intents SET next_attempt_at = unixepoch() WHERE id = ?;` — exactly what
-  `POST /repos/<r>/intents/<id>/retry` does. Prefer the endpoint.
+  `POST /repos/<r>/intents/<id>/retry` does (and `retry-now` does in bulk, plus the flush). Prefer
+  the endpoint or `retry-now`.
 - `UPDATE work_items SET status = 'todo' WHERE …;` — the internal ledger is a best-effort label
   (`local_markdown` / `sentry` only), any→any by design.
 - `SELECT`s, `PRAGMA integrity_check`, `PRAGMA foreign_key_check`.
@@ -848,20 +849,30 @@ world" section (attempt count, next retry time, the credential fix for an auth-c
 Retrying:
 
 ```sh
-curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/retry            # skip the backoff
+herdr-factory --repo <r> retry-now [KEY]                              # ALL backed-off rows due now + flush
+curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/retry            # skip the backoff, one row
 curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/fulfil \
      -H 'content-type: application/json' -d '{"result":{}}'            # resolve an external_wait
 curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/recover \
      -H 'content-type: application/json' -d '{"causeScope":"publisher:s3"}'
 ```
 
-- `retry` only touches `status='pending'` rows — a `failed`/`abandoned` row **cannot** be retried
-  this way; the engine re-opens it on the next natural trigger.
+- `retry-now` (`POST /repos/<r>/retry-now`, body `{}` or `{"key":"<KEY>"}`; `s` on the TUI board) is the
+  blunt instrument and usually the right one: every backed-off `pending` row in the repo — or one run's —
+  becomes due now, then Phase 0 is flushed **under the repo tick lock** so the rows land on that call
+  (`flushed: false` in the answer means a tick already held the lock and will deliver them). It reports
+  `requeued`, counting only rows that were actually backed off, so `0` means the delay is **not** a
+  backoff. `attempts` is not reset — a still-broken cause backs off to where it was rather than
+  restarting the curve on each press. It changes nothing about any run: no phase, no clocks.
+- `retry`/`retry-now` only touch `status='pending'` rows — a `failed`/`abandoned` row **cannot** be
+  retried this way; the engine re-opens it on the next natural trigger. `waiting` rows (external
+  triggers) are untouched too.
 - **AWS creds recovery path**: refresh the credentials, then either wait (the publish kind's
-  pre-pass probes liveness and re-queues automatically) or force it with
+  pre-pass probes liveness and re-queues automatically) or force it with `retry-now` /
   `intents/recover {"causeScope":"publisher:s3"}`. Cause strings are `source:<sourceName>` and
-  `publisher:s3|local|command`. Note `resume` does **not** make a backed-off upload due now — no
-  shipped kind opts into that.
+  `publisher:s3|local|command`. Note `resume` does **not** make a backed-off upload due now unless the
+  kind opts in (`refundOnResume`) — and no shipped kind does; `retry-now` is the tool for that, and it
+  works on a healthy, unparked run, which `resume` refuses.
 - A source-auth recovery re-queues that source's held write-backs automatically the moment any call
   to it succeeds.
 - **Making a credential helper visible to the server.** A dedicated profile whose ONLY credential
@@ -888,11 +899,12 @@ curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/recover \
 |---|---|---|
 | 1 | `herdr-factory reload` | Re-reads every repo's config into the running server. No run is touched. Can refuse a repo (read `failures[]`) |
 | 2 | `herdr-factory --repo <r> tick` | Forces one reconcile pass now (via the server if up, else in-process under the tick lock). Level-triggered: it can only do what the next tick would have done anyway |
-| 3 | `herdr-factory --repo <r> step-done <KEY> <step>` | Records the step complete, exactly as the agent would. Validated against the belt, the active step, and the `--pass` stamp. Un-parks a `rescue: terminal-signal` watchdog park. **Only use it if the work really is finished** |
-| 4 | `herdr-factory --repo <r> resume <KEY>` | Un-parks an `attention` run back to `running`/`reviewing`/`claiming`/`waiting_for_human`: re-bases the step's watch clocks, refunds resume-scoped counters (capture, layout respawns, and — on a `bounce_limit` park — the bounce budget belt-wide), clears `lastThreadSig`/`resolverActive` for a PR watch, and nudges an idle pane to continue. Does **not** clear `run_steps.done`. Refuses while the belt is missing |
-| 5 | `POST /repos/<r>/intents/<id>/retry` | Makes one backed-off ledger row due now. Touches only that row's schedule |
-| 6 | `herdr-factory restart` | Graceful `POST /shutdown` + SIGTERM, SIGKILL only after 18 s (outlasting the server's 15 s in-flight-tick drain), then re-spawn. In-flight runs survive; their agents keep working; locks the dead process held expire. This is the fix for a wedged tick |
-| 7 | `herdr-factory --repo <r> teardown <KEY>` | **Destructive.** Fires the terminal write-back, then removes the herdr worktree, closes the workspace, `rm -rf`s the worktree path and **deletes the branch (`git branch -D`)**. Any uncommitted or unpushed work in that worktree is gone, and pending evidence uploads are abandoned (logged as `N evidence upload(s) dropped at teardown`). The run ends with an outcome; re-claiming the item starts a fresh run on a fresh branch |
+| 3 | `herdr-factory --repo <r> retry-now [KEY]` | Makes every backed-off `pending` ledger row in the repo (or one run's) due now, then flushes Phase 0 under the tick lock. Touches only those rows' schedules — no phase, no clocks, no run. The right move when you have already fixed a cause the engine can't probe (anything not `auth`-classified). `s` on the TUI board |
+| 4 | `herdr-factory --repo <r> step-done <KEY> <step>` | Records the step complete, exactly as the agent would. Validated against the belt, the active step, and the `--pass` stamp. Un-parks a `rescue: terminal-signal` watchdog park. **Only use it if the work really is finished** |
+| 5 | `herdr-factory --repo <r> resume <KEY>` | Un-parks an `attention` run back to `running`/`reviewing`/`claiming`/`waiting_for_human`: re-bases the step's watch clocks, refunds resume-scoped counters (capture, layout respawns, and — on a `bounce_limit` park — the bounce budget belt-wide), clears `lastThreadSig`/`resolverActive` for a PR watch, and nudges an idle pane to continue. Does **not** clear `run_steps.done`. Refuses while the belt is missing |
+| 6 | `POST /repos/<r>/intents/<id>/retry` | Makes ONE backed-off ledger row due now (no flush). Touches only that row's schedule |
+| 7 | `herdr-factory restart` | Graceful `POST /shutdown` + SIGTERM, SIGKILL only after 18 s (outlasting the server's 15 s in-flight-tick drain), then re-spawn. In-flight runs survive; their agents keep working; locks the dead process held expire. This is the fix for a wedged tick |
+| 8 | `herdr-factory --repo <r> teardown <KEY>` | **Destructive.** Fires the terminal write-back, then removes the herdr worktree, closes the workspace, `rm -rf`s the worktree path and **deletes the branch (`git branch -D`)**. Any uncommitted or unpushed work in that worktree is gone, and pending evidence uploads are abandoned (logged as `N evidence upload(s) dropped at teardown`). The run ends with an outcome; re-claiming the item starts a fresh run on a fresh branch |
 
 Only `teardown` destroys anything. `belt apply` (the TUI belt rename/delete flow —
 [install-and-operate.md](./install-and-operate.md)) can also purge runs and clean worktrees — treat it

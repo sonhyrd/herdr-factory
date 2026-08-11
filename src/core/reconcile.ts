@@ -260,6 +260,21 @@ export async function flushTransitionOutbox(deps: Deps): Promise<void> {
   return flushOutbox(deps, transitionOutboxFlow(deps));
 }
 
+/** Phase 0 as a callable unit: one flush pass over every registered durable-intent outbox, isolating
+ *  a failing flow so it can't starve the others. The tick's own Phase 0, and also what the operator
+ *  due-now paths (`retry-now`) run straight after re-queueing — the point of dropping the backoff is
+ *  that the rows land now, not on the next tick. LOCK-FREE by the OutboxFlow contract, but callers
+ *  outside the tick must still hold the repo tick lock so two passes never walk the same rows. */
+export async function flushDurableIntents(deps: Deps): Promise<void> {
+  for (const flow of outboxFlows(deps)) {
+    try {
+      await flushOutbox(deps, flow);
+    } catch (e) {
+      deps.log("error", `${flow.name} flush failed: ${err(e)}`);
+    }
+  }
+}
+
 /**
  * Acquire lock `key`, run `fn` under it with a keep-alive heartbeat, then release. Returns false
  * (fn not run) when the lock is already held.
@@ -420,13 +435,7 @@ async function reconcileRepoImpl(deps: Deps): Promise<void> {
   // Phase 0 — flush every registered durable-intent outbox (before anything else, so intents
   // converge even at capacity and for already-ended runs): source status write-backs, then
   // evidence uploads. One failing flow must not starve the others.
-  for (const flow of outboxFlows(deps)) {
-    try {
-      await flushOutbox(deps, flow);
-    } catch (e) {
-      deps.log("error", `${flow.name} flush failed: ${err(e)}`);
-    }
-  }
+  await flushDurableIntents(deps);
 
   // Phase A — advance everything in flight, in parallel with bounded concurrency (most of a
   // run's reconcile is subprocess/network wait, so the wall-clock of a pass stops growing

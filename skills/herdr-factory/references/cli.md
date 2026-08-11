@@ -58,6 +58,7 @@ this command needs a repo: herdr-factory --repo <name> <command>
 | What happened to this item? | `herdr-factory --repo <r> timeline <KEY>` |
 | Make it run now | `herdr-factory --repo <r> tick` (one pass) or `--repo <r> run --follow` (foreground, streaming) |
 | Un-park an `attention` run | `herdr-factory --repo <r> resume <KEY>` |
+| I fixed the cause — stop waiting out the backoff | `herdr-factory --repo <r> retry-now [KEY]` (repo-wide with no key) |
 | Start work on one item by hand | `herdr-factory --repo <r> claim <KEY> --belt <belt>` |
 | Abandon a run + its worktree | `herdr-factory --repo <r> teardown <KEY>` |
 | Scaffold a config from nothing | `herdr-factory init` from inside the checkout ([setup-interview.md](./setup-interview.md)) |
@@ -103,13 +104,23 @@ Notes:
 | `claim <key> [--belt <name>]` | yes | server-first | `<key>: claimed` |
 | `teardown <key> [--source <name>]` | yes | server-first | `<key>: torn down` |
 | `resume <key> [--source <name>]` | yes | server-first | `<key>: resumed -> <phase>`, or `<key>: no active run` / `<key>: run busy — retry the resume` via the server — the in-process fallback appends ` in a moment` (exit 0 either way) |
+| `retry-now [key] [--source <name>]` | yes | server-first | `<repo\|key>: N backed-off retries made due now and flushed` · `… (a tick is mid-pass — it will deliver them)` when the tick lock was held · `<repo\|key>: no backed-off retries were waiting` (nothing was stuck — the delay is elsewhere) · `<key>: no active run` |
 | `watch` | yes | in-process, resident | `[legacy/dev]` single-repo loop; all output goes to the **logger** (stderr + the log file), nothing to stdout. The server replaces it |
 
 **Trap:** `claim` prints `<key>: claimed` and `teardown` prints `<key>: torn down` **even when nothing happened** — an already-active run or a missing run only logs a WARN to stderr and still exits 0. Never treat their stdout as confirmation; check `status`/`timeline`.
 
 `claim` errors (exit 1): `unknown belt "<b>"; configured: <list>` · `multiple belts configured — pass --belt <name> (one of: …)` · `belt "<b>" references unconfigured work source "<s>"` · whatever the source's lookup throws (e.g. `HTTP 404: https://api.github.com/repos/<o>/<n>/issues/999: …`).
 
-`teardown`/`resume` error (exit 1): `<key>: active in multiple sources (<s1>, <s2>) — pass --source <name>`.
+`teardown`/`resume`/`retry-now` error (exit 1): `<key>: active in multiple sources (<s1>, <s2>) — pass --source <name>`.
+
+`retry-now` is the deliver-lane counterpart of `resume`, and the two do not overlap: `resume` moves a
+parked run's `phase` and refuses anything not in `attention`; `retry-now` touches only the intent
+ledger's own rows — every **backed-off** pending intent in the repo (or one run's, with a key) becomes
+due now, then Phase 0 is flushed under the repo tick lock so they land on this call. `attempts` is not
+reset (a still-broken cause backs off to where it was, not to the start of the curve), and rows that
+were already due are not counted, so `no backed-off retries were waiting` is a real diagnostic. Reach
+for it after fixing a cause the engine cannot probe: AWS creds classified `auth` self-heal on the next
+tick, but a timeout, an unknown SDK error, or a source that was briefly 500ing do not.
 
 ### Agent signals
 
@@ -205,7 +216,7 @@ Step semantics (what a bounce rewinds, what a cap does) live in [belts-and-steps
 
 ## 5. Server routing and the fallback contract
 
-- `server-first` commands (`tick`, `claim`, `teardown`, `resume`, `step-done`, `ask-human`, `bounce`, `capture-attempt`) POST to `127.0.0.1:<port>` with a 10-minute timeout (they do real work).
+- `server-first` commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `step-done`, `ask-human`, `bounce`, `capture-attempt`) POST to `127.0.0.1:<port>` with a 10-minute timeout (they do real work).
 - The local fallback fires **only** when there is no server to reach: no `<stateRoot>/server.json`, connection refused, or timeout. A server we *reached* that answers non-2xx propagates its error and exits 1 — there is no silent fallback.
 - The single most useful "my CLI and my server disagree" diagnostic (HTTP 404):
   ```
@@ -422,6 +433,7 @@ Base URL `http://127.0.0.1:<HERDR_FACTORY_PORT|8765>`. OpenAPI document at **`/d
 | `GET /repos/{repo}/obligations?key=<KEY>[&source=]` | **"why is this run waiting and what would move it"**: the run's phase/step/attention reason, pending transitions, pending evidence uploads, pending signal, human question state, ledger rows, plus the armed guards/engine watches with their rescue and facts |
 | `GET /repos/{repo}/intents?kind=&status=&key=` | the durable intent ledger rows behind a stuck handoff |
 | `POST /repos/{repo}/intents/{id}/retry` · `/fulfil` · `POST /repos/{repo}/intents/recover` | operator nudges on a wedged ledger row |
+| `POST /repos/{repo}/retry-now` (body `{}` or `{"key","source"}`) | the bulk form: every backed-off pending row in the repo (or one run's) due now + a Phase-0 flush under the tick lock. Answers `{ok, requeued, flushed}` |
 | `GET /repos/{repo}/status` · `/runs` · `/eligible` · `/timeline?key=` | the JSON forms of the read commands (the TUI's surface) |
 | `POST /repos/{repo}/belt-apply` · `POST /shutdown` | apply a belt change · graceful stop |
 | `GET /evidence/*` | what the `local` evidence publisher serves |

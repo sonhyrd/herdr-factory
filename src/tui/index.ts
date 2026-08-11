@@ -383,7 +383,11 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     if (idx === 2) {
       return new StyledText([fg(theme.text.tertiary)(" "), ...keys([["scroll", "↑↓"], ["re-run", "r"], ["deep check", "d"]]), ...tail]);
     }
-    return new StyledText([fg(theme.text.tertiary)(" "), ...keys([["move", "↑↓"], ["column", "←→"], ["timeline", "↵"], ["tick", "t"], ["claim", "c"], ["teardown", "x"], ["detail", "d"], ["refresh", "r"]]), ...tail]);
+    return new StyledText([
+      fg(theme.text.tertiary)(" "),
+      ...keys([["move", "↑↓"], ["column", "←→"], ["timeline", "↵"], ["tick", "t"], ["claim", "c"], ["resume/retry", "s"], ["teardown", "x"], ["detail", "d"], ["refresh", "r"]]),
+      ...tail,
+    ]);
   }
 
   /** Top of the hierarchy: focus the tab bar. From here numbers enter a section, ←→/Tab switch. */

@@ -63,6 +63,11 @@ const CaptureAttemptResponse = z
   .object({ ok: z.boolean(), attempts: z.number().optional(), escalated: z.boolean().optional(), message: z.string().optional() })
   .openapi("CaptureAttempt");
 const ResumeResponse = z.object({ ok: z.boolean(), phase: z.string().optional(), message: z.string().optional() }).openapi("Resume");
+// `requeued` counts the rows that were actually backed off (0 = nothing was waiting). `flushed` is
+// false when a tick already held the repo lock — the rows are due, that pass delivers them.
+const RetryNowResponse = z
+  .object({ ok: z.boolean(), requeued: z.number(), flushed: z.boolean(), message: z.string().optional() })
+  .openapi("RetryNow");
 // Belt rename/delete cleanup. `ok` is false when a delete was blocked by in-flight work (`blocked`)
 // or the repo failed to reload (`failures`); the caller (TUI) then reverts the config file. Counts
 // report what was applied when it succeeded.
@@ -194,6 +199,10 @@ export const CaptureAttemptBody = z.object({ key: z.string(), step: z.string(), 
 export const ClaimBody = z.object({ key: z.string(), belt: z.string().optional() }).openapi("ClaimBody");
 export const TeardownBody = z.object({ key: z.string(), source: z.string().optional() }).openapi("TeardownBody");
 export const ResumeBody = z.object({ key: z.string(), source: z.string().optional() }).openapi("ResumeBody");
+// Operator due-now in bulk. Everything is optional: no `key` (or no body at all) means the whole
+// repo — the shape of the cause being fixed (an expired `aws sso login`, a source that was down) is
+// usually repo-wide, not one run's.
+export const RetryNowBody = z.object({ key: z.string().optional(), source: z.string().optional() }).openapi("RetryNowBody");
 // Belt-set change to apply against a config whose file the caller has ALREADY written: migrate the
 // renamed belts' runs, purge the deleted belts (guarded). Computed by the caller's old→new belt diff.
 export const BeltApplyBody = z
@@ -312,6 +321,18 @@ export const resumeRoute = createRoute({
   request: { params: RepoParam, ...jsonBody(ResumeBody) },
   responses: {
     200: { description: "Resume result", content: { "application/json": { schema: ResumeResponse } } },
+    ...repoErrors,
+  },
+});
+
+export const retryNowRoute = createRoute({
+  method: "post",
+  path: "/repos/{repo}/retry-now",
+  tags: ["repo"],
+  summary: "Operator due-now in bulk: drop the backoff on the repo's (or one run's) pending intents and flush them",
+  request: { params: RepoParam, body: { content: { "application/json": { schema: RetryNowBody } }, required: false } },
+  responses: {
+    200: { description: "Requeue + flush result", content: { "application/json": { schema: RetryNowResponse } } },
     ...repoErrors,
   },
 });

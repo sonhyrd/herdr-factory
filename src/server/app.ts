@@ -14,7 +14,7 @@ import { VERSION } from "../version.ts";
 import { withExtractedTelemetryContext } from "../telemetry/index.ts";
 import { annotateCurrentSpan, recordHttpServerDurationEffect, withHttpServerSpan } from "../telemetry/effect.ts";
 import { runEffect } from "../runtime/effect.ts";
-import { claimTicket, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLock, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
+import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLock, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { runObligations } from "../core/obligations.ts";
 import { intentKindFor } from "../intents/registry.ts";
 import { applySignal } from "../core/signals.ts";
@@ -39,6 +39,7 @@ import {
   obligationsRoute,
   reloadRoute,
   resumeRoute,
+  retryNowRoute,
   runsRoute,
   shutdownRoute,
   statusRoute,
@@ -419,6 +420,32 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     });
     if (!ran) return c.json({ ok: false, message: `${key}: run busy — retry the resume` }, 200);
     return c.json(result!, 200);
+  });
+
+  // The operator's "I fixed the cause, go now": drop the backoff on the pending intents and flush
+  // them on this request. Repo-wide by default (an expired `aws sso login` blocks every run's
+  // uploads at once, not one); `key` narrows it to a single run. Unlike resume this needs no run
+  // lock and no phase — it only touches the deliver lane's own rows, which is why it works for a
+  // perfectly healthy run whose background upload is the only thing stuck.
+  app.openapi(retryNowRoute, async (c) => {
+    const { repo } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const rt = ctx.getRepo(repo);
+    if (!rt) return c.json({ error: notConfigured(repo) }, 404);
+    let runId: number | undefined;
+    if (body?.key) {
+      const run = resolveActiveRun(rt.deps, body.key, body.source);
+      if (!run) return c.json({ ok: false, requeued: 0, flushed: false, message: `${body.key}: no active run` }, 200);
+      runId = run.id;
+    }
+    const requeued = rt.deps.store.retryIntentsNow(repo, { runId });
+    // Deliver on the spot — waiting for the next tick is the very latency this route exists to skip.
+    // The flush is lock-free by the OutboxFlow contract but must not walk the same rows as a tick's
+    // own Phase 0, so it takes the repo tick lock; when a tick already holds it the rows are due
+    // anyway and that pass picks them up (`flushed: false` says so).
+    const flushed = await withTickLock(rt.deps, () => flushDurableIntents(rt.deps));
+    rt.deps.log("info", `retry-now${runId != null ? ` (${body!.key})` : ""}: ${requeued} backed-off intent(s) made due${flushed ? " and flushed" : " — a tick is mid-pass"}`);
+    return c.json({ ok: true, requeued, flushed }, 200);
   });
 
   app.openapi(teardownRoute, async (c) => {

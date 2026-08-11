@@ -1148,6 +1148,7 @@ herdr-factory --repo <name> run [--follow]                          # run the fa
 herdr-factory --repo <name> claim <KEY> [--belt <name>]
 herdr-factory --repo <name> teardown <KEY> [--source <name>]
 herdr-factory --repo <name> resume <KEY> [--source <name>]          # un-park an `attention` run
+herdr-factory --repo <name> retry-now [KEY] [--source <name>]       # you fixed the cause: stop waiting out the backoff, retry now
 herdr-factory --repo <name> auth status                            # each source's credential presence (no network)
 
 # agent → dispatcher signals (rendered into every step prompt; you rarely type these)
@@ -1169,11 +1170,21 @@ herdr-factory schema [--stdout]
 herdr-factory doctor [--deep] [--repo <name>]
 ```
 
-The mutating/nudge commands (`tick`, `claim`, `teardown`, `resume`, `step-done`, `ask-human`,
-`bounce`) route through the running server when it's up — a warm, in-process reconcile — and fall
-back to executing directly against the DB when it isn't; reads (`status`, `eligible`, `runs`,
+The mutating/nudge commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `step-done`,
+`ask-human`, `bounce`) route through the running server when it's up — a warm, in-process reconcile —
+and fall back to executing directly against the DB when it isn't; reads (`status`, `eligible`, `runs`,
 `timeline`, `logs`, `explain`) always go straight to the DB. `--source` disambiguates a key active
 in more than one source; `claim --belt` is required only when the repo has more than one belt.
+
+`retry-now` is the way out of a **backoff you have already fixed**. The durable retries — source
+status write-backs and evidence uploads — back off 60s doubling to one attempt per
+hour, and the engine only shortens that by itself for causes it can probe (expired AWS credentials,
+which it re-tests and re-queues on the next tick). For everything else — a timeout, a source that was
+briefly down — the fix lands and the retry still sits there for up to an hour. `retry-now` makes the
+repo's backed-off retries due immediately and flushes them on the spot; pass a `KEY` to scope it to
+one run. It reports how many were actually waiting, so `0` tells you the delay is somewhere else.
+Nothing else about a run changes — which is why it is the right tool for a perfectly healthy run
+whose only stuck thing is a background upload, where `resume` (an `attention`-only un-park) refuses.
 
 `explain <KEY>` answers "why does this run look stuck?" in plain language: the run's current story
 (what it waits on, which budget/stall/layout clock is armed and when it fires), every background
@@ -1229,6 +1240,12 @@ cursor.
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
+  `s` is the "I fixed it, go now" key, and it reads the situation: on a run parked for `⚠` attention
+  it **resumes** (the CLI's [`resume`](#commands) — un-park and pick up where it left off); on any
+  other run it makes that run's **backed-off retries due now**; on a repo row it does the same
+  repo-wide, which is the shape of the usual cause — one expired `aws sso login` stalls every run's
+  evidence upload at once. It is what saves you waiting out a retry curve that has doubled its way to
+  one attempt per hour after you have already fixed the thing it is retrying against.
   Press `d` for Detail, which is contextual: on a **run** it opens the work item's full detail — the
   untruncated summary, type, source/belt, branch, live status and worker state, PR, age, a
   **"What's happening" narrative** (the same plain-language story `explain <KEY>` prints: what the
