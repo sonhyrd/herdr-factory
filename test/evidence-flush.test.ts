@@ -14,7 +14,7 @@ vi.mock("../src/clients/evidence.ts", async (orig) => {
 import { createEvidencePublisher, classifyS3Error, type EvidencePublisher } from "../src/clients/evidence.ts";
 import { flushOutbox } from "../src/core/outbox.ts";
 import { ledgerFlow } from "../src/core/ledger.ts";
-import { EVIDENCE_PUBLISH_LEASE_SECONDS } from "../src/intents/kinds/evidence-publish.ts";
+import { EVIDENCE_PUBLISH_LEASE_SECONDS, resetEvidenceProbeClock } from "../src/intents/kinds/evidence-publish.ts";
 import { MIGRATIONS, migrate } from "../src/db/migrate.ts";
 import { DatabaseSync } from "node:sqlite";
 import { openDb } from "../src/db/index.ts";
@@ -52,6 +52,7 @@ function setup() {
 // generic kernel; the module mock intercepts the kind's createEvidencePublisher import.
 describe("evidence_publish intent kind", () => {
   beforeEach(() => {
+    resetEvidenceProbeClock(); // the proactive-probe TTL clock is module-global
     publish.mockReset();
     // Default: creds still down, so the recovery-probe never re-queues unless a test opts in.
     probeLiveness.mockReset();
@@ -94,6 +95,28 @@ describe("evidence_publish intent kind", () => {
     expect(store.getIntent(job.id)!.status).toBe("delivered");
     const events = store.timeline("r", "K-EV").filter((e) => e.type === "evidence_uploaded");
     expect(events.length).toBe(1);
+  });
+
+  it("the prePass probe is PROACTIVE: an expired session is recorded on the problem ledger before any upload exists, and clears on recovery", async () => {
+    const { deps, store, run, evidenceDir, setNow } = setup();
+    // No intents at all — nothing is stuck, yet the interval probe still runs and RECORDS the
+    // expired session, so the dashboard's red light needs no failed upload and no re-check on load.
+    probeLiveness.mockResolvedValue({ auth: true, reason: "SSO session expired" });
+    await flushOutbox(deps, ledgerFlow(deps));
+    expect(probeLiveness).toHaveBeenCalled();
+    expect(store.listProblems("r")).toEqual([expect.objectContaining({ key: "publisher:s3", kind: "auth", detail: expect.stringContaining("SSO session expired") })]);
+    // Recovery: a stuck row forces the probe every pass — creds back ⇒ the record clears, the row
+    // requeues due-now, and the same pass delivers it.
+    const job = enqueueIntent(store, run.id, evidenceDir, "p/REC");
+    setNow(2000 + EVIDENCE_PUBLISH_LEASE_SECONDS + 1);
+    publish.mockRejectedValueOnce(authErr());
+    await flushOutbox(deps, ledgerFlow(deps)); // the failed attempt marks it auth-stuck (and re-reports)
+    expect(store.listProblems("r").length).toBe(1);
+    probeLiveness.mockResolvedValue({ auth: false });
+    publish.mockResolvedValueOnce({ files: ["shot.png"], urls: ["u"] });
+    await flushOutbox(deps, ledgerFlow(deps)); // stuck ⇒ probe runs ⇒ clear + requeue ⇒ delivered
+    expect(store.getIntent(job.id)!.status).toBe("delivered");
+    expect(store.listProblems("r")).toEqual([]);
   });
 
   it("auth failure → retry + SSO notify; creds recovery prePass requeues due-now and it lands", async () => {

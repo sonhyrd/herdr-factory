@@ -54,6 +54,9 @@ describe("dashboard server payloads", () => {
           authStuckIntents: () => false,
           listIntents: () => [],
           suspendedIntents: () => [],
+          listProblems: () => [],
+          reportProblem: () => {},
+          clearProblem: () => false,
         },
         herdr: { paneState },
         resolveSource: (name: string) => (name === "paused-jira" ? pausedSource : source),
@@ -100,6 +103,51 @@ describe("dashboard server payloads", () => {
     expect(pausedEligible).not.toHaveBeenCalled();
   });
 
+  it("recorded problems (the v37 problem ledger) light the repo on the QUICK path — nothing is re-checked on load", async () => {
+    const authStatus = vi.fn();
+    const runtime = {
+      ticking: false,
+      deps: {
+        config: {
+          repoName: "demo",
+          limits: { maxActiveWorkspaces: 2 },
+          sources: [{ name: "jira", type: "jira" }],
+          belts: [],
+          evidence: { publisher: "s3", profile: "dev" },
+        },
+        belts: [],
+        store: {
+          activeRuns: () => [],
+          listRuns: () => [],
+          runStepsFor: () => [],
+          getSourceAuth: () => undefined,
+          authStuckIntents: () => false,
+          listIntents: () => [],
+          suspendedIntents: () => [],
+          // What the machinery recorded when it observed the failures — the quick path only reads.
+          listProblems: () => [
+            { repo: "demo", key: "publisher:s3", kind: "auth", detail: "evidence uploads blocked on AWS creds (expired) — run `aws sso login`", createdAt: 1, updatedAt: 1 },
+            { repo: "demo", key: "source:jira", kind: "auth", detail: "jira: JIRA_API_TOKEN missing", createdAt: 1, updatedAt: 1 },
+          ],
+        },
+        herdr: {},
+        resolveSource: (name: string) => (name === "jira" ? { name: "jira", type: "jira", client: { authStatus } } : undefined),
+        now: () => 1,
+        log: vi.fn(),
+      },
+    } as unknown as RepoRuntime;
+    const context = { getRepo: (name: string) => (name === "demo" ? runtime : undefined) } as unknown as ServerContext;
+    const app = createApp(context);
+    const res = await app.request("/repos/demo/status?quick=1");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as StatusBody;
+    expect(body.problems).toEqual([
+      { kind: "auth", detail: expect.stringContaining("evidence uploads blocked on AWS creds") },
+      { kind: "auth", detail: "jira: JIRA_API_TOKEN missing" },
+    ]);
+    expect(authStatus).not.toHaveBeenCalled(); // read-only: the quick path never probes
+  });
+
   it("a run parked for attention surfaces as a repo-level problem (the dashboard's red repo light)", async () => {
     const parked = {
       id: 2,
@@ -127,6 +175,7 @@ describe("dashboard server payloads", () => {
           authStuckIntents: () => false,
           listIntents: () => [],
           suspendedIntents: () => [],
+          listProblems: () => [],
         },
         herdr: {},
         resolveSource: () => undefined,

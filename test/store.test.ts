@@ -493,3 +493,29 @@ describe("Store — eventsSince / maxEventId (the foreground `run` feed)", () =>
     expect(store.eventsSince("r", 0)).toHaveLength(1);
   });
 });
+
+describe("Store — the problem ledger (v37): report / clear / list", () => {
+  it("report upserts on (repo, key) keeping created_at; clear deletes and reports whether anything was open", () => {
+    const { store, tick } = makeStore();
+    store.reportProblem("r", "source:jira", "auth", "jira: token rejected");
+    tick(60);
+    // A re-report refreshes detail + updated_at but keeps the first-observed time.
+    store.reportProblem("r", "source:jira", "auth", "jira: still rejected");
+    const [p] = store.listProblems("r");
+    expect(p).toMatchObject({ key: "source:jira", kind: "auth", detail: "jira: still rejected", createdAt: 1000, updatedAt: 1060 });
+    expect(store.listProblems("r").length).toBe(1); // upsert, not a second row
+    // Repo-scoped: another repo's ledger is untouched.
+    expect(store.listProblems("other")).toEqual([]);
+    expect(store.clearProblem("r", "source:jira")).toBe(true);
+    expect(store.clearProblem("r", "source:jira")).toBe(false); // already clear — idempotent
+    expect(store.listProblems("r")).toEqual([]);
+  });
+
+  it("lists oldest-first — the dashboard shows the longest-standing problem first", () => {
+    const { store, tick } = makeStore();
+    store.reportProblem("r", "publisher:s3", "auth", "sso expired");
+    tick(10);
+    store.reportProblem("r", "source:jira", "auth", "token missing");
+    expect(store.listProblems("r").map((p) => p.key)).toEqual(["publisher:s3", "source:jira"]);
+  });
+});

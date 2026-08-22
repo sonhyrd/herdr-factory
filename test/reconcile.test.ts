@@ -2715,7 +2715,7 @@ describe("work-source auth gate (unauthenticated → pause + auto-resume, never 
   });
 
   it("write-back: an auth failure DEFERS the transition + notifies (intent stays queued, never lost or escalated)", async () => {
-    const { deps, store, state, calls } = build();
+    const { deps, store, state, calls, setNow } = build();
     const run = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-1", branch: "b" });
     const intent = store.enqueueTransition({ runId: run.id, repo: "demo", workSource: "jira", ticketKey: "K-1", toState: "in_review" });
     state.authFail = true;
@@ -2724,6 +2724,27 @@ describe("work-source auth gate (unauthenticated → pause + auto-resume, never 
     expect(store.getTransitionIntent(intent.id)?.deliveredAt).toBeNull(); // still queued for retry
     expect(getAuthFailure("demo", "jira")).toBeDefined();
     expect(calls.notify).toBe(1);
+    // The gate RECORDED the problem on the ledger (the dashboard reads it — never re-checks)…
+    expect(store.listProblems("demo")).toEqual([expect.objectContaining({ key: "source:jira", kind: "auth" })]);
+    // …and the first successful call clears it again (past the 30s retry interval).
+    state.authFail = false;
+    setNow(1000 + 31);
+    await flushTransitionOutbox(deps);
+    expect(store.listProblems("demo")).toEqual([]);
+  });
+
+  it("a persisted problem row outlives the in-memory gate: recovery clears it even after a restart", async () => {
+    const { deps, store, state, setNow } = build();
+    const run = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-2", branch: "b" });
+    store.enqueueTransition({ runId: run.id, repo: "demo", workSource: "jira", ticketKey: "K-2", toState: "in_review" });
+    state.authFail = true;
+    await flushTransitionOutbox(deps);
+    expect(store.listProblems("demo").length).toBe(1);
+    resetAuthGate(); // "restart": the in-memory gate forgets, the DB row survives
+    state.authFail = false;
+    setNow(1000 + 31); // past the retry interval, so the held write-back is due
+    await flushTransitionOutbox(deps);
+    expect(store.listProblems("demo")).toEqual([]); // the unconditional clear, not the gate, removed it
   });
 });
 

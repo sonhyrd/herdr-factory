@@ -25,6 +25,20 @@ import { createEvidencePublisher, credsRefreshHint } from "../../clients/evidenc
 /** Enqueue lease seconds — see the module doc. Exported for the CLI's enqueue. */
 export const EVIDENCE_PUBLISH_LEASE_SECONDS = 300;
 
+/** How often the prePass probes backend creds when nothing is stuck (seconds). Proactive: an
+ *  expired SSO session is RECORDED on the problem ledger within this window — before any upload
+ *  fails and without the dashboard having to check anything. A stuck row still probes every pass
+ *  (recovery must not wait out this interval). */
+export const EVIDENCE_PROBE_INTERVAL_SECONDS = 300;
+/** Last proactive probe per repo, epoch seconds. In-memory on purpose: a restart just probes once
+ *  more, and the problem ledger row (the durable record) survives either way. */
+const lastProbeAt = new Map<string, number>();
+
+/** Test seam: forget the probe clock (the Map is process-global — mirrors resetAuthGate). */
+export function resetEvidenceProbeClock(): void {
+  lastProbeAt.clear();
+}
+
 export interface EvidencePublishPayload {
   keyPrefix: string;
   evidenceDir: string; // absolute worktree path; gone ⇒ terminal
@@ -43,16 +57,35 @@ export const evidencePublishKind: IntentKindDef = {
   kind: "evidence_publish",
   ordering: "latest-wins",
 
-  // SSO auto-resume (S3 only — `local`/`command` expose no probeLiveness, and only S3 classifies
-  // `auth`, so nothing is ever auth-stuck for them). Probe once, gated on a stuck row; on recovery
-  // make every auth-stuck row due now so THIS pass uploads it. A probe error = still down.
+  // The creds probe (S3 only — `local`/`command` expose no probeLiveness, and only S3 classifies
+  // `auth`, so nothing is ever auth-stuck for them). Two jobs on one probe:
+  //  - PROACTIVE detection, every EVIDENCE_PROBE_INTERVAL_SECONDS: an expired session is reported
+  //    on the problem ledger (the dashboard's red repo light) before any upload fails;
+  //  - SSO auto-resume, every pass while a row is auth-stuck: on recovery, clear the problem and
+  //    make every auth-stuck row due now so THIS pass uploads it.
+  // A probe THROW is unknown (a network blip is not "creds down") — change nothing, try later.
   prePass: async (deps) => {
     const p = publisherOf(deps);
     if (!p?.publisher.probeLiveness) return;
-    if (!deps.store.authStuckIntents(deps.config.repoName, "evidence_publish")) return;
-    const probe = await p.publisher.probeLiveness().catch(() => ({ auth: true, reason: "probe failed" }));
-    if (!probe.auth) {
-      const requeued = deps.store.requeueIntentsByCause(deps.config.repoName, `publisher:${p.ev.publisher}`, "auth");
+    const repo = deps.config.repoName;
+    const stuck = deps.store.authStuckIntents(repo, "evidence_publish");
+    if (!stuck && deps.now() - (lastProbeAt.get(repo) ?? 0) < EVIDENCE_PROBE_INTERVAL_SECONDS) return;
+    lastProbeAt.set(repo, deps.now());
+    let probe: { auth: boolean; reason: string };
+    try {
+      probe = await p.publisher.probeLiveness();
+    } catch {
+      return;
+    }
+    const cause = `publisher:${p.ev.publisher}`;
+    if (probe.auth) {
+      const profile = p.ev.publisher === "s3" ? p.ev.profile : undefined;
+      deps.store.reportProblem(repo, cause, "auth", `evidence uploads blocked on AWS creds (${probe.reason}) — ${credsRefreshHint(profile)}`);
+      return;
+    }
+    if (deps.store.clearProblem(repo, cause)) deps.log("info", "evidence publish: creds recovered — problem cleared");
+    if (stuck) {
+      const requeued = deps.store.requeueIntentsByCause(repo, cause, "auth");
       if (requeued > 0) deps.log("info", `evidence publish: creds recovered — re-queued ${requeued} stuck upload(s) for immediate retry`);
     }
   },

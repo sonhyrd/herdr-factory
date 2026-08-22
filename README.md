@@ -1250,7 +1250,10 @@ cursor.
   AWS creds, a source that cannot authenticate — carries a **red ⚠ icon and count** on its row, so a
   broken repo is visible at a glance; highlight the row to read the full detail on the action line,
   or press `d` for the detail view, where everything unhealthy (the problems, a failed auth probe, a
-  down belt) renders **in red**.
+  down belt) renders **in red**. Problems are **recorded, not polled**: the engine writes a problem
+  the moment its own machinery observes one (a login failure, an expired AWS session caught by the
+  periodic creds probe, a blocked delivery) and clears it the moment the cause recovers — the
+  dashboard just reads the record.
   `s` is the "I fixed it, go now" key, and it reads the situation: on a run parked for `⚠` attention
   it **resumes** (the CLI's [`resume`](#commands) — un-park and pick up where it left off); on any
   other run it **clears that run's suspended background jobs** and makes its waiting retries due now;

@@ -840,6 +840,27 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE INDEX idx_intents_suspended ON intents(repo) WHERE suspended_at IS NOT NULL AND status = 'pending';
     `,
   },
+  {
+    version: 37,
+    // The PROBLEM LEDGER: one generic table of currently-open mechanical problems per repo,
+    // recorded BY the machinery that observes them (the auth gate, a failing intent delivery, the
+    // evidence creds probe) and cleared by the same machinery on recovery. The dashboard's red
+    // repo light reads this — it never has to re-check anything on load. `key` is the problem's
+    // stable identity (upsert target — 'source:<name>', 'publisher:<type>', anything a future
+    // reporter chooses); `kind` the coarse class for grouping; `detail` the human text with the
+    // fix hint. A row present = the problem is open NOW; history lives in events, not here.
+    sql: `
+      CREATE TABLE problems (
+        repo TEXT NOT NULL,
+        key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo, key)
+      );
+    `,
+  },
 ];
 
 /** Apply pending migrations in a transaction. Idempotent. */

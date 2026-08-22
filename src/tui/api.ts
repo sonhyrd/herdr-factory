@@ -72,7 +72,9 @@ export interface RepoStatus {
   finished: { id: number; ticketKey: string; phase: string; outcome: string | null; prNumber: number | null }[];
   /** Repo-level problems for the red per-repo light: runs parked for attention, suspended jobs
    *  (retries stopped after the 10-attempt cap), auth-stuck uploads (AWS creds), live source auth
-   *  failures. Present on the quick path too (cheap reads, no probes). */
+   *  failures, and cached session-probe verdicts (an expired AWS SSO session lights the row within
+   *  a few polls — the server refreshes the probes in the background, ~90s TTL). Present on the
+   *  quick path too; the request never waits on a probe. */
   problems?: { kind: string; detail: string }[];
   /** Evidence-upload credential (AWS SSO) health for the dashboard light. "na" = no evidence config. */
   evidenceSso?: { state: "ok" | "down" | "na"; detail?: string };

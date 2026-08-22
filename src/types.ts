@@ -254,6 +254,24 @@ export interface WorkItem {
   updatedAt: number;
 }
 
+// --- the problem ledger (the `problems` table, v37) ---------------------------
+// One row per currently-OPEN mechanical problem, recorded by whatever machinery observed it and
+// cleared by the same machinery on recovery. The generic structure every reporter shares: the
+// dashboard reads rows, it never re-checks causes. A row's absence means "no known problem".
+
+export interface RepoProblem {
+  repo: string;
+  /** Stable identity + upsert target — the CAUSE, not the observation ('source:<name>',
+   *  'publisher:<type>'); a re-report refreshes detail, a clear deletes. */
+  key: string;
+  /** Coarse class for grouping/lights ('auth', …) — reporters choose, readers only display. */
+  kind: string;
+  /** Human text with the fix hint. */
+  detail: string;
+  createdAt: number; // first observed (preserved across re-reports)
+  updatedAt: number;
+}
+
 // --- the intent ledger (the `intents` table, v29) ----------------------------
 // One durable-intent substrate for the deliver lane: a row is an obligation the engine owes the
 // world, retried/watched until it resolves. Behavior lives in the INTENT_KINDS registry

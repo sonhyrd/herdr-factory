@@ -20,11 +20,16 @@ function err(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Apply one delivery outcome to its row (the kernel's half of the outcome contract). */
+/** Apply one delivery outcome to its row (the kernel's half of the outcome contract). The problem
+ *  ledger rides the outcomes GENERICALLY, keyed by the row's cause: an `auth`-classified retry
+ *  reports the cause as an open problem (the dashboard's red repo light — recorded here, never
+ *  re-checked on load); a delivery clears it (the cause demonstrably works again). Kind-specific
+ *  detectors (the evidence creds probe) report/clear the same cause key, so the two agree. */
 async function applyOutcome(deps: Deps, kind: IntentKindDef, row: Intent, outcome: Awaited<ReturnType<IntentKindDef["deliver"]>>): Promise<void> {
   switch (outcome.kind) {
     case "delivered":
       deps.store.markIntentDelivered(row.id);
+      if (row.causeScope) deps.store.clearProblem(row.repo, row.causeScope);
       return;
     case "reschedule":
       deps.store.rescheduleIntent(row.id, outcome.delaySeconds, outcome.state);
@@ -38,6 +43,9 @@ async function applyOutcome(deps: Deps, kind: IntentKindDef, row: Intent, outcom
       return;
     case "retry": {
       const updated = deps.store.recordIntentAttempt(row.id, outcome.error, outcome.errorClass, RETRY_INTERVAL_SECONDS);
+      if (outcome.errorClass === "auth" && row.causeScope) {
+        deps.store.reportProblem(row.repo, row.causeScope, "auth", `${row.kind.replaceAll("_", " ")} blocked on credentials: ${outcome.error}`);
+      }
       // The attempt that crossed MAX_RETRY_ATTEMPTS suspended the row (the store stamps it):
       // retries stop until an operator (`s` / retry-now) or a cause probe clears it. That is a
       // state change the operator must hear about NOW — notify unthrottled, once.

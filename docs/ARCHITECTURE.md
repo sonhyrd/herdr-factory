@@ -728,6 +728,14 @@ CREATE TABLE watch_state(                -- per-watch clocks/signatures (v34): o
                                          -- PASS bookkeeping (the layout-wait window + per-attempt
                                          -- dispatch clock), distinct from the budget watch's clock.
 
+CREATE TABLE problems(                   -- the PROBLEM LEDGER (v37): currently-OPEN mechanical
+  repo TEXT NOT NULL, key TEXT NOT NULL, -- problems, recorded by the machinery that observes them
+  kind TEXT NOT NULL, detail TEXT NOT NULL, -- (auth gate, auth-classed delivery failures, the
+  created_at INTEGER NOT NULL,           -- evidence creds probe) and cleared by the same machinery
+  updated_at INTEGER NOT NULL,           -- on recovery. `key` = the CAUSE ('source:<n>',
+  PRIMARY KEY (repo, key));              -- 'publisher:<type>'); the dashboard's red light only
+                                         -- reads rows — it never re-checks a cause on load (§7).
+
 CREATE TABLE locks(name TEXT PRIMARY KEY, owner TEXT, acquired_at INTEGER, expires_at INTEGER);
 CREATE TABLE schema_version(version INTEGER);
 ```
@@ -768,6 +776,7 @@ questions (`createHumanQuestion`/`pendingHumanQuestionForRun`/`answerHumanQuesti
 `recordHumanPollMiss`/`recordHumanPollError`), the **pending agent signals**
 (`enqueuePendingSignal` — supersedes any unconsumed intent for the run, `unconsumedPendingSignalForRun`,
 `markPendingSignalConsumed`, `getPendingSignal`),
+the **problem ledger** (`reportProblem`/`clearProblem`/`listProblems` — v37, §7),
 and the `work_items` ledger: `getWorkItem`, `listWorkItems(repo,source,status?)`,
 `setWorkItemStatus(repo,source,key,status,meta?)` (idempotent, tolerant any→any, returns false
 if already there).
@@ -818,14 +827,30 @@ retried through the run's `EvidencePublisher` (`s3`|`local`|`command`, selected 
 `evidence.publisher`) until the backend accepts it, so an AWS SSO session expiring mid-run — or any
 transient backend outage — no longer ships a PR with broken evidence links (the `evidence-upload`
 CLI publishes the URLs + attempts inline up-front, then enqueues the bytes here). The kind is
-publisher-agnostic: it drives `publisher.publish` / `publisher.classifyError`, and the SSO
-auto-resume is gated on the publisher exposing `probeLiveness` — only `s3` does, so `local`/`command`
-(no `auth` kind, never auth-stuck) skip it entirely. For `s3`, a persistent auth failure notifies the
-human to `aws sso login`; and when a row is auth-stuck the flush cheaply probes creds once (gated on a
-stuck row — the happy path never probes) and, the moment they're live again, resets every auth-stuck
-row due-now — clearing any suspension, with a fresh attempt window (`requeueIntentsByCause` on
-`publisher:<type>`, mirroring `retryTransitionsForSource`) — so the same pass uploads it: no manual
-retry, no waiting.
+publisher-agnostic: it drives `publisher.publish` / `publisher.classifyError`, and the creds probe
+is gated on the publisher exposing `probeLiveness` — only `s3` does, so `local`/`command` (no `auth`
+kind, never auth-stuck) skip it entirely. For `s3`, the prePass probe does two jobs: PROACTIVE
+detection every `EVIDENCE_PROBE_INTERVAL_SECONDS` (300) — an expired session is recorded on the
+problem ledger (below) before any upload fails, so the dashboard's red light needs no failed upload
+and no probing of its own — and the SSO auto-resume, probing every pass while a row is auth-stuck:
+the moment creds are live again it clears the problem and resets every auth-stuck row due-now —
+clearing any suspension, with a fresh attempt window (`requeueIntentsByCause` on `publisher:<type>`,
+mirroring `retryTransitionsForSource`) — so the same pass uploads it: no manual retry, no waiting.
+A probe THROW is unknown (a network blip is not "creds down"): nothing is recorded or cleared.
+
+**The problem ledger** (v37, the `problems` table) is the generic RECORD of currently-open
+mechanical problems, written by the machinery that observes them and cleared by the same machinery
+on recovery — the dashboard's red repo light (`/status.problems`) only reads it, it never re-checks
+a cause on load. One row per (repo, `key`) where `key` is the CAUSE identity (matching the intent
+`cause_scope` vocabulary: `source:<name>`, `publisher:<type>`, anything a future reporter picks);
+`reportProblem` upserts (keeping first-observed `created_at`), `clearProblem` deletes. Reporters
+today: the **auth gate** (`noteSourceAuthFailure` reports `source:<n>`; `noteSourceAuthRecovered`
+clears it UNCONDITIONALLY — the in-memory gate resets on restart, so it alone cannot be trusted to
+clear a persisted row); the **ledger kernel** (an `auth`-classified retry outcome reports the row's
+`cause_scope`, a delivery clears it); the **evidence prePass probe** (above); and the server's
+detail-view probes (`?refresh=1`), which write their fresh verdicts to the same keys so opening the
+detail syncs the row's light at once. `/status`'s `problems` array is this ledger plus two derived
+entries (runs parked for attention, suspended intents — already recorded state in their own tables).
 
 **Suspension** (v36) is the retry policy's cap: every retrying intent runs on a **flat 30s
 interval** (`RETRY_INTERVAL_SECONDS`) and, at **`MAX_RETRY_ATTEMPTS` (10) failed attempts**, stamps

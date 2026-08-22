@@ -256,6 +256,23 @@ describe("ledger kernel — outcome application, FIFO gate, deadlines, notify th
     expect(h.consumedAt).toBeNull(); // owed to the run-locked consume
   });
 
+  it("the problem ledger rides the outcomes: an auth retry RECORDS the cause, a delivery CLEARS it", async () => {
+    const { store, now } = makeStore();
+    const deps = makeDeps(store, now);
+    const row = enqueue(store, { kind: "flaky", dedupKey: "1", causeScope: "publisher:s3" });
+    let fail = true;
+    const kinds = [fakeKind("flaky", async () => (fail ? { kind: "retry", error: "sso expired", errorClass: "auth" } : { kind: "delivered" }))];
+    await flushOutbox(deps, ledgerFlow(deps, kinds));
+    // Recorded at the source, keyed by the CAUSE — the dashboard reads this, it never re-checks.
+    expect(store.listProblems("r")).toEqual([expect.objectContaining({ key: "publisher:s3", kind: "auth" })]);
+    // The cause demonstrably works again ⇒ the same machinery clears the record.
+    fail = false;
+    store.retryIntentNow(row.id);
+    await flushOutbox(deps, ledgerFlow(deps, kinds));
+    expect(store.getIntent(row.id)!.status).toBe("delivered");
+    expect(store.listProblems("r")).toEqual([]);
+  });
+
   it("FIFO ordering: a due row is blocked behind its scope's earlier, backed-off sibling", async () => {
     const { store, setNow, now } = makeStore();
     const deps = makeDeps(store, now);

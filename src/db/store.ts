@@ -9,6 +9,7 @@ import type {
   Outcome,
   PendingSignal,
   RepoEvent,
+  RepoProblem,
   Run,
   RunPatch,
   RunStep,
@@ -1554,6 +1555,44 @@ export class Store {
       .prepare("SELECT * FROM intents WHERE repo = ? AND status = 'pending' AND suspended_at IS NOT NULL ORDER BY suspended_at")
       .all(repo) as unknown as IntentRow[];
     return rows.map(toIntent);
+  }
+
+  // --- the problem ledger (v37): open mechanical problems, recorded at the source -------------
+  // The generic report/clear surface every mechanical reporter shares (the auth gate, a failing
+  // intent delivery, the evidence creds probe, any future detector): report when the problem is
+  // observed, clear when the same machinery sees it resolved. The dashboard only READS — it never
+  // re-checks a cause on load. Idempotent by design: report upserts on (repo, key) keeping the
+  // original created_at; clear deletes and returns whether anything was open.
+
+  reportProblem(repo: string, key: string, kind: string, detail: string): void {
+    const t = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO problems (repo, key, kind, detail, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo, key) DO UPDATE SET kind = excluded.kind, detail = excluded.detail, updated_at = excluded.updated_at`,
+      )
+      .run(repo, key, kind, detail.slice(0, 500), t, t);
+    telemetryEvent("store.problem.report", { repo, "problem.key": key, "problem.kind": kind });
+  }
+
+  clearProblem(repo: string, key: string): boolean {
+    const info = this.db.prepare("DELETE FROM problems WHERE repo = ? AND key = ?").run(repo, key);
+    const cleared = Number(info.changes) > 0;
+    if (cleared) telemetryEvent("store.problem.clear", { repo, "problem.key": key });
+    return cleared;
+  }
+
+  /** Every open problem for a repo, oldest first — the dashboard's red repo light. */
+  listProblems(repo: string): RepoProblem[] {
+    const rows = this.db.prepare("SELECT * FROM problems WHERE repo = ? ORDER BY created_at, key").all(repo) as {
+      repo: string;
+      key: string;
+      kind: string;
+      detail: string;
+      created_at: number;
+      updated_at: number;
+    }[];
+    return rows.map((r) => ({ repo: r.repo, key: r.key, kind: r.kind, detail: r.detail, createdAt: r.created_at, updatedAt: r.updated_at }));
   }
 
   /** Drop a run's live intents at teardown (optionally only some kinds — e.g. evidence bytes die

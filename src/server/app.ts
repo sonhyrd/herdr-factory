@@ -92,7 +92,9 @@ const ssoProbeCache = new Map<string, { at: number; auth: boolean; reason: strin
 /** Evidence-upload credential (SSO) health for the dashboard light. `down` when a cached read-only
  *  HeadBucket probe reports a creds/token failure, OR when the outbox already has an auth-stuck upload
  *  (immediate, even between probes). A transient/timeout probe or a permanent bucket/perms error is NOT
- *  "SSO down" (creds are fine — surfaced by doctor). `na` when the repo has no evidence config. */
+ *  "SSO down" (creds are fine — surfaced by doctor). `na` when the repo has no evidence config. A
+ *  FRESH probe verdict is also written to the problem ledger (the same `publisher:<type>` key the
+ *  engine's own detectors use), so opening the detail view syncs the repo row's red light at once. */
 async function evidenceSsoStatus(rt: RepoRuntime, refresh = false): Promise<{ state: "ok" | "down" | "na"; detail?: string }> {
   const cfg = rt.deps.config;
   const ev = cfg.evidence;
@@ -111,6 +113,9 @@ async function evidenceSsoStatus(rt: RepoRuntime, refresh = false): Promise<{ st
     const probe = await publisher.probeLiveness().catch(() => ({ auth: false, reason: "probe failed" }));
     cached = { at: now, auth: probe.auth, reason: probe.reason };
     ssoProbeCache.set(cfg.repoName, cached);
+    const cause = `publisher:${ev.publisher}`;
+    if (probe.auth) rt.deps.store.reportProblem(cfg.repoName, cause, "auth", `evidence uploads blocked on AWS creds (${probe.reason}) — ${credsRefreshHint(profile)}`);
+    else rt.deps.store.clearProblem(cfg.repoName, cause);
   }
   return cached.auth ? { state: "down", detail: cached.reason } : { state: "ok" };
 }
@@ -123,7 +128,10 @@ const authProbeCache = new Map<string, { at: number; state: "ok" | "unauthentica
 /** Per-source auth light for the dashboard, mirroring evidenceSso's vocabulary: "down" when the
  *  reconcile gate has recorded a live failure (reactive — catches a present-but-rejected credential)
  *  OR the source's own cheap authStatus() probe reports missing credentials (proactive); "na" for a
- *  source with no auth; else "ok". */
+ *  source with no auth; else "ok". A FRESH probe verdict is also written to the problem ledger
+ *  (same `source:<name>` key the auth gate uses), so the detail view syncs the repo row's light.
+ *  The gate's own failure short-circuits first, so a probe's "ok" (creds merely present) can never
+ *  clear a live rejected-credential problem. */
 async function sourceAuthStatus(rt: RepoRuntime, sourceName: string, refresh = false): Promise<{ state: "ok" | "down" | "na"; detail?: string; account?: string }> {
   const repo = rt.deps.config.repoName;
   // The account we authenticated as (whoami, persisted at login) — shown regardless of ok/down so a
@@ -140,6 +148,11 @@ async function sourceAuthStatus(rt: RepoRuntime, sourceName: string, refresh = f
     const probe = await src.client.authStatus().catch((): { state: "ok" | "unauthenticated" | "not_applicable"; detail?: string } => ({ state: "ok" }));
     cached = { at: now, state: probe.state, detail: probe.detail };
     authProbeCache.set(cacheKey, cached);
+    if (probe.state === "unauthenticated") {
+      rt.deps.store.reportProblem(repo, `source:${sourceName}`, "auth", `${sourceName}: ${probe.detail ?? "not authenticated"}`);
+    } else {
+      rt.deps.store.clearProblem(repo, `source:${sourceName}`);
+    }
   }
   if (cached.state === "unauthenticated") return { state: "down", detail: cached.detail, account };
   return { state: cached.state === "not_applicable" ? "na" : "ok", account };
@@ -181,10 +194,13 @@ function serveEvidenceFile(reqPath: string): Response {
   });
 }
 
-/** Repo-level problems for the dashboard's red per-repo light: runs parked for attention, suspended
- *  jobs (retries stopped after MAX_RETRY_ATTEMPTS failures), auth-stuck evidence uploads (with the
- *  creds hint), and live source auth failures. Cheap reads only — the DB and the in-memory auth
- *  gate, never a probe — so the quick status path carries them too. */
+/** Repo-level problems for the dashboard's red per-repo light — PURE READS of already-recorded
+ *  state, nothing is checked or probed on load:
+ *   - runs parked for attention and suspended jobs, derived from their own tables;
+ *   - the PROBLEM LEDGER (v37): every open mechanical problem the machinery itself recorded when
+ *     it observed it (the auth gate, an auth-classified delivery failure, the evidence creds
+ *     probe on its tick cadence) and clears when it sees the cause resolved.
+ *  So the quick status path carries the full picture at DB-read cost. */
 function repoProblems(rt: RepoRuntime, active: readonly { phase: string; ticketKey: string }[]): { kind: string; detail: string }[] {
   const cfg = rt.deps.config;
   const problems: { kind: string; detail: string }[] = [];
@@ -195,14 +211,6 @@ function repoProblems(rt: RepoRuntime, active: readonly { phase: string; ticketK
       detail: `${parked.length} run${parked.length === 1 ? "" : "s"} parked for attention (${parked.join(", ")}) — press s on the card to resume`,
     });
   }
-  for (const s of cfg.sources) {
-    const failure = getAuthFailure(cfg.repoName, s.name);
-    if (failure) problems.push({ kind: "source-auth", detail: `${s.name}: ${failure.detail}` });
-  }
-  if (rt.deps.store.authStuckIntents(cfg.repoName, "evidence_publish")) {
-    const profile = cfg.evidence?.publisher === "s3" ? cfg.evidence.profile : undefined;
-    problems.push({ kind: "aws-creds", detail: `evidence uploads blocked on AWS creds — ${credsRefreshHint(profile)}` });
-  }
   const suspended = rt.deps.store.suspendedIntents(cfg.repoName);
   if (suspended.length > 0) {
     const kinds = [...new Set(suspended.map((i) => i.kind.replaceAll("_", " ")))].join(", ");
@@ -211,11 +219,13 @@ function repoProblems(rt: RepoRuntime, active: readonly { phase: string; ticketK
       detail: `${suspended.length} job${suspended.length === 1 ? "" : "s"} suspended after ${MAX_RETRY_ATTEMPTS} failed retries (${kinds}) — press s to retry`,
     });
   }
+  for (const p of rt.deps.store.listProblems(cfg.repoName)) problems.push({ kind: p.kind, detail: p.detail });
   return problems;
 }
 
 /** The structured status payload exposed for API clients. Quick mode omits auth/AWS probes and live
- *  pane inspection for latency-sensitive dashboard refreshes. */
+ *  pane inspection for latency-sensitive dashboard refreshes — `problems` is recorded state, read,
+ *  never re-checked. */
 async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics = false) {
   const cfg = rt.deps.config;
   const active = rt.deps.store.activeRuns(cfg.repoName);

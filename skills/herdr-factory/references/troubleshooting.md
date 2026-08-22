@@ -294,7 +294,7 @@ herdr-factory --repo <r> timeline <KEY> | grep -E 'evidence_uploaded|evidence_up
 
 | Branch | Signature | Fix |
 |---|---|---|
-| AWS creds expired | `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'`; the throttled notify is also reported into the run's own pane while the run is live | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is waiting or suspended — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it now: `herdr-factory --repo <r> retry-now` (or `s` on the TUI board, or `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}`) |
+| AWS creds expired | recorded on the problem ledger within ~5 min (the prePass probe — the repo row turns red before any upload fails); `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'`; the throttled notify is also reported into the run's own pane while the run is live | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is waiting or suspended — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it now: `herdr-factory --repo <r> retry-now` (or `s` on the TUI board, or `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}`) |
 | **You logged in and it's STILL auth-stuck** | `doctor --deep` says the publisher is **writable** (a fresh process resolves creds fine) while the server keeps deferring the same row | The server can't see your credentials, or is holding a stale view of where they come from. Two distinct causes — check both:<br>1. **A credential helper the SDK can't read.** The resident server is launchd-spawned: creds `assume`/`aws-vault` export into your *shell*, and granted's SSO token in the **macOS keychain**, are both invisible to it. Prove it with `env -u AWS_ACCESS_KEY_ID -u AWS_SESSION_TOKEN aws sts get-caller-identity --profile <p>` — "Token has expired and refresh failed" means the server sees the same. Fix: a **dedicated** `credential_process` profile (below) and point `evidence.profile` at it.<br>2. **A pre-`ignoreCache` server.** Builds before that fix memoized `~/.aws/config` for the process's whole life, so a profile added/repointed while it ran never resolved. `herdr-factory restart` (and `update` to get the fix). |
 | Permanent failure | `error_class = 'permanent'`, event `evidence_upload_failed`, notify `herdr-factory: <key> evidence publish failed`, amber `⚠` on the run's TUI dashboard card. **The run is untouched — this is never a park** | `doctor --deep` shows the real reason (bucket/region/access-denied/command exit) |
 | Transient retrying, then **suspended** | `<n> pending — retrying (last: …)`, notify is deliberately **silent** while retrying. After 10 failed attempts (flat 30 s apart) the row **suspends**: `intent_suspended` event, an error log (`… intent SUSPENDED after 10 failed attempts: …`), an unthrottled notification (`herdr-factory: <repo> — job suspended`), a report into the run's own agent pane (when the run is still live), and a red problem entry on the repo's TUI row | Nothing auto-recovers a `transient` row (only `auth` is probed), so once you have fixed the cause use `herdr-factory --repo <r> retry-now [KEY]` — or `s` on the TUI board — to clear the suspension (fresh 10-attempt window) and flush |
@@ -656,6 +656,17 @@ ORDER BY e.id;
 SELECT id, run_id, datetime(ts,'unixepoch') AS ts, type, detail
 FROM events WHERE repo = :repo AND ticket_key = :key ORDER BY id;
 ```
+
+**Q3b — open problems (the red repo light's source of truth)**
+
+```sql
+SELECT key, kind, detail, datetime(created_at,'unixepoch') AS since FROM problems
+WHERE repo = :repo ORDER BY created_at;
+```
+
+A row here was RECORDED by the engine when it observed the failure and is DELETED by the same
+machinery on recovery — if a row looks stale, the cause has not demonstrably recovered yet (a
+successful source call, a delivery, or a healthy creds probe is what clears it).
 
 **Q4 — stuck / suspended intents**
 

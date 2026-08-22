@@ -42,6 +42,9 @@ async function noteSourceAuthFailure(deps: Deps, source: string, e: SourceUnauth
   const detail = e.hint ?? e.message;
   const wasDown = getAuthFailure(repo, source) !== undefined;
   recordAuthFailure(repo, source, { reason: e.reason, detail, now: deps.now() });
+  // Record on the problem ledger (the dashboard's red repo light reads it — never re-checks): the
+  // cause key matches the source's intent causeScope, so gate and delivery failures agree on one row.
+  deps.store.reportProblem(repo, `source:${source}`, "auth", `${source}: ${detail}`);
   if (!wasDown) {
     deps.log("warn", `${source}: work source not authenticated (${e.reason}) — pausing its claims + status write-backs until re-authenticated`);
     telemetryEvent("source.auth.unauthenticated", { "work.source": source, "auth.reason": e.reason });
@@ -59,9 +62,13 @@ async function noteSourceAuthFailure(deps: Deps, source: string, e: SourceUnauth
   }
 }
 
-/** A source call SUCCEEDED — clear any auth failure. On recovery, re-queue held write-backs + notify. */
+/** A source call SUCCEEDED — clear any auth failure. On recovery, re-queue held write-backs + notify.
+ *  The problem-ledger clear runs UNCONDITIONALLY (a PK delete, cheap): the in-memory gate resets on
+ *  restart, so it alone cannot be trusted to clear a persisted problem row from a previous life. */
 function noteSourceAuthRecovered(deps: Deps, source: string): void {
   const repo = deps.config.repoName;
+  const clearedProblem = deps.store.clearProblem(repo, `source:${source}`);
+  if (clearedProblem) deps.log("info", `${source}: auth problem cleared on the problem ledger`);
   if (!recordAuthOk(repo, source)) return; // wasn't down — the common, hot path
   const requeued = deps.store.retryTransitionsForSource(repo, source);
   deps.log("info", `${source}: re-authenticated — resuming work${requeued ? ` (${requeued} held write-back(s) re-queued)` : ""}`);
