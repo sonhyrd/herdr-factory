@@ -25,7 +25,7 @@ import { foldEligible, withoutClaimed } from "./eligible-cache.ts";
 import { updateWarning } from "../watchers/update-status.ts";
 import { BORDER, theme } from "./theme.ts";
 import type { ChooseFn, ConfirmFn, PromptFn, ShowInfoFn, TabView } from "./types.ts";
-import { LEGEND, MIN_COLUMN_WIDTH, buildLanes, layoutKanban, looseLane, stateIcon, type BoardRun, type KanbanCell, type Tone } from "./kanban.ts";
+import { MIN_COLUMN_WIDTH, buildLanes, layoutKanban, looseLane, type BoardRun, type KanbanCell, type Tone } from "./kanban.ts";
 import { formatWorkItemDetail } from "./work-detail.ts";
 // A LEAF module (type-only imports) — safe in the TUI's eager startup graph.
 import { explainRun } from "../core/explain.ts";
@@ -52,8 +52,9 @@ function fmtDuration(sec: number): string {
   return `${s}s`;
 }
 
-/** kanban.ts's semantic tones → theme colors. The board itself never names a color. */
-function toneColor(tone: Tone): string {
+/** kanban.ts's semantic tones → theme colors (the board itself never names a color); exported for
+ *  the shell's footer icon legend (index.ts), which shares this mapping. */
+export function toneColor(tone: Tone): string {
   switch (tone) {
     case "primary":
       return theme.text.primary;
@@ -143,15 +144,6 @@ export function createDashboard(
   const { confirm, choose, showInfo, prompt, setStatus } = actions;
 
   const root = new BoxRenderable(renderer, { flexDirection: "column", width: "100%", height: "100%", backgroundColor: theme.bg, paddingLeft: 1, paddingRight: 1 });
-  // The board's icons are only self-explanatory once: spell them out on a permanent legend line.
-  const legend = text(renderer, {
-    content: new StyledText(LEGEND.flatMap(({ state, label }, i) => {
-      const { icon, tone } = stateIcon(state);
-      return [fg(theme.text.tertiary)(i ? "   " : " "), fg(toneColor(tone))(icon), fg(theme.text.tertiary)(` ${label}`)];
-    })),
-    height: 1,
-    wrapMode: "none",
-  });
   const list = new ScrollBoxRenderable(renderer, {
     flexGrow: 1,
     flexShrink: 1,
@@ -169,7 +161,6 @@ export function createDashboard(
     paddingRight: 1,
   });
   const actionLine = text(renderer, { content: "", height: 1, wrapMode: "none", fg: theme.text.tertiary, paddingLeft: 1 });
-  root.add(legend);
   root.add(list);
   root.add(actionLine);
 

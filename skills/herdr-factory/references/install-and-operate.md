@@ -340,8 +340,9 @@ items, then one column per belt step, with every work item a card in the column 
 currently on (a run past its last step — a PR watch — stays under that step). A card reads
 `<icon> <KEY> <summary>` plus compact right-aligned meta (`#<pr>` and how long it has been in this
 step); a trailing amber `⚠` means a stuck background job. Cards are the only thing colored, and only
-on the icon — a card's key and summary always stay in the normal text hierarchy. A legend line above
-the board (titled ` Board `) spells the common icons out:
+on the icon — a card's key and summary always stay in the normal text hierarchy. A legend line in the
+shell's bottom footer (right above the keybinding line) spells the common icons out, shown only while
+the Dashboard tab is active:
 
 | icon | state | means |
 |---|---|---|

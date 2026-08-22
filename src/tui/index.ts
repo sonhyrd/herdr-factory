@@ -8,7 +8,8 @@ import type { KeyEvent } from "@opentui/core";
 import { BORDER, theme } from "./theme.ts";
 import { SELECTION, hoverable, input as makeInput, text } from "./render.ts";
 import type { InfoLine, TabView } from "./types.ts";
-import { createDashboard } from "./dashboard.ts";
+import { createDashboard, toneColor } from "./dashboard.ts";
+import { LEGEND, stateIcon } from "./kanban.ts";
 
 const TAB_WIDTH = 13;
 
@@ -128,11 +129,20 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     });
   }
   const content = new BoxRenderable(renderer, { flexGrow: 1, width: "100%", backgroundColor: theme.bg });
+  // The kanban board's icons are only self-explanatory once: spell them out on a permanent legend
+  // line, right above the keybinding footer. Only the Dashboard's board uses these icons, so it's
+  // blank on the other tabs.
+  const iconLegend = new StyledText(LEGEND.flatMap(({ state, label }, i) => {
+    const { icon, tone } = stateIcon(state);
+    return [fg(theme.text.tertiary)(i ? "   " : " "), fg(toneColor(tone))(icon), fg(theme.text.tertiary)(` ${label}`)];
+  }));
+  const legendLine = text(renderer, { content: iconLegend, fg: theme.text.tertiary, bg: theme.barBg, height: 1, wrapMode: "none" });
   const footer = text(renderer, { content: "", fg: theme.text.tertiary, bg: theme.barBg, height: 1, wrapMode: "none" });
 
   root.add(header);
   root.add(tabBar);
   root.add(content);
+  root.add(legendLine);
   root.add(footer);
 
   // ── modal ─────────────────────────────────────────────────────────────────────────────────
@@ -440,6 +450,7 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     paintTabs();
     content.add(view.root);
     view.activate();
+    legendLine.content = idx === 0 ? iconLegend : "";
     footer.content = footerHints(idx);
     // Restore where this tab was left: the top level, or its remembered section.
     if (leftAtTop[idx]) focusTop();
