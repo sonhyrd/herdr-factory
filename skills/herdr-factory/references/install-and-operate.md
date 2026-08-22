@@ -179,7 +179,7 @@ holds the values that were in the environment when `herdr-factory install` last 
 HERDR_CHANNEL=stable herdr-factory install    # rewrites the plist/unit with the new value, reloads it
 ```
 
-**Where you see it.** `doctor`'s `auto-update` check and the TUI dashboard banner both read
+**Where you see it.** `doctor`'s `auto-update` check and the TUI's top-right status text both read
 `update-status.json` (via `updateWarning()` in `src/watchers/update-status.ts`), so they always agree.
 The check is amber `⚠`, never a ✗ — it cannot fail `doctor`'s exit code:
 
@@ -314,7 +314,7 @@ imported on first activation — you may see ` loading...` or ` failed to load: 
 
 | Tab | For | Notes |
 |---|---|---|
-| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; banner `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention. A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. Server down ⇒ the banner reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
+| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; the tab bar's top-right status text reads `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention (only the Dashboard tab polls health, so this text holds its last value while another tab is active). A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. Server down ⇒ the status text reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
 | **Config** | the five-section config editor over `~/.config/herdr-factory/repos/<name>/config.yml` + its `env` file, with a `+ new repo…` wizard | edits a YAML `Document`, so comments and formatting survive |
 | **Doctor** | the machine-wide health checks | see the caveat at the end of this section |
 

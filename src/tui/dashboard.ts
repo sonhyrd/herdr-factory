@@ -136,11 +136,13 @@ interface Focus {
   target: Target;
 }
 
-export function createDashboard(renderer: CliRenderer, actions: { confirm: ConfirmFn; choose: ChooseFn; showInfo: ShowInfoFn; prompt: PromptFn }): TabView {
-  const { confirm, choose, showInfo, prompt } = actions;
+export function createDashboard(
+  renderer: CliRenderer,
+  actions: { confirm: ConfirmFn; choose: ChooseFn; showInfo: ShowInfoFn; prompt: PromptFn; setStatus: (content: string, fg: string) => void },
+): TabView {
+  const { confirm, choose, showInfo, prompt, setStatus } = actions;
 
   const root = new BoxRenderable(renderer, { flexDirection: "column", width: "100%", height: "100%", backgroundColor: theme.bg, paddingLeft: 1, paddingRight: 1 });
-  const banner = text(renderer, { content: "loading…", fg: theme.text.secondary, height: 1, wrapMode: "none" });
   // The board's icons are only self-explanatory once: spell them out on a permanent legend line.
   const legend = text(renderer, {
     content: new StyledText(LEGEND.flatMap(({ state, label }, i) => {
@@ -167,7 +169,6 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     paddingRight: 1,
   });
   const actionLine = text(renderer, { content: "", height: 1, wrapMode: "none", fg: theme.text.tertiary, paddingLeft: 1 });
-  root.add(banner);
   root.add(legend);
   root.add(list);
   root.add(actionLine);
@@ -413,10 +414,12 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     lastWidth = boardWidth();
     statusBelts.clear();
     // A warn-worthy last auto-update (failed / dirty-skip / behind its channel target) rides on the
-    // banner in amber — the same signal the Doctor tab paints, surfaced on the main view too.
+    // shell's status text in amber — the same signal the Doctor tab paints, surfaced up top too.
     const updateNote = updateWarning();
-    banner.content = `● server up · v${health.version} · uptime ${fmtDuration(health.uptimeSec)}${updateNote ? ` · ⚠ ${updateNote}` : ""}`;
-    banner.fg = updateNote ? theme.status.warn : theme.status.good;
+    setStatus(
+      `● server up · v${health.version} · uptime ${fmtDuration(health.uptimeSec)}${updateNote ? ` · ⚠ ${updateNote}` : ""}`,
+      updateNote ? theme.status.warn : theme.status.good,
+    );
     const nowSec = Date.now() / 1000;
     const specs: LineSpec[] = [];
     const blank = () => specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
@@ -499,8 +502,7 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
         lastPaint = null;
         statusBelts.clear();
         const specs: LineSpec[] = [];
-        banner.content = "⚠ server not running — start it with `herdr-factory serve`";
-        banner.fg = theme.status.warn;
+        setStatus("⚠ server not running — start it with `herdr-factory serve`", theme.status.warn);
         if (repos.length === 0) specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });
         for (const name of repos) specs.push({ kind: "text", content: `${name}   (server down)`, fg: theme.text.tertiary, target: { repo: name, kind: "repo" } });
         reconcile(specs);

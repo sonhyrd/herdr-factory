@@ -89,16 +89,27 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     const left = Math.floor(pad / 2);
     return " ".repeat(left) + name + " ".repeat(pad - left);
   };
-  const tabBar = new BoxRenderable(renderer, { height: 1, flexDirection: "row", flexShrink: 0, backgroundColor: theme.barBg, focusable: true });
+  const tabBar = new BoxRenderable(renderer, { height: 1, flexDirection: "row", justifyContent: "space-between", flexShrink: 0, backgroundColor: theme.barBg, focusable: true });
+  const tabCellRow = new BoxRenderable(renderer, { height: 1, flexDirection: "row", backgroundColor: theme.barBg });
   let hoveredTab = -1;
   const tabCells = TAB_NAMES.map((name, i) => {
     const cell = text(renderer, { content: tabLabel(name), width: TAB_WIDTH, height: 1, wrapMode: "none", bg: theme.barBg, fg: theme.focusText.unfocused });
     cell.onMouseDown = (e) => { showTab(i); e.stopPropagation(); };
     cell.onMouseOver = () => { hoveredTab = i; paintTabs(); };
     cell.onMouseOut = () => { if (hoveredTab === i) { hoveredTab = -1; paintTabs(); } };
-    tabBar.add(cell);
+    tabCellRow.add(cell);
     return cell;
   });
+  tabBar.add(tabCellRow);
+  // Server status (up/down, version, uptime) — set by the Dashboard tab (the only view that polls
+  // health), but placed here in the shell so it stays visible in the top-right no matter which tab
+  // is active.
+  const statusText = text(renderer, { content: "loading…", fg: theme.text.secondary, height: 1, wrapMode: "none", bg: theme.barBg, paddingRight: 1 });
+  tabBar.add(statusText);
+  const setStatus = (content: string, color: string) => {
+    statusText.content = content;
+    statusText.fg = color;
+  };
   /** Color each tab from its state: the current tab is accent (or barFocusBg when the bar itself holds
    *  the top-level focus); a hovered non-current tab gets the subtle hover tint; the rest are muted. */
   function paintTabs(): void {
@@ -369,7 +380,7 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
 
   // ── views ─────────────────────────────────────────────────────────────────────────────────
   const views: TabView[] = [
-    createDashboard(renderer, { confirm, choose, showInfo, prompt }),
+    createDashboard(renderer, { confirm, choose, showInfo, prompt, setStatus }),
     createLazyView(renderer, 5, async () => {
       const { createConfigEditor } = await import("./config-editor.ts");
       return createConfigEditor(renderer, { confirm, choose, prompt, editText });
