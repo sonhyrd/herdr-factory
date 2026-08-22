@@ -181,13 +181,20 @@ function serveEvidenceFile(reqPath: string): Response {
   });
 }
 
-/** Repo-level problems for the dashboard's red per-repo line: suspended jobs (retries stopped after
- *  MAX_RETRY_ATTEMPTS failures), auth-stuck evidence uploads (with the creds hint), and live source
- *  auth failures. Cheap reads only — the DB and the in-memory auth gate, never a probe — so the
- *  quick status path carries them too. */
-function repoProblems(rt: RepoRuntime): { kind: string; detail: string }[] {
+/** Repo-level problems for the dashboard's red per-repo light: runs parked for attention, suspended
+ *  jobs (retries stopped after MAX_RETRY_ATTEMPTS failures), auth-stuck evidence uploads (with the
+ *  creds hint), and live source auth failures. Cheap reads only — the DB and the in-memory auth
+ *  gate, never a probe — so the quick status path carries them too. */
+function repoProblems(rt: RepoRuntime, active: readonly { phase: string; ticketKey: string }[]): { kind: string; detail: string }[] {
   const cfg = rt.deps.config;
   const problems: { kind: string; detail: string }[] = [];
+  const parked = active.filter((r) => r.phase === "attention").map((r) => r.ticketKey);
+  if (parked.length > 0) {
+    problems.push({
+      kind: "attention",
+      detail: `${parked.length} run${parked.length === 1 ? "" : "s"} parked for attention (${parked.join(", ")}) — press s on the card to resume`,
+    });
+  }
   for (const s of cfg.sources) {
     const failure = getAuthFailure(cfg.repoName, s.name);
     if (failure) problems.push({ kind: "source-auth", detail: `${s.name}: ${failure.detail}` });
@@ -281,7 +288,7 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
     sources: await sources,
     belts: await belts,
     active: await activeRuns,
-    problems: repoProblems(rt),
+    problems: repoProblems(rt, active),
     finished: finished.map((r) => ({
       id: r.id,
       ticketKey: r.ticketKey,

@@ -16,6 +16,8 @@ export function createDoctor(renderer: CliRenderer): TabView {
   const banner = text(renderer, { content: "", fg: theme.text.secondary, height: 1, wrapMode: "none" });
   const list = new ScrollBoxRenderable(renderer, {
     flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0, // clip + scroll instead of growing over the footer (yoga's default flexShrink is 0)
     width: "100%",
     scrollY: true,
     backgroundColor: theme.bg,

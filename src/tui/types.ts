@@ -3,11 +3,14 @@ import type { Renderable } from "@opentui/core";
 /** Shell-provided modal helpers passed into views. */
 export type ConfirmFn = (message: string) => Promise<boolean>;
 export type ChooseFn = (title: string, options: { label: string; value: string }[]) => Promise<string | null>;
+/** One line of an info modal: a plain string (primary text), or a toned line — `bad` renders red
+ *  (a problem that needs attention), `good` green, `warn` amber, `tertiary` dim. */
+export type InfoLine = string | { text: string; tone: "good" | "warn" | "bad" | "tertiary" };
 export interface InfoModalHandle {
   /** Replace this modal's contents. No-ops if the user has already closed it. */
-  update(title: string, lines: string[]): void;
+  update(title: string, lines: InfoLine[]): void;
 }
-export type ShowInfoFn = (title: string, lines: string[]) => InfoModalHandle;
+export type ShowInfoFn = (title: string, lines: InfoLine[]) => InfoModalHandle;
 /** A single-line text prompt. Resolves null when cancelled (Esc). */
 export type PromptFn = (title: string, placeholder?: string) => Promise<string | null>;
 /** A multi-line text editor (a modal text area over a whole file's contents). Resolves the edited

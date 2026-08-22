@@ -7,7 +7,7 @@ import { BoxRenderable, InputRenderable, ScrollBoxRenderable, StyledText, Textar
 import type { KeyEvent } from "@opentui/core";
 import { BORDER, theme } from "./theme.ts";
 import { SELECTION, hoverable, input as makeInput, text } from "./render.ts";
-import type { TabView } from "./types.ts";
+import type { InfoLine, TabView } from "./types.ts";
 import { createDashboard } from "./dashboard.ts";
 
 const TAB_WIDTH = 13;
@@ -170,9 +170,13 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     paddingRight: 1,
     visible: false,
   });
-  const infoTitle = text(renderer, { content: "", fg: theme.accent, height: 1, wrapMode: "none" });
-  const infoScroll = new ScrollBoxRenderable(renderer, { flexGrow: 1, width: "100%", scrollY: true, backgroundColor: theme.bg });
-  const infoHint = text(renderer, { content: "↑↓ / wheel scroll · Esc close", fg: theme.text.tertiary, height: 1, wrapMode: "none" });
+  // The scroll area must SHRINK to what the card leaves it (yoga's default flexShrink is 0, so an
+  // overflowing content list would otherwise keep its measured height and render its last row on
+  // top of the footer hint — the jumbled bottom line); the title and hint must never shrink, and
+  // the hint paints an opaque background so nothing can bleed through its row.
+  const infoTitle = text(renderer, { content: "", fg: theme.accent, height: 1, flexShrink: 0, wrapMode: "none" });
+  const infoScroll = new ScrollBoxRenderable(renderer, { flexGrow: 1, flexShrink: 1, minHeight: 0, width: "100%", scrollY: true, backgroundColor: theme.bg });
+  const infoHint = text(renderer, { content: "↑↓ / wheel scroll · Esc close", fg: theme.text.tertiary, bg: theme.bg, height: 1, flexShrink: 0, wrapMode: "none" });
   infoCard.add(infoTitle);
   infoCard.add(infoScroll);
   infoCard.add(infoHint);
@@ -242,19 +246,36 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
       overlay.visible = true;
     });
   }
-  function renderInfo(title: string, lines: string[]): void {
+  /** An InfoLine's foreground: toned lines carry their own color (a `bad` diagnostic renders red so
+   *  what needs attention is legible at a glance), plain strings stay primary. */
+  function infoLineColor(l: InfoLine): string {
+    if (typeof l === "string") return theme.text.primary;
+    switch (l.tone) {
+      case "good":
+        return theme.status.good;
+      case "warn":
+        return theme.status.warn;
+      case "bad":
+        return theme.status.bad;
+      case "tertiary":
+        return theme.text.tertiary;
+    }
+  }
+  function renderInfo(title: string, lines: InfoLine[]): void {
     infoTitle.content = title;
     for (const c of [...infoScroll.getChildren()]) {
       infoScroll.remove(c.id);
       c.destroy();
     }
-    const rendered = lines.length ? lines : ["(no events)"];
+    const rendered: InfoLine[] = lines.length ? lines : ["(no events)"];
     // Info content is read-only reference (a timeline, diagnostics) — keep it selectable so it can be
     // copied, but with readable selection colors (opentui's default highlight is near-black).
-    for (const l of rendered) infoScroll.add(text(renderer, { content: l, fg: theme.text.primary, width: "100%", height: 1, wrapMode: "none", selectable: true, ...SELECTION }));
+    for (const l of rendered) {
+      infoScroll.add(text(renderer, { content: typeof l === "string" ? l : l.text, fg: infoLineColor(l), width: "100%", height: 1, wrapMode: "none", selectable: true, ...SELECTION }));
+    }
     infoScroll.scrollTop = 0;
   }
-  function showInfo(title: string, lines: string[]) {
+  function showInfo(title: string, lines: InfoLine[]) {
     const id = nextInfoId++;
     renderInfo(title, lines);
     modal = { kind: "info", id };
@@ -262,7 +283,7 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     infoCard.visible = true;
     overlay.visible = true;
     return {
-      update(nextTitle: string, nextLines: string[]) {
+      update(nextTitle: string, nextLines: InfoLine[]) {
         if (modal?.kind === "info" && modal.id === id) renderInfo(nextTitle, nextLines);
       },
     };

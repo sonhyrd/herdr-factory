@@ -314,7 +314,7 @@ imported on first activation — you may see ` loading...` or ` failed to load: 
 
 | Tab | For | Notes |
 |---|---|---|
-| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; banner `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention. Each repo row shows its **problems in red** after the active count (`⚠ N jobs suspended after 10 failed retries (…) — press s to retry` · `evidence uploads blocked on AWS creds — …` · `<source>: <auth failure>`), fed by `/status.problems` on the quick path. Server down ⇒ the banner reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
+| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; banner `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention. A repo with problems (runs parked for attention, suspended jobs, AWS creds, source auth failures — `/status.problems`, carried on the quick path) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. Server down ⇒ the banner reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
 | **Config** | the five-section config editor over `~/.config/herdr-factory/repos/<name>/config.yml` + its `env` file, with a `+ new repo…` wizard | edits a YAML `Document`, so comments and formatting survive |
 | **Doctor** | the machine-wide health checks | see the caveat at the end of this section |
 
@@ -368,7 +368,7 @@ a confirm modal, and the result lands on the bottom action line:
 | `↑` / `↓` | move the highlight, staying in the same column where one is available | all cards/rows |
 | `←` / `→` | move to the card in the neighbouring column, on the same line | cards |
 | `↵` | open the ticket's timeline | run cards |
-| `d` | **repo** row → repo detail (AWS SSO, per-source auth, per-belt steps/health/eligible counts); **run** card → full work-item detail (overview + step progress + timeline) | repo, run |
+| `d` | **repo** row → repo detail: a red `⚠ Problems` section first (the same entries as the row's red light), then AWS SSO / per-source auth / per-belt steps+health+eligible counts — every unhealthy line renders **red**, healthy ✓ lines green; **run** card → full work-item detail (overview + step progress + timeline) | repo, run |
 | `t` | run one reconcile tick on that row's repo — `Run a reconcile tick on "<repo>"?` | any card/row |
 | `c` | claim the item — picks the belt automatically when the source has exactly one, otherwise asks | `ready` cards |
 | `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk clear-and-retry** (`Clear "<scope>"'s suspended background jobs and retry them now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now (M suspensions cleared) — flushed`, or `— a tick is mid-pass`, or `"<scope>": no suspended or waiting jobs`). A run card scopes to that run; a repo row is repo-wide and clears every suspension the repo row flags in red | run, repo, ready |

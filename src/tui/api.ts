@@ -70,9 +70,9 @@ export interface RepoStatus {
   }[];
   active: ActiveRun[];
   finished: { id: number; ticketKey: string; phase: string; outcome: string | null; prNumber: number | null }[];
-  /** Repo-level problems for the red per-repo line: suspended jobs (retries stopped after the
-   *  10-attempt cap), auth-stuck uploads (AWS creds), live source auth failures. Present on the
-   *  quick path too (cheap reads, no probes). */
+  /** Repo-level problems for the red per-repo light: runs parked for attention, suspended jobs
+   *  (retries stopped after the 10-attempt cap), auth-stuck uploads (AWS creds), live source auth
+   *  failures. Present on the quick path too (cheap reads, no probes). */
   problems?: { kind: string; detail: string }[];
   /** Evidence-upload credential (AWS SSO) health for the dashboard light. "na" = no evidence config. */
   evidenceSso?: { state: "ok" | "down" | "na"; detail?: string };

@@ -141,9 +141,9 @@ const StatusResponse = z
         problem: z.object({ kind: z.literal("evidence-upload"), detail: z.string() }).optional(),
       }),
     ),
-    // Repo-level problems for the dashboard's red per-repo line: suspended jobs (retries stopped
-    // after MAX_RETRY_ATTEMPTS failures) and live auth failures. Cheap DB/in-memory reads only, so
-    // quick mode carries them too.
+    // Repo-level problems for the dashboard's red per-repo light: runs parked for attention,
+    // suspended jobs (retries stopped after MAX_RETRY_ATTEMPTS failures), and live auth failures.
+    // Cheap DB/in-memory reads only, so quick mode carries them too.
     problems: z.array(z.object({ kind: z.string(), detail: z.string() })),
     finished: z.array(
       z.object({

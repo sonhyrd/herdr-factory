@@ -1246,8 +1246,11 @@ cursor.
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
-  Each repo row also shows its **problems in red** — suspended jobs, evidence uploads blocked on AWS
-  creds, a source that cannot authenticate — so a broken repo is visible at a glance.
+  A repo with a problem — a run parked for attention, suspended jobs, evidence uploads blocked on
+  AWS creds, a source that cannot authenticate — carries a **red ⚠ icon and count** on its row, so a
+  broken repo is visible at a glance; highlight the row to read the full detail on the action line,
+  or press `d` for the detail view, where everything unhealthy (the problems, a failed auth probe, a
+  down belt) renders **in red**.
   `s` is the "I fixed it, go now" key, and it reads the situation: on a run parked for `⚠` attention
   it **resumes** (the CLI's [`resume`](#commands) — un-park and pick up where it left off); on any
   other run it **clears that run's suspended background jobs** and makes its waiting retries due now;

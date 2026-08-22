@@ -100,6 +100,48 @@ describe("dashboard server payloads", () => {
     expect(pausedEligible).not.toHaveBeenCalled();
   });
 
+  it("a run parked for attention surfaces as a repo-level problem (the dashboard's red repo light)", async () => {
+    const parked = {
+      id: 2,
+      ticketKey: "HF-9",
+      workSource: "jira",
+      belt: "ship",
+      phase: "attention",
+      step: "work",
+      prNumber: null,
+      summary: "Stuck item",
+      outcome: null,
+      paneId: null,
+      endedAt: null,
+    };
+    const runtime = {
+      ticking: false,
+      deps: {
+        config: { repoName: "demo", limits: { maxActiveWorkspaces: 2 }, sources: [], belts: [] },
+        belts: [],
+        store: {
+          activeRuns: () => [parked],
+          listRuns: () => [],
+          runStepsFor: () => [],
+          getSourceAuth: () => undefined,
+          authStuckIntents: () => false,
+          listIntents: () => [],
+          suspendedIntents: () => [],
+        },
+        herdr: {},
+        resolveSource: () => undefined,
+        now: () => 1,
+        log: vi.fn(),
+      },
+    } as unknown as RepoRuntime;
+    const context = { getRepo: (name: string) => (name === "demo" ? runtime : undefined) } as unknown as ServerContext;
+    const app = createApp(context);
+    const res = await app.request("/repos/demo/status?quick=1");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as StatusBody;
+    expect(body.problems).toEqual([{ kind: "attention", detail: expect.stringContaining("1 run parked for attention (HF-9)") }]);
+  });
+
   it("belt-apply route validates the body and delegates to ctx.applyBeltChanges", async () => {
     const applyBeltChanges = vi.fn(async () => ({ ok: true, runsMoved: 3, runsPurged: 1, worktreesCleaned: 0, blocked: [], failures: [] }));
     const context = {

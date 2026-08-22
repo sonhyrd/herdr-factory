@@ -152,6 +152,8 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
   });
   const list = new ScrollBoxRenderable(renderer, {
     flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0, // clip + scroll instead of growing over the action line (yoga's default flexShrink is 0)
     width: "100%",
     scrollY: true,
     backgroundColor: theme.bg,
@@ -431,15 +433,21 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     for (const { name, st, el } of data) {
       if (st) statusBelts.set(name, st.belts);
       const active = st?.active ?? [];
-      // Repo-level problems (suspended jobs, AWS creds, source auth) ride the repo row in red —
-      // `s` on the row clears the suspensions and retries.
-      const problems = (st?.problems ?? []).map((p) => p.detail).join(" · ");
+      // Repo-level problems (parked runs, suspended jobs, AWS creds, source auth) light the repo
+      // row with a compact red ⚠ icon + count; the full detail is one keypress away — on the
+      // action line while the row is highlighted (the note), and in red under `d` (the detail
+      // modal). `s` on the row clears the suspensions and retries.
+      const problems = st?.problems ?? [];
       specs.push({
         kind: "text",
         content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}`,
         fg: theme.accent,
-        target: { repo: name, kind: "repo" },
-        problem: problems || undefined,
+        target: {
+          repo: name,
+          kind: "repo",
+          note: problems.length ? { text: `⚠ ${name}: ${problems.map((p) => p.detail).join(" · ")}`, tone: "bad" } : undefined,
+        },
+        problem: problems.length ? `⚠ ${problems.length} problem${problems.length === 1 ? "" : "s"} — press d` : undefined,
       });
       if (!st) {
         specs.push({ kind: "text", content: "  (status unavailable)", fg: theme.text.tertiary });
@@ -612,40 +620,58 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     void refresh();
   }
 
+  /** Repo detail (`d` on a repo row). Everything unhealthy renders RED (an InfoLine with tone
+   *  "bad") so what needs attention is legible at a glance: the Problems section first (the same
+   *  entries that light the repo row's ⚠), then every failing diagnostic — a healthy line stays
+   *  green/plain. */
   async function openDetail(t: Target): Promise<void> {
     if (!serverUp) return setAction("server not running", theme.status.warn);
     const modal = showInfo(`${t.repo} — Detail`, ["Loading repository detail and running diagnostics…"]);
     const [st, eligibleResult] = await Promise.all([fetchStatus(t.repo, true), fetchEligible(t.repo)]);
     if (!st) {
-      modal.update(`${t.repo} — Detail`, ["✗ Could not load repository detail. The server did not return repo status."]);
+      modal.update(`${t.repo} — Detail`, [{ text: "✗ Could not load repository detail. The server did not return repo status.", tone: "bad" }]);
       return;
     }
-    const output: string[] = ["General diagnostics"];
+    type Line = Parameters<typeof modal.update>[1][number];
+    const output: Line[] = [];
+    const bad = (text: string): Line => ({ text, tone: "bad" });
+    const good = (text: string): Line => ({ text, tone: "good" });
+    const dim = (text: string): Line => ({ text, tone: "tertiary" });
+    const problems = st.problems ?? [];
+    if (problems.length > 0) {
+      output.push(bad(`⚠ Problems (${problems.length})`));
+      for (const p of problems) output.push(bad(`  ✗ ${p.detail}`));
+      output.push("");
+    }
+    output.push("General diagnostics");
     const sso = st.evidenceSso;
-    if (!sso || sso.state === "na") output.push("  – AWS SSO: not configured");
-    else output.push(`  ${sso.state === "ok" ? "✓" : "✗"} AWS SSO: ${sso.state === "ok" ? "ok" : sso.detail ?? "credentials unavailable"}`);
+    if (!sso || sso.state === "na") output.push(dim("  – AWS SSO: not configured"));
+    else if (sso.state === "ok") output.push(good("  ✓ AWS SSO: ok"));
+    else output.push(bad(`  ✗ AWS SSO: ${sso.detail ?? "credentials unavailable"}`));
     for (const src of st.sources) {
       const auth = src.auth;
       const label = `${src.name} (${src.type})`;
-      if (!auth || auth.state === "na") output.push(`  – ${label}: no authentication required`);
-      else if (auth.state === "ok") output.push(`  ✓ ${label}: authenticated${auth.account ? ` as ${auth.account}` : ""}`);
-      else output.push(`  ✗ ${label}: ${auth.detail ?? "not authenticated"}${auth.account ? ` (${auth.account})` : ""}`);
+      if (!auth || auth.state === "na") output.push(dim(`  – ${label}: no authentication required`));
+      else if (auth.state === "ok") output.push(good(`  ✓ ${label}: authenticated${auth.account ? ` as ${auth.account}` : ""}`));
+      else output.push(bad(`  ✗ ${label}: ${auth.detail ?? "not authenticated"}${auth.account ? ` (${auth.account})` : ""}`));
     }
     output.push("", "Belt diagnostics");
     const eligible = eligibleResult?.eligible ?? [];
     for (const belt of st.belts) {
       const activeCount = st.active.filter((run) => run.belt === belt.name).length;
+      const attentionCount = st.active.filter((run) => run.belt === belt.name && run.phase === "attention").length;
       const eligibleCount = eligible.filter((item) => item.belt === belt.name).length;
       output.push(`${belt.name} [${belt.beltType}]${belt.active === false ? " — INACTIVE" : ""}`);
       output.push(`  source: ${belt.source} · priority: ${belt.priority}${belt.label ? ` · label: ${belt.label}` : ""}`);
       output.push(`  steps: ${belt.steps?.length ? belt.steps.join(" → ") : "none"}`);
       output.push(`  work: ${activeCount} active · ${eligibleCount} eligible`);
-      if (!belt.diagnostic) output.push("  – health: diagnostic unavailable");
-      else if (belt.diagnostic.state === "ok") output.push("  ✓ health: source and pickup configuration reachable");
-      else output.push(`  ✗ health: ${belt.diagnostic.detail ?? "check failed"}`);
+      if (attentionCount > 0) output.push(bad(`  ✗ ${attentionCount} run${attentionCount === 1 ? "" : "s"} parked for attention`));
+      if (!belt.diagnostic) output.push(dim("  – health: diagnostic unavailable"));
+      else if (belt.diagnostic.state === "ok") output.push(good("  ✓ health: source and pickup configuration reachable"));
+      else output.push(bad(`  ✗ health: ${belt.diagnostic.detail ?? "check failed"}`));
       output.push("");
     }
-    if (st.belts.length === 0) output.push("  (none configured)");
+    if (st.belts.length === 0) output.push(dim("  (none configured)"));
     modal.update(`${t.repo} — Detail`, output);
   }
 
