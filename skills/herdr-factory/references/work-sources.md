@@ -61,7 +61,7 @@ work_sources:
   4. logs `<source>: work source not authenticated (<missing|rejected>) — pausing its claims + status write-backs until re-authenticated` and sends **one** notification titled `herdr-factory: <source> not authenticated`, re-notified every `limits.attention_renotify_seconds` (default 3600).
 
   Recovery is automatic on the next successful call: `<source>: re-authenticated — resuming work (N held write-back(s) re-queued)`. The gate is in-memory only, so a restart also clears it. `herdr-factory --repo <r> auth status` reports **presence only, no network**; `doctor --deep` is what exercises the credential live. See [cli.md](./cli.md).
-- **Write-back retries never give up.** A thrown transition is re-attempted by the outbox at `60s * 2^(attempts-1)`, capped at 1 h, forever. `applied` / `noop` / `stale` all count as delivered.
+- **Write-back retries are flat and capped.** A thrown transition is re-attempted by the outbox every 30 s; after 10 failed attempts it **suspends** (retries stop, the operator is notified, the repo's TUI row flags in red) until `retry-now` / `s` or a source-auth recovery clears it. `applied` / `noop` / `stale` all count as delivered.
 - **Materialization** happens on every claiming tick into `.memory/herdr-factory/` inside the run's worktree (each source guards on its own marker file, so it is written once). A *committed* `.memory/herdr-factory/` in a fresh worktree is scrubbed with the warning `removed a committed .memory/herdr-factory from the fresh worktree — the repo should not track factory memory (add .memory/ to its .gitignore)`. Failures only warn — the run continues. Prompt tokens `@@MEMORY_DIR@@` / `@@WORK_DOC@@` / `@@WORK_DOC_KIND@@`: see [prompts.md](./prompts.md).
 - **Item type drives the branch prefix**, matched case-insensitively by substring: `bug`/`defect` → `fix/`, `chore`/`task` → `chore/`, anything else → `feature/`. This is why `type_labels: {bug: Bug}` gets `fix/`, and why local_markdown's default type `task` gets `chore/`.
 
@@ -132,7 +132,7 @@ JQL values are interpolated **unescaped**. A `"` in `project`, in the todo statu
 
 A belt effect's custom status key resolves through the extra `status.<key>` entries and **wins over** the canonical mapping; an unmapped state is a no-op with no network call.
 
-Each write is `GET` current status → case-insensitive compare (equal ⇒ no-op) → `GET .../transitions` → find one whose `to.name` matches case-insensitively → `POST` it. **No matching transition throws** ``<KEY>: no transition from "<current>" to "<target>"`` and the outbox then retries forever (60 s → 1 h) — see failure modes.
+Each write is `GET` current status → case-insensitive compare (equal ⇒ no-op) → `GET .../transitions` → find one whose `to.name` matches case-insensitively → `POST` it. **No matching transition throws** ``<KEY>: no transition from "<current>" to "<target>"`` and the outbox retries every 30 s until it suspends at 10 attempts — see failure modes.
 
 Other writes: notes are comments prefixed `[herdr-factory] `; ask-human posts a comment whose first line is `[herdr-factory question: <repo>/<runId>/<questionId>]` (existing comments are scanned for that marker first, so it is idempotent). Reply polling lists comments after the question, skipping every herdr-marked body (blockquote-aware, so a quote-reply still counts). ADF bodies are flattened; an empty extraction becomes `(Jira comment had no extractable text.)`.
 
@@ -333,7 +333,7 @@ Title/type: front-matter `title` → first `#` heading (fenced code blocks skipp
 The only writes into the folder are the human channel, in `<folder>/.herdr-factory-human/` (dot-prefixed, so pickup skips it):
 
 - question: `<key>-q<questionId>.md`, containing `# Human question for <key>`, `Run:`/`Step:` lines, `## Question`, then `## Answer` with the placeholder `_Write the answer below this line. herdr-factory resumes automatically once this section is non-empty._`
-- notes: appended to `<key>-notes.md`.
+- notes: appended to `<key>-notes.md`. Since the error-routing change this file only receives the rare informational note (e.g. the moot-question closer) — error reports go to the run's own agent pane instead, because a hidden notes file is where nobody looks.
 
 Reply detection reads the question file, finds the literal `## Answer` heading, strips the italic placeholder and trims. Empty ⇒ still waiting. **Deleting the `## Answer` heading makes the run wait forever.**
 

@@ -8,7 +8,6 @@
 //   - its deadline passes — the kernel fails the row and stamps a 'deadline' handoff; a run-scoped
 //     wait then parks for attention (payload `on_deadline: "ignore"` opts out).
 import type { IntentConsumeVerdict, IntentKindDef } from "../registry.ts";
-import { OUTBOX_BACKOFF_CAP_SECONDS } from "../../schedule.ts";
 
 /** The payload an external_wait row carries (all optional). */
 interface ExternalWaitPayload {
@@ -27,7 +26,6 @@ function payloadOf(raw: string): ExternalWaitPayload {
 export const externalWaitKind: IntentKindDef = {
   kind: "external_wait",
   ordering: "independent",
-  retryCapSeconds: OUTBOX_BACKOFF_CAP_SECONDS, // unused in practice — waiting rows are never retried
   externallyEnqueuable: true,
   // Never reached in a healthy system: external_wait rows are created `waiting` (the enqueue
   // endpoint enforces it) and waiting rows are not walked by the due query. A pending row of this

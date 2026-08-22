@@ -199,7 +199,7 @@ export class Db {
   }
 
   /** Make a run's intents of `kind` due immediately — the harness's way past an engine backoff the
-   *  config can't compress (the human-reply poll's first miss costs 60s). The engine's own operator
+   *  config can't compress (the human-reply poll's miss cadence is a flat 30s). The engine's own operator
    *  endpoint only covers `pending` rows, and the poll clock is a `waiting` one, so this writes the
    *  clock the same way the reconciler would. Returns how many rows it moved. */
   dueNow(kind: string, runId: number): number {

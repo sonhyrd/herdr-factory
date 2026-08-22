@@ -17,7 +17,7 @@ import { systemClock, type Run, type SourceType } from "../types.ts";
 import type { Deps } from "../core/deps.ts";
 import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/kinds/evidence-publish.ts";
-import { intentRetryDelay } from "../intents/registry.ts";
+import { RETRY_INTERVAL_SECONDS } from "../schedule.ts";
 import { applySignal, type SignalBody, type SignalResult } from "../core/signals.ts";
 import { runObligations } from "../core/obligations.ts";
 import { explainRun, fmtDur } from "../core/explain.ts";
@@ -442,7 +442,7 @@ program
 
 program
   .command("retry-now [key]")
-  .description("stop waiting out a backoff: make this repo's backed-off retries (or just one run's) due now and flush them — run it after fixing the cause, e.g. `aws sso login`")
+  .description("clear this repo's suspended background jobs (or just one run's), make every waiting retry due now, and flush them — run it after fixing the cause, e.g. `aws sso login`")
   .option("--source <name>", "disambiguate when the key is active in more than one source")
   .action(cliAction("retry-now", async (key: string | undefined, opts: { source?: string }) => {
     try {
@@ -454,27 +454,29 @@ program
           let runId: number | undefined;
           if (key) {
             const run = resolveActiveRun(deps, key, opts.source);
-            if (!run) return { ok: false, requeued: 0, flushed: false, message: `${key}: no active run` };
+            if (!run) return { ok: false, requeued: 0, unsuspended: 0, flushed: false, message: `${key}: no active run` };
             runId = run.id;
           }
-          const requeued = deps.store.retryIntentsNow(repo, { runId });
+          const { requeued, unsuspended } = deps.store.retryIntentsNow(repo, { runId });
           // Same contract as the route: re-queue, then flush under the tick lock so the rows land now.
           const flushed = await withTickLock(deps, () => flushDurableIntents(deps));
-          return { ok: true, requeued, flushed };
+          return { ok: true, requeued, unsuspended, flushed };
         },
       );
-      const d = data as { ok?: boolean; requeued?: number; flushed?: boolean; message?: string };
+      const d = data as { ok?: boolean; requeued?: number; unsuspended?: number; flushed?: boolean; message?: string };
       if (d.ok === false) {
         console.log(d.message ?? "retry-now failed");
         return;
       }
       const n = d.requeued ?? 0;
+      const cleared = d.unsuspended ?? 0;
       const scope = key ?? repo;
       if (n === 0) {
-        console.log(`${scope}: no backed-off retries were waiting`);
+        console.log(`${scope}: no suspended or waiting retries`);
         return;
       }
-      console.log(`${scope}: ${n} backed-off retr${n === 1 ? "y" : "ies"} made due now${d.flushed ? " and flushed" : " (a tick is mid-pass — it will deliver them)"}`);
+      const clearedNote = cleared > 0 ? ` (${cleared} suspension${cleared === 1 ? "" : "s"} cleared)` : "";
+      console.log(`${scope}: ${n} stuck job${n === 1 ? "" : "s"} made due now${clearedNote}${d.flushed ? " and flushed" : " (a tick is mid-pass — it will deliver them)"}`);
     } catch (e) {
       fail(e);
     }
@@ -724,7 +726,7 @@ program
       }
       for (const line of explainRun({ ob: runObligations(deps, run), repoName: repo, now: deps.now() })) console.log(line);
       // The clocks and retries above only advance when something ticks the repo — say so when
-      // nothing does, because "the backoff never fires" reads exactly like "the factory is stuck".
+      // nothing does, because "the retry never fires" reads exactly like "the factory is stuck".
       const info = readServerInfo();
       const healthy = info ? await pingHealth(info.port) : false;
       if (!healthy) {
@@ -868,7 +870,7 @@ program
           deps.store.markIntentFailed(job.id, c.reason);
           console.log(`evidence-upload: publish FAILED (config error) — ${c.reason}. Run \`herdr-factory --repo ${repo} doctor --deep\`.${predicted ? " The URLs above will not resolve until this is fixed." : ""}`);
         } else {
-          deps.store.recordIntentAttempt(job.id, c.reason, c.kind, intentRetryDelay(evidencePublishKind, job));
+          deps.store.recordIntentAttempt(job.id, c.reason, c.kind, RETRY_INTERVAL_SECONDS);
           const tail = predicted ? "the URLs above resolve once it lands." : "URLs will appear in the server logs once it lands (a `command` publisher can't pre-compute links).";
           console.log(`evidence-upload: publish deferred — ${c.reason}. The engine will retry automatically; ${tail}`);
         }

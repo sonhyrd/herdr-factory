@@ -21,6 +21,7 @@ import { applySignal } from "../core/signals.ts";
 import { createEvidencePublisher, credsRefreshHint } from "../clients/evidence.ts";
 import { evidenceServeDir } from "../config-paths.ts";
 import { getAuthFailure } from "../auth/gate.ts";
+import { MAX_RETRY_ATTEMPTS } from "../schedule.ts";
 import { resolveActiveRun, resolveBeltName } from "../resolve.ts";
 import type { Deps } from "../core/deps.ts";
 import {
@@ -180,6 +181,32 @@ function serveEvidenceFile(reqPath: string): Response {
   });
 }
 
+/** Repo-level problems for the dashboard's red per-repo line: suspended jobs (retries stopped after
+ *  MAX_RETRY_ATTEMPTS failures), auth-stuck evidence uploads (with the creds hint), and live source
+ *  auth failures. Cheap reads only — the DB and the in-memory auth gate, never a probe — so the
+ *  quick status path carries them too. */
+function repoProblems(rt: RepoRuntime): { kind: string; detail: string }[] {
+  const cfg = rt.deps.config;
+  const problems: { kind: string; detail: string }[] = [];
+  for (const s of cfg.sources) {
+    const failure = getAuthFailure(cfg.repoName, s.name);
+    if (failure) problems.push({ kind: "source-auth", detail: `${s.name}: ${failure.detail}` });
+  }
+  if (rt.deps.store.authStuckIntents(cfg.repoName, "evidence_publish")) {
+    const profile = cfg.evidence?.publisher === "s3" ? cfg.evidence.profile : undefined;
+    problems.push({ kind: "aws-creds", detail: `evidence uploads blocked on AWS creds — ${credsRefreshHint(profile)}` });
+  }
+  const suspended = rt.deps.store.suspendedIntents(cfg.repoName);
+  if (suspended.length > 0) {
+    const kinds = [...new Set(suspended.map((i) => i.kind.replaceAll("_", " ")))].join(", ");
+    problems.push({
+      kind: "suspended",
+      detail: `${suspended.length} job${suspended.length === 1 ? "" : "s"} suspended after ${MAX_RETRY_ATTEMPTS} failed retries (${kinds}) — press s to retry`,
+    });
+  }
+  return problems;
+}
+
 /** The structured status payload exposed for API clients. Quick mode omits auth/AWS probes and live
  *  pane inspection for latency-sensitive dashboard refreshes. */
 async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics = false) {
@@ -191,13 +218,16 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
     // one attempt has failed (a freshly-enqueued, not-yet-attempted row is pending, not a problem).
     const stuckUploads = rt.deps.store
       .listIntents(cfg.repoName, { kind: "evidence_publish", status: "pending", runId: r.id })
-      .filter((i) => i.errorClass != null)
-      .map((i) => ({ errorKind: i.errorClass }));
+      .filter((i) => i.errorClass != null);
     const problem = stuckUploads.length === 0
       ? undefined
       : {
           kind: "evidence-upload" as const,
-          detail: stuckUploads.some((u) => u.errorKind === "auth") ? "evidence not uploaded — AWS creds" : "evidence upload retrying",
+          detail: stuckUploads.some((u) => u.suspendedAt != null)
+            ? "evidence upload suspended — press s to retry"
+            : stuckUploads.some((u) => u.errorClass === "auth")
+              ? "evidence not uploaded — AWS creds"
+              : "evidence upload retrying",
         };
     return {
       id: r.id,
@@ -251,6 +281,7 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
     sources: await sources,
     belts: await belts,
     active: await activeRuns,
+    problems: repoProblems(rt),
     finished: finished.map((r) => ({
       id: r.id,
       ticketKey: r.ticketKey,
@@ -435,17 +466,20 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     let runId: number | undefined;
     if (body?.key) {
       const run = resolveActiveRun(rt.deps, body.key, body.source);
-      if (!run) return c.json({ ok: false, requeued: 0, flushed: false, message: `${body.key}: no active run` }, 200);
+      if (!run) return c.json({ ok: false, requeued: 0, unsuspended: 0, flushed: false, message: `${body.key}: no active run` }, 200);
       runId = run.id;
     }
-    const requeued = rt.deps.store.retryIntentsNow(repo, { runId });
+    const { requeued, unsuspended } = rt.deps.store.retryIntentsNow(repo, { runId });
     // Deliver on the spot — waiting for the next tick is the very latency this route exists to skip.
     // The flush is lock-free by the OutboxFlow contract but must not walk the same rows as a tick's
     // own Phase 0, so it takes the repo tick lock; when a tick already holds it the rows are due
     // anyway and that pass picks them up (`flushed: false` says so).
     const flushed = await withTickLock(rt.deps, () => flushDurableIntents(rt.deps));
-    rt.deps.log("info", `retry-now${runId != null ? ` (${body!.key})` : ""}: ${requeued} backed-off intent(s) made due${flushed ? " and flushed" : " — a tick is mid-pass"}`);
-    return c.json({ ok: true, requeued, flushed }, 200);
+    rt.deps.log(
+      "info",
+      `retry-now${runId != null ? ` (${body!.key})` : ""}: ${requeued} stuck intent(s) made due (${unsuspended} suspension(s) cleared)${flushed ? " and flushed" : " — a tick is mid-pass"}`,
+    );
+    return c.json({ ok: true, requeued, unsuspended, flushed }, 200);
   });
 
   app.openapi(teardownRoute, async (c) => {

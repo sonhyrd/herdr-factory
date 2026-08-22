@@ -1,7 +1,7 @@
 // human_reply_poll: the ask-human reply loop's SCHEDULING row (cut over from human_questions'
 // poll columns in v32). One `waiting` row per pending question (keyed q-<id>) carries the poll
-// clock: next_attempt_at gates the next poll, state.pollAttempts counts misses (the base backoff
-// exponent), attempts counts consecutive poll ERRORS (reset by any successful poll; the
+// clock: next_attempt_at gates the next poll (a flat 30s cadence), state.pollAttempts counts
+// misses, attempts counts consecutive poll ERRORS (reset by any successful poll; the
 // waiting-run reconciler escalates past its cap). ENGINE-SCHEDULED: the poll itself runs inside
 // reconcileWaitingForHuman under the run lock — merge-outranks-park ordering, the auth gate, and
 // the reply application (resumeAfterHumanReply) all live there — so the kernel never walks this
@@ -9,12 +9,10 @@
 // onto the kernel's lock-free walk is a possible follow-up, deliberately separate from the
 // storage cutover. The DOMAIN row (question/answer/external ids) stays in human_questions.
 import type { IntentKindDef } from "../registry.ts";
-import { HUMAN_POLL_BACKOFF_CAP_SECONDS } from "../../schedule.ts";
 
 export const humanReplyPollKind: IntentKindDef = {
   kind: "human_reply_poll",
   ordering: "independent",
-  retryCapSeconds: HUMAN_POLL_BACKOFF_CAP_SECONDS,
   consumedBy: "reconciler",
   // Never reached in a healthy system: rows are created `waiting` and driven by the run-locked
   // reply loop. A pending row of this kind is a bug — fail it loudly rather than spin on it.

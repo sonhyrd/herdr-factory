@@ -21,7 +21,7 @@ import type {
   WorkState,
 } from "../types.ts";
 import { systemClock } from "../types.ts";
-import { backoffDelaySeconds, HUMAN_POLL_BACKOFF_CAP_SECONDS, OUTBOX_BACKOFF_CAP_SECONDS } from "../schedule.ts";
+import { MAX_RETRY_ATTEMPTS, RETRY_INTERVAL_SECONDS } from "../schedule.ts";
 import { recordDomainEvent, telemetryEvent } from "../telemetry/index.ts";
 import { tx } from "./tx.ts";
 
@@ -222,6 +222,7 @@ interface IntentRow {
   status: string;
   attempts: number;
   next_attempt_at: number;
+  suspended_at: number | null;
   lease_until: number | null;
   deadline_at: number | null;
   last_error: string | null;
@@ -252,6 +253,7 @@ function toIntent(r: IntentRow): Intent {
     status: r.status as Intent["status"],
     attempts: r.attempts,
     nextAttemptAt: r.next_attempt_at,
+    suspendedAt: r.suspended_at,
     leaseUntil: r.lease_until,
     deadlineAt: r.deadline_at,
     lastError: r.last_error,
@@ -875,6 +877,7 @@ export class Store {
       toStatus: p.toStatus,
       attempts: i.attempts,
       nextAttemptAt: i.nextAttemptAt,
+      suspendedAt: i.suspendedAt,
       lastError: i.lastError,
       createdAt: i.createdAt,
       updatedAt: i.updatedAt,
@@ -936,7 +939,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT * FROM intents WHERE repo = ? AND kind = 'source_transition' AND status = 'pending'
-         AND next_attempt_at <= ? ORDER BY scope, seq LIMIT ?`,
+         AND suspended_at IS NULL AND next_attempt_at <= ? ORDER BY scope, seq LIMIT ?`,
       )
       .all(repo, this.now(), limit) as unknown as IntentRow[];
     return rows.map((r) => this.intentToTransition(toIntent(r)));
@@ -958,14 +961,14 @@ export class Store {
     telemetryEvent("store.transition.delivered", { repo: e?.repo, "run.id": e?.runId, "work.key": e?.ticketKey, "work.state": e?.toState });
   }
 
-  /** Record a failed delivery attempt: bump the counter and push next_attempt_at out with
-   *  exponential backoff (60s doubling, capped at 1h). Never gives up — the intent stays visible
-   *  and retried until the source accepts it or the entry is superseded by an operator. */
+  /** Record a failed delivery attempt: bump the counter and push next_attempt_at out by the flat
+   *  30s interval. At MAX_RETRY_ATTEMPTS the row SUSPENDS (recordIntentAttempt stamps it): it stays
+   *  visible and keeps blocking re-claims, but is not retried again until an operator or a
+   *  cause-recovery requeue clears it. */
   recordTransitionAttempt(id: number, error: string): TransitionIntent {
     const current = this.getIntent(id);
     const attempts = (current?.attempts ?? 0) + 1;
-    const delay = backoffDelaySeconds(attempts, OUTBOX_BACKOFF_CAP_SECONDS);
-    this.recordIntentAttempt(id, error, "transient", delay);
+    this.recordIntentAttempt(id, error, "transient", RETRY_INTERVAL_SECONDS);
     const e = this.getTransitionIntent(id)!;
     telemetryEvent("store.transition.attempt_failed", {
       repo: e.repo,
@@ -1208,7 +1211,9 @@ export class Store {
   /** Record (or re-open) an intent. Idempotent per (kind, scope, dedupKey): re-enqueueing a live
    *  row makes it due now with the fresh payload; re-enqueueing a RESOLVED one re-opens it (the
    *  delivery must be idempotent at the backend — the transition/evidence re-open precedent),
-   *  keeping its original `seq` so a re-opened row holds its FIFO slot. `supersedeScope` (the
+   *  keeping its original `seq` so a re-opened row holds its FIFO slot. A re-enqueue is a FRESH
+   *  obligation, so it clears any suspension and resets `attempts` — a suspended row that stayed
+   *  hidden from the due walk while its payload silently updated would be a delivery lost forever. `supersedeScope` (the
    *  latest-wins orderings) first supersedes every other live row in (kind, scope) — newest wins,
    *  superseded rows keep their outcome for the timeline. `handoff` stamps the handoff marker
    *  ATOMICALLY with the enqueue — a pure-handoff kind (agent_signal) has no crash window between
@@ -1250,7 +1255,7 @@ export class Store {
              payload = excluded.payload, state = excluded.state, status = excluded.status, next_attempt_at = excluded.next_attempt_at,
              cause_scope = excluded.cause_scope, deadline_at = excluded.deadline_at, lease_until = excluded.lease_until,
              error_class = NULL, handoff_at = excluded.handoff_at, handoff_marker = excluded.handoff_marker,
-             consumed_at = NULL, consumed_result = NULL,
+             consumed_at = NULL, consumed_result = NULL, attempts = 0, suspended_at = NULL,
              resolved_at = NULL, updated_at = excluded.updated_at`,
         )
         .run(
@@ -1293,7 +1298,7 @@ export class Store {
     const exclusion = excludeKinds.length > 0 ? ` AND kind NOT IN (${excludeKinds.map(() => "?").join(",")})` : "";
     const rows = this.db
       .prepare(
-        `SELECT * FROM intents WHERE repo = ? AND status = 'pending' AND next_attempt_at <= ?
+        `SELECT * FROM intents WHERE repo = ? AND status = 'pending' AND suspended_at IS NULL AND next_attempt_at <= ?
          AND (lease_until IS NULL OR lease_until <= ?)
          AND (handoff_at IS NULL OR consumed_at IS NOT NULL)${exclusion} ORDER BY scope, seq LIMIT ?`,
       )
@@ -1319,10 +1324,13 @@ export class Store {
     return rows.map(toIntent);
   }
 
-  /** Record a failed delivery attempt: bump, classify, back off by `delaySeconds` (the kind's
-   *  curve), clear any lease. Guarded to live rows so a raced terminal stamp isn't reopened
-   *  ('waiting' included for engine-scheduled rows whose probes run outside the kernel — the
-   *  human reply poll). */
+  /** Record a failed delivery attempt: bump, classify, push the next attempt out by `delaySeconds`
+   *  (the flat interval), clear any lease. Guarded to live rows so a raced terminal stamp isn't
+   *  reopened ('waiting' included for engine-scheduled rows whose probes run outside the kernel —
+   *  the human reply poll). A PENDING row that reaches MAX_RETRY_ATTEMPTS suspends here — the one
+   *  choke point every retrying mechanism funnels through — stamping `suspended_at` and recording
+   *  an `intent_suspended` event; callers detect the fresh stamp (via the returned row) to notify
+   *  the operator loudly. Waiting rows never suspend (their escalation is the run-locked policy). */
   recordIntentAttempt(id: number, error: string, errorClass: Intent["errorClass"], delaySeconds: number): Intent | undefined {
     const t = this.now();
     this.db
@@ -1331,7 +1339,20 @@ export class Store {
          last_error = ?, error_class = ?, updated_at = ? WHERE id = ? AND status IN ('pending','waiting')`,
       )
       .run(t + delaySeconds, error.slice(0, 500), errorClass, t, id);
+    const suspended = this.db
+      .prepare("UPDATE intents SET suspended_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND suspended_at IS NULL AND attempts >= ?")
+      .run(t, t, id, MAX_RETRY_ATTEMPTS);
     const e = this.getIntent(id);
+    if (Number(suspended.changes) > 0 && e) {
+      this.recordEvent({
+        runId: e.runId,
+        repo: e.repo,
+        ticketKey: e.ticketKey,
+        type: "intent_suspended",
+        detail: { intentId: e.id, kind: e.kind, attempts: e.attempts, lastError: e.lastError },
+      });
+      telemetryEvent("store.intent.suspended", { repo: e.repo, "intent.kind": e.kind, "intent.id": id, "intent.attempts": e.attempts });
+    }
     telemetryEvent("store.intent.attempt_failed", { repo: e?.repo, "intent.kind": e?.kind, "intent.id": id, "intent.attempts": e?.attempts, "intent.error_class": errorClass ?? undefined });
     return e;
   }
@@ -1440,17 +1461,21 @@ export class Store {
   }
 
   /** Cause recovery (auth restored, creds back): make every live row under the cause due now, so
-   *  the next flush lands it instead of waiting out its backoff. Optionally scoped to an error
-   *  class (the SSO path requeues auth-stuck rows only). Returns how many were re-queued. */
+   *  the next flush lands it instead of waiting out its retry interval. Optionally scoped to an
+   *  error class (the SSO path requeues auth-stuck rows only). A SUSPENDED row is cleared too, with
+   *  `attempts` reset — the cause is verifiably fixed, so the row earns a fresh retry window.
+   *  Returns how many were re-queued. */
   requeueIntentsByCause(repo: string, causeScope: string, errorClass?: Intent["errorClass"]): number {
     const t = this.now();
-    const info = errorClass
-      ? this.db
-          .prepare("UPDATE intents SET next_attempt_at = ?, updated_at = ? WHERE repo = ? AND cause_scope = ? AND error_class = ? AND status = 'pending'")
-          .run(t, t, repo, causeScope, errorClass)
-      : this.db
-          .prepare("UPDATE intents SET next_attempt_at = ?, updated_at = ? WHERE repo = ? AND cause_scope = ? AND status = 'pending'")
-          .run(t, t, repo, causeScope);
+    const classFilter = errorClass ? " AND error_class = ?" : "";
+    const info = this.db
+      .prepare(
+        `UPDATE intents SET next_attempt_at = ?,
+           attempts = CASE WHEN suspended_at IS NOT NULL THEN 0 ELSE attempts END,
+           suspended_at = NULL, updated_at = ?
+         WHERE repo = ? AND cause_scope = ?${classFilter} AND status = 'pending'`,
+      )
+      .run(t, t, repo, causeScope, ...(errorClass ? [errorClass] : []));
     const requeued = Number(info.changes);
     if (requeued > 0) telemetryEvent("store.intent.cause_recovered", { repo, "intent.cause": causeScope, "intent.requeued": requeued });
     return requeued;
@@ -1465,43 +1490,70 @@ export class Store {
     return row !== undefined;
   }
 
-  /** Operator due-now for one pending row (the /intents/:id/retry endpoint). */
+  /** Operator due-now for one pending row (the /intents/:id/retry endpoint). Also clears a
+   *  suspension, with `attempts` reset — the operator says the cause is fixed. */
   retryIntentNow(id: number): boolean {
-    const info = this.db.prepare("UPDATE intents SET next_attempt_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'").run(this.now(), this.now(), id);
+    const t = this.now();
+    const info = this.db
+      .prepare(
+        `UPDATE intents SET next_attempt_at = ?,
+           attempts = CASE WHEN suspended_at IS NOT NULL THEN 0 ELSE attempts END,
+           suspended_at = NULL, updated_at = ? WHERE id = ? AND status = 'pending'`,
+      )
+      .run(t, t, id);
     return Number(info.changes) > 0;
   }
 
   /**
    * Operator due-now in BULK — the "I have fixed the cause, go now" button (the /retry-now endpoint,
-   * `retry-now` CLI, `s` on the TUI board): every BACKED-OFF pending row in the repo, or just one
-   * run's, becomes due immediately. The manual counterpart of `requeueIntentsByCause` for the causes
-   * the engine cannot probe for itself — a transient-classified upload, a network that came back, a
-   * source that stopped 500ing — where the only alternative is waiting out the doubling curve to its
-   * hour cap. Covers both the ledger kinds and the source write-backs (same table, kind
-   * `source_transition`).
+   * `retry-now` CLI, `s` on the TUI board): every SUSPENDED and every mid-interval pending row in
+   * the repo, or just one run's, becomes due immediately. The manual counterpart of
+   * `requeueIntentsByCause` for the causes the engine cannot probe for itself — a
+   * transient-classified upload, a network that came back, a source that stopped 500ing. Covers
+   * both the ledger kinds and the source write-backs (same table, kind `source_transition`).
    *
-   * Semantics deliberately match the automatic recovery path: due-now ONLY. `attempts` is not reset,
-   * so a cause that is still broken backs straight off to where it was instead of restarting the
-   * curve on every keypress, and each row keeps its failure history. Rows already due are not
-   * counted (nothing was un-stuck), which is what makes "0 jobs were waiting" an honest answer.
-   * `waiting` rows are untouched — those are external-trigger waits the kernel never retries; they
-   * resolve through /fulfil or their deadline. A row owing an unconsumed handoff is skipped for the
-   * same reason `dueIntents` skips it: it is in the RUN's court, so re-queueing it would promise a
-   * delivery the flush is right to withhold. Returns how many were re-queued.
+   * A suspended row is CLEARED with `attempts` reset — the operator says the cause is fixed, so the
+   * row earns a fresh 10-attempt window (a still-broken cause re-suspends after ~5 minutes of flat
+   * 30s retries, flagging again). A merely mid-interval row keeps its `attempts` (it counts toward
+   * the same cap). Rows already due are not counted (nothing was un-stuck), which is what makes
+   * "0 jobs were waiting" an honest answer. `waiting` rows are untouched — those are
+   * external-trigger waits the kernel never retries; they resolve through /fulfil or their
+   * deadline. A row owing an unconsumed handoff is skipped for the same reason `dueIntents` skips
+   * it: it is in the RUN's court, so re-queueing it would promise a delivery the flush is right to
+   * withhold. Returns the requeued total and how many of those were suspended.
    */
-  retryIntentsNow(repo: string, opts: { runId?: number } = {}): number {
+  retryIntentsNow(repo: string, opts: { runId?: number } = {}): { requeued: number; unsuspended: number } {
     const t = this.now();
     const scoped = opts.runId != null;
-    const info = this.db
+    const scopeFilter = scoped ? " AND run_id = ?" : "";
+    const scopeArgs = scoped ? [opts.runId!] : [];
+    const suspended = this.db
+      .prepare(
+        `UPDATE intents SET next_attempt_at = ?, attempts = 0, suspended_at = NULL, updated_at = ?
+         WHERE repo = ? AND status = 'pending' AND suspended_at IS NOT NULL
+         AND (handoff_at IS NULL OR consumed_at IS NOT NULL)${scopeFilter}`,
+      )
+      .run(t, t, repo, ...scopeArgs);
+    const backedOff = this.db
       .prepare(
         `UPDATE intents SET next_attempt_at = ?, updated_at = ?
          WHERE repo = ? AND status = 'pending' AND next_attempt_at > ?
-         AND (handoff_at IS NULL OR consumed_at IS NOT NULL)${scoped ? " AND run_id = ?" : ""}`,
+         AND (handoff_at IS NULL OR consumed_at IS NOT NULL)${scopeFilter}`,
       )
-      .run(t, t, repo, t, ...(scoped ? [opts.runId!] : []));
-    const requeued = Number(info.changes);
-    if (requeued > 0) telemetryEvent("store.intent.retry_now", { repo, "run.id": opts.runId, "intent.requeued": requeued });
-    return requeued;
+      .run(t, t, repo, t, ...scopeArgs);
+    const unsuspended = Number(suspended.changes);
+    const requeued = unsuspended + Number(backedOff.changes);
+    if (requeued > 0) telemetryEvent("store.intent.retry_now", { repo, "run.id": opts.runId, "intent.requeued": requeued, "intent.unsuspended": unsuspended });
+    return { requeued, unsuspended };
+  }
+
+  /** Suspended rows (pending, retries stopped after MAX_RETRY_ATTEMPTS failures) — the dashboard's
+   *  red per-repo problem line and doctor read these. Oldest first. */
+  suspendedIntents(repo: string): Intent[] {
+    const rows = this.db
+      .prepare("SELECT * FROM intents WHERE repo = ? AND status = 'pending' AND suspended_at IS NOT NULL ORDER BY suspended_at")
+      .all(repo) as unknown as IntentRow[];
+    return rows.map(toIntent);
   }
 
   /** Drop a run's live intents at teardown (optionally only some kinds — e.g. evidence bytes die
@@ -1673,18 +1725,17 @@ export class Store {
     });
   }
 
-  /** Record a poll that found no reply: back the next poll off (60s doubling, capped at 5min).
-   *  Human replies take minutes-to-hours; per-tick polling of every waiting run was pure
-   *  source-API load for no latency benefit. */
+  /** Record a poll that found no reply: schedule the next poll on the flat 30s interval. A miss is
+   *  never a failure (humans answer in minutes-to-hours), so misses neither suspend nor escalate —
+   *  only consecutive poll ERRORS do. */
   recordHumanPollMiss(id: number): HumanQuestion {
     const q = this.getHumanQuestion(id);
     if (!q) throw new Error(`recordHumanPollMiss: no question ${id}`);
     const intent = this.humanPollIntent(q);
     if (!intent) throw new Error(`recordHumanPollMiss: question ${id} has no poll clock`);
     const attempts = q.pollAttempts + 1;
-    const delay = backoffDelaySeconds(attempts, HUMAN_POLL_BACKOFF_CAP_SECONDS);
     // A miss is a SUCCESSFUL poll that found no reply — it also resets the consecutive-error run.
-    this.rescheduleIntent(intent.id, delay, JSON.stringify({ pollAttempts: attempts }), { resetAttempts: true });
+    this.rescheduleIntent(intent.id, RETRY_INTERVAL_SECONDS, JSON.stringify({ pollAttempts: attempts }), { resetAttempts: true });
     return this.getHumanQuestion(id)!;
   }
 
@@ -1697,18 +1748,17 @@ export class Store {
     if (intent) this.rescheduleIntent(intent.id, 0, JSON.stringify({ pollAttempts: 0 }), { resetAttempts: true });
   }
 
-  /** Record a pollHumanReply THROW: same backoff as a miss, but counted separately so a
-   *  persistently-failing source escalates (a slow human never should). */
+  /** Record a pollHumanReply THROW: same flat interval as a miss, but counted separately so a
+   *  persistently-failing source escalates (a slow human never should). The poll row is `waiting`,
+   *  so recordIntentAttempt never suspends it — the waiting-run reconciler parks the run for
+   *  attention past its consecutive-error cap instead. */
   recordHumanPollError(id: number): HumanQuestion {
     const q = this.getHumanQuestion(id);
     if (!q) throw new Error(`recordHumanPollError: no question ${id}`);
     const intent = this.humanPollIntent(q);
     if (!intent) throw new Error(`recordHumanPollError: question ${id} has no poll clock`);
     const errors = q.pollErrors + 1;
-    // The error backoff STACKS on the miss exponent (attempts + errors) so a flapping source keeps
-    // thinning out even while misses reset between throws.
-    const delay = backoffDelaySeconds(q.pollAttempts + errors, HUMAN_POLL_BACKOFF_CAP_SECONDS);
-    this.recordIntentAttempt(intent.id, "reply poll failed", "transient", delay);
+    this.recordIntentAttempt(intent.id, "reply poll failed", "transient", RETRY_INTERVAL_SECONDS);
     telemetryEvent("store.human_question.poll_error", { repo: q.repo, "run.id": q.runId, "question.id": q.id, "poll.errors": errors });
     return this.getHumanQuestion(id)!;
   }

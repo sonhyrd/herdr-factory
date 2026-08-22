@@ -270,7 +270,7 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
     const lines = explainRun({
       ob: ob({
         intents: {
-          transitions: [{ toState: "in_review", toStatus: "QA Review", attempts: 4, nextAttemptAt: NOW + 720, lastError: "HTTP 401 unauthorized", staleUnhandled: false }],
+          transitions: [{ toState: "in_review", toStatus: "QA Review", attempts: 4, nextAttemptAt: NOW + 720, suspended: false, lastError: "HTTP 401 unauthorized", staleUnhandled: false }],
         },
       }),
       repoName: REPO,
@@ -287,7 +287,7 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
       explainRun({
         ob: ob({
           intents: {
-            evidenceUploads: [{ keyPrefix: "my-app", attempts: 3, nextAttemptAt: NOW + 480, errorKind: "auth", lastError: "expired SSO token" }],
+            evidenceUploads: [{ keyPrefix: "my-app", attempts: 3, nextAttemptAt: NOW + 480, suspended: false, errorKind: "auth", lastError: "expired SSO token" }],
           },
         }),
         repoName: REPO,
@@ -304,7 +304,7 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
       explainRun({
         ob: ob({
           intents: {
-            transitions: [{ toState: "in_development", toStatus: "", attempts: 2, nextAttemptAt: NOW - 30, lastError: null, staleUnhandled: false }],
+            transitions: [{ toState: "in_development", toStatus: "", attempts: 2, nextAttemptAt: NOW - 30, suspended: false, lastError: null, staleUnhandled: false }],
           },
         }),
         repoName: REPO,
@@ -318,7 +318,7 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
     const text = joined(
       explainRun({
         ob: ob({
-          intents: { transitions: [{ toState: "in_review", toStatus: "", attempts: 9, nextAttemptAt: NOW + 1, lastError: null, staleUnhandled: true }] },
+          intents: { transitions: [{ toState: "in_review", toStatus: "", attempts: 9, nextAttemptAt: NOW + 1, suspended: false, lastError: null, staleUnhandled: true }] },
         }),
         repoName: REPO,
         now: NOW,
@@ -334,8 +334,8 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
           intents: {
             pendingSignal: { signal: "bounce", step: "review", toStep: "work", createdAt: NOW - 30 },
             ledger: [
-              { id: 21, kind: "external_wait", status: "waiting", nextAttemptAt: NOW + 60, deadlineAt: NOW + 3600, handoffOwed: false, lastError: null },
-              { id: 22, kind: "agent_signal", status: "pending", nextAttemptAt: NOW + 5, deadlineAt: null, handoffOwed: false, lastError: null },
+              { id: 21, kind: "external_wait", status: "waiting", nextAttemptAt: NOW + 60, suspended: false, deadlineAt: NOW + 3600, handoffOwed: false, lastError: null },
+              { id: 22, kind: "agent_signal", status: "pending", nextAttemptAt: NOW + 5, suspended: false, deadlineAt: null, handoffOwed: false, lastError: null },
             ],
           },
         }),
@@ -353,7 +353,7 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
       explainRun({
         ob: ob({
           intents: {
-            ledger: [{ id: 30, kind: "evidence_publish", status: "delivered", nextAttemptAt: NOW, deadlineAt: null, handoffOwed: true, lastError: null }],
+            ledger: [{ id: 30, kind: "evidence_publish", status: "delivered", nextAttemptAt: NOW, suspended: false, deadlineAt: null, handoffOwed: true, lastError: null }],
           },
         }),
         repoName: REPO,

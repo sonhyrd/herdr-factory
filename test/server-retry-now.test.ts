@@ -1,21 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApp, type RepoRuntime, type ServerContext } from "../src/server/app.ts";
 
-// POST /repos/{repo}/retry-now — the operator due-now: drop the backoff on the deliver lane's pending
-// rows and flush them on this request, instead of waiting out a curve that has doubled its way to the
-// hour cap. Repo-wide by default; `key` narrows it to one run. Pinned here because the ROUTE, not the
+// POST /repos/{repo}/retry-now — the operator due-now: clear the deliver lane's suspensions, make its
+// waiting pending rows due, and flush them on this request. Repo-wide by default; `key` narrows it to
+// one run. Pinned here because the ROUTE, not the
 // store, owns two of the contract's promises: the flush runs under the repo tick lock (never beside a
 // tick's own Phase 0), and a key that names no active run is a reported refusal, not a 500.
 
 interface RetryNowBody {
   ok: boolean;
   requeued: number;
+  unsuspended: number;
   flushed: boolean;
   message?: string;
 }
 
 function makeRuntime(over: { lockHeld?: boolean } = {}) {
-  const retryIntentsNow = vi.fn(() => 3);
+  const retryIntentsNow = vi.fn(() => ({ requeued: 3, unsuspended: 1 }));
   const acquireLock = vi.fn(() => !over.lockHeld);
   const dueIntents = vi.fn(() => []);
   const runtime = {
@@ -55,7 +56,7 @@ describe("POST /retry-now — operator due-now", () => {
     const { app, retryIntentsNow, acquireLock, dueIntents } = makeRuntime();
     const res = await postRetryNow(app, {});
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, requeued: 3, flushed: true } satisfies RetryNowBody);
+    expect(await res.json()).toEqual({ ok: true, requeued: 3, unsuspended: 1, flushed: true } satisfies RetryNowBody);
     expect(retryIntentsNow).toHaveBeenCalledWith("demo", { runId: undefined });
     expect(acquireLock).toHaveBeenCalled(); // the flush never runs beside a tick's own Phase 0
     expect(dueIntents).toHaveBeenCalled(); // …and it really did flush, not just re-queue
@@ -72,14 +73,14 @@ describe("POST /retry-now — operator due-now", () => {
     const { app, retryIntentsNow } = makeRuntime();
     const res = await postRetryNow(app, { key: "HF-404" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: false, requeued: 0, flushed: false, message: "HF-404: no active run" });
+    expect(await res.json()).toEqual({ ok: false, requeued: 0, unsuspended: 0, flushed: false, message: "HF-404: no active run" });
     expect(retryIntentsNow).not.toHaveBeenCalled();
   });
 
   it("still re-queues when a tick holds the lock, reporting flushed:false (that pass delivers them)", async () => {
     const { app, retryIntentsNow, dueIntents } = makeRuntime({ lockHeld: true });
     const res = await postRetryNow(app, {});
-    expect(await res.json()).toEqual({ ok: true, requeued: 3, flushed: false } satisfies RetryNowBody);
+    expect(await res.json()).toEqual({ ok: true, requeued: 3, unsuspended: 1, flushed: false } satisfies RetryNowBody);
     expect(retryIntentsNow).toHaveBeenCalled();
     expect(dueIntents).not.toHaveBeenCalled();
   });

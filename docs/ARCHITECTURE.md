@@ -60,7 +60,7 @@ source-agnostic.
 > (§8, §11); **(5)** parallel Phase A + **per-run locks** + heartbeat-extended locks (§7, §12);
 > **(6)** rate limiting — a Jira token bucket + a process-wide GitHub REST budget, both with
 > Retry-After-honoring retries, one batched GitHub
-> GraphQL query per tick for all watched PRs, human-reply poll backoff, and per-tick claim
+> GraphQL query per tick for all watched PRs, a flat human-reply poll cadence, and per-tick claim
 > admission (§5, §7). Migrations v10–v13 (v14 added the stale two-phase columns — §15).
 
 This document is the canonical design of the TypeScript implementation
@@ -426,7 +426,7 @@ reverse-engineered during the bash prototype.
     policy (§7). A throw means "retry me". **Every EXTERNAL-status source must map its own gone
     responses onto `stale`** — jira and github_issues both map 404/410 (and their
     `askHuman`/`pollHumanReply` throw `StaleItemError`); one that rethrew instead would leave the
-    outbox retrying a deleted item on its 60s→1h backoff forever AND, through the Phase-B claim guard
+    outbox retrying a deleted item until it suspends AND, through the Phase-B claim guard
     on undelivered write-backs, hold that item un-claimable behind it. Callers never invoke this fire-and-forget — the
     reconciler routes every transition through the **outbox** (§7). An optional 4th arg
     (`TransitionContext`) carries the merged PR's number+URL, built by the outbox delivery from the
@@ -439,10 +439,12 @@ reverse-engineered during the bash prototype.
     switch that used to live in `step.ts`. Local-fs-only, never throws; async only because
     `instrumentObject` wraps every client method in an async telemetry proxy)
   - `postNote(key, note)` (source-native operator-facing note — a Jira/GitHub comment / local
-    marker file; used when a run parks for `attention`; **marker-tagged**, see below)
+    marker file; used when a run parks for a WORK error (`bounce_limit`/`pr_closed` — mechanical
+    parks report into the run's pane instead) and for the moot-question closer; **marker-tagged**,
+    see below)
   - `askHuman(input)` / `pollHumanReply(input)` (the ask-human park: post a source-native
-    question, poll for the reply — polls back off 60s→5min per question; a poll throw counts as
-    a poll ERROR with the same backoff, escalating after 20 consecutive; both throw
+    question, poll for the reply — a flat 30s cadence per question; a poll throw counts as
+    a poll ERROR on the same cadence, escalating after 10 consecutive; both throw
     `StaleItemError` when the item is gone, escalating the run instead of polling a nonexistent
     item forever)
   - `health()` (throws if misconfigured/unreachable — the `doctor` per-source check)
@@ -663,7 +665,7 @@ CREATE INDEX idx_work_items ON work_items(repo, source, status);
 
 CREATE TABLE human_questions(            -- ask-human park: one pending question per run (v8).
                                          -- DOMAIN row only since v32 — the poll SCHEDULING (clock,
-                                         -- miss backoff, error escalation) lives on the intent
+                                         -- miss cadence, error escalation) lives on the intent
                                          -- ledger (kind `human_reply_poll`, one waiting row per
                                          -- pending question; the store's methods OVERLAY it onto
                                          -- this shape, and createHumanQuestion arms the row). The
@@ -693,10 +695,15 @@ CREATE TABLE intents(                    -- the INTENT LEDGER (v29): one durable
   dedup_key TEXT NOT NULL DEFAULT '',    -- ('run:<id>' | 'repo'); UNIQUE(kind, scope, dedup_key)
   seq INTEGER NOT NULL DEFAULT 0,        -- makes enqueue idempotent (re-open keeps `seq`, the FIFO
   payload TEXT NOT NULL DEFAULT '{}',    -- slot). Kinds declare ordering (fifo | latest-wins |
-  state TEXT NOT NULL DEFAULT '{}',      -- independent), backoff curves, delivery + run reactions.
+  state TEXT NOT NULL DEFAULT '{}',      -- independent), delivery + run reactions.
   status TEXT NOT NULL DEFAULT 'pending' -- 'waiting' rows are the EXTERNAL-TRIGGER capability:
     CHECK (status IN ('pending','waiting','delivered','superseded','failed','abandoned')),
   attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  suspended_at INTEGER,                  -- v36: stamped at MAX_RETRY_ATTEMPTS (10) failed attempts.
+                                         -- Still 'pending' (the obligation stands: claim veto +
+                                         -- FIFO hold) but excluded from every due walk until an
+                                         -- operator (retry-now / `s`) or a cause-recovery probe
+                                         -- clears it and resets `attempts`.
   lease_until INTEGER,                   -- an inline (CLI) attempt's claim vs the Phase-0 flush
   deadline_at INTEGER,                   -- waiting rows escalate via a handoff when it passes
   last_error TEXT, error_class TEXT CHECK (error_class IN ('auth','transient','permanent','stale')),
@@ -750,12 +757,12 @@ locks: `acquireLock/extendLock/releaseLock` (extend = the heartbeat; owner-check
 (`getRunStep`/`upsertRunStep`/`markStepDone`, the generalized guard counters
 `bumpGuardCounter`/`guardCounter`/`resetGuardCounter`), the transition outbox
 (`enqueueTransition`, `dueTransitions`, `undeliveredTransitionBefore` — in-order-per-run guard,
-`markTransitionDelivered`, `recordTransitionAttempt` — 60s-doubling backoff capped 1h,
+`markTransitionDelivered`, `recordTransitionAttempt` — flat 30s retry, suspending at 10 attempts,
 `pendingTransitionForKey` — the claim guard, and the stale two-phase:
 `markTransitionStale`/`unhandledStaleIntentForRun`/`markTransitionStaleHandled`), the
 **evidence-upload outbox** (`enqueueEvidenceUpload`, `dueEvidenceUploads` — `next_attempt_at`-leased
 so the CLI's inline attempt and the Phase-0 flush never double-claim a row, `recordEvidenceAttempt`
-— backoff + `error_kind`, `markEvidenceDelivered`/`markEvidencePermanentFailed`,
+— flat retry + `error_kind`, `markEvidenceDelivered`/`markEvidencePermanentFailed`,
 `undeliveredEvidenceUploadsForRun`), the human
 questions (`createHumanQuestion`/`pendingHumanQuestionForRun`/`answerHumanQuestion`/
 `recordHumanPollMiss`/`recordHumanPollError`), the **pending agent signals**
@@ -781,7 +788,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 **event types** (the `EventType` union in `src/types.ts`): `claimed · transition · worktree_created ·
 layout_applied · layout_apply_failed · step_spawned · step_done · layout_wait_retry · bounced ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
-stale · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
+stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
 pr_opened · resolver_woken · torn_down · belt_reassigned · belt_deleted · attention · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
@@ -805,7 +812,7 @@ Phase-A pass (`stale_handled_at`): an `in_development` stale — the claim write
 item deleted/closed, i.e. "don't do this work" — aborts the run promptly; a mid-flight stale
 (e.g. `in_review` — a PR may be up) parks it for `attention` with **no source note** (the item
 the note would go to is what's gone). Phase 0 then walks the **intent ledger** (`ledgerFlow`, the
-generic kernel — same due/backoff/lease machinery), whose `evidence_publish` kind carries the
+generic kernel — same due/retry/lease machinery), whose `evidence_publish` kind carries the
 evidence media: every undelivered evidence upload is
 retried through the run's `EvidencePublisher` (`s3`|`local`|`command`, selected from
 `evidence.publisher`) until the backend accepts it, so an AWS SSO session expiring mid-run — or any
@@ -816,23 +823,36 @@ auto-resume is gated on the publisher exposing `probeLiveness` — only `s3` doe
 (no `auth` kind, never auth-stuck) skip it entirely. For `s3`, a persistent auth failure notifies the
 human to `aws sso login`; and when a row is auth-stuck the flush cheaply probes creds once (gated on a
 stuck row — the happy path never probes) and, the moment they're live again, resets every auth-stuck
-row due-now (`requeueIntentsByCause` on `publisher:<type>`, mirroring `retryTransitionsForSource`) so
-the same pass uploads it instead of waiting out the up-to-1h backoff — no manual retry, no waiting.
+row due-now — clearing any suspension, with a fresh attempt window (`requeueIntentsByCause` on
+`publisher:<type>`, mirroring `retryTransitionsForSource`) — so the same pass uploads it: no manual
+retry, no waiting.
 
-**The operator due-now** (`retryIntentsNow`) covers what that automation cannot: a cause the engine
-has no probe for. Only `auth`-classified S3 failures self-heal; a timeout, an unknown SDK error, a
-source that was briefly 500ing all classify `transient`, and after a fix there is nothing to shorten
-the doubling curve. `POST /repos/:repo/retry-now` (CLI `retry-now [KEY]`, `s` on the TUI board) makes
-every **backed-off** pending row in the repo — or one run's, with `key` — due immediately and then
-runs `flushDurableIntents` (Phase 0 as a callable unit) under the **repo tick lock**, so the rows land
-on that request instead of on the next tick; when a tick already holds the lock the answer says so
-(`flushed: false`) and that pass delivers them. Semantics deliberately match the automatic path:
-due-now only, `attempts` untouched — a still-broken cause backs straight off to where it was rather
-than restarting the curve on every keypress. Rows already due are not counted, which is what makes
-`requeued: 0` a real diagnostic ("the delay is not a backoff"). `waiting` rows are never touched —
-those are external-trigger waits the kernel doesn't retry. Unlike `resume` this takes no run lock and
-reads no phase: it only touches deliver-lane rows, which is precisely why it works for a healthy run
-whose evidence bytes are the one thing stuck (`resume` refuses anything not parked for `attention`).
+**Suspension** (v36) is the retry policy's cap: every retrying intent runs on a **flat 30s
+interval** (`RETRY_INTERVAL_SECONDS`) and, at **`MAX_RETRY_ATTEMPTS` (10) failed attempts**, stamps
+`suspended_at` (the choke point is `recordIntentAttempt` — every mechanism funnels through it; only
+`pending` rows suspend, `waiting` rows escalate through their own run-locked policy). A suspended row
+stops being due — no more retries, no log churn — but stays `pending`: it keeps vetoing a re-claim of
+its item and keeps holding its scope's FIFO order. The suspension itself is loud: an
+`intent_suspended` event, an error log, an unthrottled operator notification naming both recovery
+paths, and a red problem entry on the repo's dashboard row (`/status.problems`).
+
+**The operator due-now** (`retryIntentsNow`) covers what the cause probes cannot: only
+`auth`-classified S3 failures and source auth pauses self-heal; a timeout, an unknown SDK error, a
+source that was briefly 500ing all classify `transient` and sit suspended after their 10 attempts.
+`POST /repos/:repo/retry-now` (CLI `retry-now [KEY]`, `s` on the TUI board) clears every **suspended**
+pending row in the repo — or one run's, with `key` — with `attempts` reset to 0 (a fresh 10-attempt
+window; a still-broken cause re-suspends after ~5 minutes and flags again), makes every merely
+mid-interval pending row due immediately (those keep their `attempts` — they count toward the same
+cap), and then runs `flushDurableIntents` (Phase 0 as a callable unit) under the **repo tick lock**,
+so the rows land on that request instead of on the next tick; when a tick already holds the lock the
+answer says so (`flushed: false`) and that pass delivers them. Rows already due are not counted, which
+is what makes `requeued: 0` a real diagnostic ("the delay is not a retry clock"); `unsuspended` in the
+answer counts the cleared suspensions. `waiting` rows are never touched — those are external-trigger
+waits the kernel doesn't retry. Unlike `resume` this takes no run lock and reads no phase: it only
+touches deliver-lane rows, which is precisely why it works for a healthy run whose evidence bytes are
+the one thing stuck (`resume` refuses anything not parked for `attention`). A **re-enqueue** of the
+same intent (a fresh obligation) also clears a suspension and resets `attempts` — a suspended row
+whose payload silently updated but never became due again would be a delivery lost forever.
 
 Two things make that recovery actually reachable from a **resident** process, both easy to regress:
 `evidenceClient` builds its credential provider with **`ignoreCache: true`** (`evidenceCredentialInit`,
@@ -887,9 +907,9 @@ caught → recorded as an `error` event → the tick continues; the per-repo tic
 overlapping passes. Each claim stamps `run.work_source`/`run.belt` and renders the branch from
 the belt's `workspace_name`. Status transitions (`in_development` on claim, `in_review` when the
 PR opens, terminal at teardown) are **enqueued as outbox intents and attempted immediately** —
-the healthy path is unchanged (status moves the same tick), but a failure is retried with
-exponential backoff (60s doubling, 1h cap) until the source confirms, instead of the old
-logged-then-dropped "deferred".
+the healthy path is unchanged (status moves the same tick), but a failure is retried every 30s —
+suspending, loudly, at 10 failed attempts — until the source confirms or an operator steps in,
+instead of the old logged-then-dropped "deferred".
 
 **Effects — configurable task progression.** Those three transitions are the engine *defaults*; a
 belt's optional `effects` block declares more (see README). Every source transition — default or
@@ -1011,7 +1031,7 @@ flowchart TD
 
     nudge -.->|"disp → herdr agent prompt (spawn next step)"| PIPE
     tick -.->|"disp → gh pr checks · review threads"| human
-    tick -.->|"disp → herdr notification show + source note<br/>(re-notifies hourly; `resume` un-parks)"| attention["attention<br/>(no claim slot)"]
+    tick -.->|"disp → herdr notification show + pane report<br/>(work errors → source note; re-notifies hourly; `resume` un-parks)"| attention["attention<br/>(no claim slot)"]
 
     review -.->|"on-demand → herdr agent read work-pane"| work
     pr -.->|"on-demand → herdr agent read / prompt prior-pane"| review
@@ -1261,9 +1281,14 @@ records the event, fires a notification, **flags the run's active pane** with an
 <KEY>` title + an `hf_state=attention` token (herdr's `agent_status` is owned by the agent's own
 lifecycle hook and can't be set externally, so a display cue is the persistent signal — published as
 metadata so the pane's real label, which a step's `pane:` target resolves by, is never touched), and
-**posts the reason to the work source**
-(`postNote` — a Jira comment / local note, including the ready-made `resume` and `triage`
-commands). While
+**routes the reason by what broke** (`WORK_ERROR_REASONS`): a *mechanical* failure — every factory
+watchdog and plumbing code (budgets, stalls, layout waits, capture caps, poll failures, config
+drift, plugin guards) — is reported into the run's own agent pane (`reportToPane`, a framed
+`agentSend`; a ticket comment about factory plumbing is noise to whoever reads the ticket), while an
+error about the *designated work itself* (`bounce_limit`, `pr_closed`) is **posted on the work item**
+(`postNote` — including the ready-made `resume` and `triage` commands) — except on a source whose
+`spec.replyChannel` is `"file"` (local_markdown: its notes are hidden files nobody watches), where it
+goes to the pane too. While
 parked, the run **re-notifies every `attention_renotify_seconds`** (default 1h) and — for a
 belt with a PR — keeps polling for a merge (which still tears it down). The operator
 un-parks it with **`herdr-factory --repo <name> resume <KEY>`**: back to its active step (budget/
@@ -1286,7 +1311,7 @@ A `working` pane is left mid-turn, and a dead one is respawned by the liveness p
 Parked runs hold **no claim slot** (§6). Teardown remains the abandon path.
 
 Resume is **`attention`-only** by design (it moves `run.phase`), so it is not the tool for a run that
-is fine except for a background retry sitting out its backoff — the deliver-lane sibling `retry-now`
+is fine except for a suspended (or mid-interval) background retry — the deliver-lane sibling `retry-now`
 is (§6, the operator due-now). The TUI's `s` picks between them from the highlighted card's phase, so
 an operator needs one key rather than the distinction.
 
@@ -1319,8 +1344,9 @@ left as-is).
 
 The terminal status write-back (`merged`/`aborted`/`done`) is **enqueued in the transition
 outbox before cleanup** and attempted immediately — teardown never blocks on it, and a failed
-write-back keeps retrying on later ticks *after the run has ended* (this, plus the Phase-B
-claim guard on pending write-backs, is what stops a torn-down item whose status never moved
+write-back keeps retrying on later ticks *after the run has ended* — suspending at the 10-attempt
+cap like every intent (this, plus the Phase-B claim guard on pending write-backs — which a
+SUSPENDED write-back still holds — is what stops a torn-down item whose status never moved
 from being claimed again).
 
 The herdr-first, verify-and-fall-back worktree removal (steps 1–5) is factored into an exported
@@ -1524,7 +1550,7 @@ sets up the supervisor itself, not a repo.
 herdr-factory --repo <name> tick | status | eligible
 herdr-factory --repo <name> claim <KEY> [--belt <name>] | teardown <KEY> [--source <name>]
 herdr-factory --repo <name> resume <KEY> [--source <name>]        # un-park an `attention` run
-herdr-factory --repo <name> retry-now [KEY] [--source <name>]     # backed-off retries due now + flush (after fixing the cause)
+herdr-factory --repo <name> retry-now [KEY] [--source <name>]     # clear suspensions + retries due now + flush (after fixing the cause)
 herdr-factory --repo <name> step-done <KEY> <step> [--source <name>]  # agent → dispatcher (event-nudges)
 herdr-factory --repo <name> ask-human <KEY> <step> --question[-file] …  # agent → park until a human replies
 herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agent → send work back for rework
@@ -1569,7 +1595,7 @@ one-line pointer to `timeline`), computes `runObligations`, and renders it throu
 `src/core/explain.ts` — the run's phase story (or its attention park, keyed by
 `attention_reason_code` with its rescue class), every deliver-lane debt with its attempt count and
 next-retry time, the armed clocks (budget/stall/layout-wait) with when they fire, counted bounces,
-and ready-made next commands. It ends with a warning when no server is ticking the repo (backoffs
+and ready-made next commands. It ends with a warning when no server is ticking the repo (retries
 and clocks only advance on ticks — the single most misread "stuck" state). The renderer is a
 zero-heavy-import leaf shared verbatim by the TUI run detail's "What's happening" section (the
 narrative shape lives in `src/core/obligations-shape.ts` so the TUI's eager startup graph never
@@ -1638,8 +1664,8 @@ what the old per-repo `watch` did, but collapsed into a single process plus a lo
 - **Routes.** `GET /health` (incl. per-repo `lastTickAt` + `tickStale` — the wedged-tick
   watchdog signal) · `POST /reload` (re-discover repos / reload config) · `POST /shutdown`
   (graceful drain) · `POST /repos/:repo/{tick,step-done,ask-human,bounce,resume,retry-now,claim,teardown}`
-  (the mutating CLI paths — `retry-now` is the bulk operator due-now: re-queue the repo's, or one
-  run's, backed-off pending intents and flush them under the tick lock, §6) ·
+  (the mutating CLI paths — `retry-now` is the bulk operator due-now: clear the repo's, or one
+  run's, suspensions, re-queue its waiting pending intents, and flush them under the tick lock, §6) ·
   `GET /repos/:repo/{status,runs,eligible,timeline}` (reads for the
   web UI) · `GET /repos/:repo/obligations?key=` ("why is this run waiting and what would move
   it": the run's undelivered outbox intents + pending signal/question, and its armed watches —
@@ -1783,7 +1809,7 @@ command it finds there (which makes the suite a live check of the §14 agent-CLI
 - **Time is compressed with config, never a fake clock** (`tick_interval_seconds: 1`, small
   `budget_seconds`/`stall_seconds`/`layout_wait_seconds`). `core/layout.ts:345` mixes `deps.now()*1000`
   with `Date.now()`, so an injected clock is unsafe on the layout path; the un-compressible waits
-  (`RETRY_BASE_SECONDS` 60, `PANE_ABSENCE_CONFIRM_SECONDS` 45, tick-stale ≥900s) are handled with the
+  (`RETRY_INTERVAL_SECONDS` 30, `PANE_ABSENCE_CONFIRM_SECONDS` 45, tick-stale ≥900s) are handled with the
   operator endpoints (`POST /intents/:id/retry`, `/intents/recover`, `/repos/:repo/retry-now` — the
   bulk due-now + flush) or marked slow.
 - **Assertion surface**, in order of preference: the SQLite rows (`runs` + `run_products`,
@@ -2033,9 +2059,9 @@ v10–v13): hard timeouts on every external call + the wedged-tick watchdog; her
 distinguished from pane-death with two-strike respawn confirmation; the transition outbox +
 claim guard; the attention workflow (`resume`, parked runs off the claim cap, source write-back,
 re-notification); parallel Phase A + per-run locks + heartbeat-extended locks; and rate limiting
-(Jira token bucket + Retry-After retries, batched PR GraphQL, human-reply poll backoff, claim
+(Jira token bucket + Retry-After retries, batched PR GraphQL, the flat reply-poll cadence, claim
 admission). Unit-tested throughout (`test/reconcile.test.ts` covers the outbox, locks, absence
-confirmation, attention workflow, batching and backoff; `test/exec-timeout.test.ts` the exec/
+confirmation, attention workflow, batching and the retry clock; `test/exec-timeout.test.ts` the exec/
 staleness primitives) — but not yet soaked at the 50–100-run scale it targets. Watch live runs
 before trusting it fully unsupervised.
 

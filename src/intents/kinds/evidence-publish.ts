@@ -21,7 +21,6 @@ import type { Deps } from "../../core/deps.ts";
 import type { Intent } from "../../types.ts";
 import type { IntentKindDef, IntentOutcome } from "../registry.ts";
 import { createEvidencePublisher, credsRefreshHint } from "../../clients/evidence.ts";
-import { OUTBOX_BACKOFF_CAP_SECONDS } from "../../schedule.ts";
 
 /** Enqueue lease seconds — see the module doc. Exported for the CLI's enqueue. */
 export const EVIDENCE_PUBLISH_LEASE_SECONDS = 300;
@@ -43,7 +42,6 @@ function publisherOf(deps: Deps) {
 export const evidencePublishKind: IntentKindDef = {
   kind: "evidence_publish",
   ordering: "latest-wins",
-  retryCapSeconds: OUTBOX_BACKOFF_CAP_SECONDS,
 
   // SSO auto-resume (S3 only — `local`/`command` expose no probeLiveness, and only S3 classifies
   // `auth`, so nothing is ever auth-stuck for them). Probe once, gated on a stuck row; on recovery

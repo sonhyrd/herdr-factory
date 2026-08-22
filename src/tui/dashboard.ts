@@ -6,7 +6,8 @@
 // rather than by tinting the whole card — see kanban.ts for the two rules the board keeps. Cards are
 // navigable (↑↓ within a column, ←→ across columns) and contextual keys act on the highlighted card,
 // each behind the shell's confirmation modal:  t = tick a repo,  c = claim a ready item,  x = teardown
-// an active run,  s = resume a parked run / retry its (or the repo's) backed-off background jobs now,
+// an active run,  s = resume a parked run / clear its (or the repo's) suspended + waiting background
+// jobs and retry them now,
 // d = open repo/work detail,  ↵ = timeline,  r = refresh. Auto-refreshes every 3s while active; when
 // the server is down it lists the repos with a hint and actions no-op.
 //
@@ -111,9 +112,10 @@ interface Target {
 }
 
 /** Desired state of one line (built in memory, then reconciled onto the rendered nodes): either a plain
- *  full-width line, or a board line of kanban cells with a target per focusable cell. */
+ *  full-width line, or a board line of kanban cells with a target per focusable cell. `problem` is a
+ *  red suffix appended after the content (the repo row's suspended-jobs/auth warnings). */
 type LineSpec =
-  | { kind: "text"; content: string; fg: string; target?: Target }
+  | { kind: "text"; content: string; fg: string; target?: Target; problem?: string }
   | { kind: "board"; cells: KanbanCell[]; targets: (Target | undefined)[] };
 
 /** A rendered line: its persistent text renderable + current spec. */
@@ -242,8 +244,15 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     }
     const isHi = current?.node === node;
     const gutter = spec.target ? (isHi ? "▶ " : "  ") : "";
+    const base = isHi ? theme.accent : spec.fg;
+    if (spec.problem) {
+      // The red problem suffix keeps its own color regardless of highlight — a warning must not
+      // blend into the accent when the row is selected.
+      node.text.content = new StyledText([fg(base)(gutter + spec.content), fg(theme.status.bad)(`   ⚠ ${spec.problem}`)]);
+      return;
+    }
     node.text.content = gutter + spec.content;
-    node.text.fg = isHi ? theme.accent : spec.fg;
+    node.text.fg = base;
   }
   function paint(): void {
     const cur = rows[hi];
@@ -422,7 +431,16 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     for (const { name, st, el } of data) {
       if (st) statusBelts.set(name, st.belts);
       const active = st?.active ?? [];
-      specs.push({ kind: "text", content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}`, fg: theme.accent, target: { repo: name, kind: "repo" } });
+      // Repo-level problems (suspended jobs, AWS creds, source auth) ride the repo row in red —
+      // `s` on the row clears the suspensions and retries.
+      const problems = (st?.problems ?? []).map((p) => p.detail).join(" · ");
+      specs.push({
+        kind: "text",
+        content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}`,
+        fg: theme.accent,
+        target: { repo: name, kind: "repo" },
+        problem: problems || undefined,
+      });
       if (!st) {
         specs.push({ kind: "text", content: "  (status unavailable)", fg: theme.text.tertiary });
         continue;
@@ -553,15 +571,17 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
    *
    *  - a run parked for `attention` → **resume**: un-park it back to where it was and re-dispatch
    *    (the CLI's `resume`), re-basing the step's clocks and refunding its guard budgets;
-   *  - any other run → **retry now** for that run's backed-off deliver-lane rows. A run can be
-   *    perfectly healthy with a background job stuck (the amber ⚠ card: evidence URLs published,
-   *    bytes still retrying) — resume refuses such a run (phase, not deliver lane), and no shipped
-   *    intent kind opts into resume's due-now refund anyway, so this is what it needs instead;
-   *  - a repo row (or a ready card) → **retry now** repo-wide, which is the shape of the usual cause:
-   *    one expired `aws sso login` blocks every run's evidence upload at once.
+   *  - any other run → **retry now** for that run's stuck deliver-lane rows: suspended jobs (10
+   *    failed attempts — retries stopped) are cleared with a fresh attempt window, mid-interval
+   *    rows become due immediately. A run can be perfectly healthy with a background job stuck
+   *    (the amber ⚠ card: evidence URLs published, bytes still retrying) — resume refuses such a
+   *    run (phase, not deliver lane), so this is what it needs instead;
+   *  - a repo row (or a ready card) → **retry now** repo-wide, clearing ALL the repo's suspensions —
+   *    the shape of the usual cause: one expired `aws sso login` blocks every run's evidence
+   *    upload at once, and the red ⚠ problems on the repo row point here.
    *
-   * Without this the only cure for a backoff that has doubled its way to the hour cap was to wait it
-   * out, since the engine only auto-recovers causes it can probe (AWS creds classified `auth`).
+   * The engine auto-clears only the causes it can probe (AWS creds classified `auth`); everything
+   * else suspends after 10 flat 30s retries and waits for this key (or `retry-now` on the CLI).
    */
   async function doResumeOrRetry(t: Target): Promise<void> {
     if (!serverUp) return setAction("server not running", theme.status.warn);
@@ -577,15 +597,17 @@ export function createDashboard(renderer: CliRenderer, actions: { confirm: Confi
     }
     const perRun = t.kind === "run" && t.key != null;
     const scope = perRun ? `"${t.key}"` : `"${t.repo}"`;
-    if (!(await confirm(`Retry ${scope}'s backed-off background jobs now (uploads, source write-backs)?`))) return;
+    if (!(await confirm(`Clear ${scope}'s suspended background jobs and retry them now (uploads, source write-backs)?`))) return;
     setAction(`retrying ${perRun ? t.key : t.repo}…`, theme.text.secondary);
     const r = await postRetryNow(t.repo, perRun ? t.key : undefined, t.source);
     if (!r.ok) setAction(`✗ retry failed: ${r.error}`, theme.status.bad);
     else if (!r.body.ok) setAction(`✗ ${r.body.message ?? "nothing to retry"}`, theme.status.warn);
-    else if ((r.body.requeued ?? 0) === 0) setAction(`${scope}: no backed-off jobs were waiting`, theme.text.secondary);
+    else if ((r.body.requeued ?? 0) === 0) setAction(`${scope}: no suspended or waiting jobs`, theme.text.secondary);
     else {
       const n = r.body.requeued!;
-      setAction(`✓ ${scope}: ${n} job${n === 1 ? "" : "s"} due now${r.body.flushed ? " — flushed" : " — a tick is mid-pass"}`, theme.status.good);
+      const cleared = r.body.unsuspended ?? 0;
+      const clearedNote = cleared > 0 ? ` (${cleared} suspension${cleared === 1 ? "" : "s"} cleared)` : "";
+      setAction(`✓ ${scope}: ${n} job${n === 1 ? "" : "s"} due now${clearedNote}${r.body.flushed ? " — flushed" : " — a tick is mid-pass"}`, theme.status.good);
     }
     void refresh();
   }

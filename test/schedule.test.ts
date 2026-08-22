@@ -1,32 +1,18 @@
 import { describe, expect, it } from "vitest";
-import {
-  backoffDelaySeconds,
-  HUMAN_POLL_BACKOFF_CAP_SECONDS,
-  notifyDue,
-  OUTBOX_BACKOFF_CAP_SECONDS,
-} from "../src/schedule.ts";
+import { MAX_RETRY_ATTEMPTS, notifyDue, RETRY_INTERVAL_SECONDS } from "../src/schedule.ts";
 
-// The extracted deliver-lane scheduling spine must be curve-identical to the four inline
-// implementations it replaced (transition outbox, evidence outbox, human-poll miss, human-poll
-// error) — these pin the exact values the outbox/poll tests were written against.
+// The deliver-lane scheduling spine is deliberately FLAT: a fixed 30s retry interval and a
+// 10-attempt suspension cap. These pin the exact values every retrying mechanism (transition
+// outbox, evidence publish, human-reply poll) and the suspension choke point are written against —
+// a change here changes how long a broken cause retries before it flags.
 
-describe("backoffDelaySeconds", () => {
-  it("doubles from 60s per attempt", () => {
-    expect(backoffDelaySeconds(1, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(60);
-    expect(backoffDelaySeconds(2, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(120);
-    expect(backoffDelaySeconds(3, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(240);
-    expect(backoffDelaySeconds(6, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(1920);
+describe("retry constants", () => {
+  it("retries every 30 seconds, flat", () => {
+    expect(RETRY_INTERVAL_SECONDS).toBe(30);
   });
 
-  it("caps at 1h for the outboxes (attempt 7 onward)", () => {
-    expect(backoffDelaySeconds(7, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(3600);
-    expect(backoffDelaySeconds(50, OUTBOX_BACKOFF_CAP_SECONDS)).toBe(3600);
-  });
-
-  it("caps at 5min for the human-reply poll (attempt 4 onward)", () => {
-    expect(backoffDelaySeconds(3, HUMAN_POLL_BACKOFF_CAP_SECONDS)).toBe(240);
-    expect(backoffDelaySeconds(4, HUMAN_POLL_BACKOFF_CAP_SECONDS)).toBe(300);
-    expect(backoffDelaySeconds(20, HUMAN_POLL_BACKOFF_CAP_SECONDS)).toBe(300);
+  it("suspends after 10 failed attempts", () => {
+    expect(MAX_RETRY_ATTEMPTS).toBe(10);
   });
 });
 

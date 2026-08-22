@@ -36,6 +36,7 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
     toStatus: t.toStatus,
     attempts: t.attempts,
     nextAttemptAt: t.nextAttemptAt,
+    suspended: t.suspendedAt !== null,
     lastError: t.lastError,
     staleUnhandled: t.staleAt !== null && t.staleHandledAt === null,
   }));
@@ -48,7 +49,7 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
       } catch {
         /* introspection only — a bad payload just shows an empty prefix */
       }
-      return { keyPrefix, attempts: i.attempts, nextAttemptAt: i.nextAttemptAt, errorKind: i.errorClass as string | null, lastError: i.lastError };
+      return { keyPrefix, attempts: i.attempts, nextAttemptAt: i.nextAttemptAt, suspended: i.suspendedAt !== null, errorKind: i.errorClass as string | null, lastError: i.lastError };
     });
   const sig = deps.store.unconsumedPendingSignalForRun(run.id);
   const q = deps.store.pendingHumanQuestionForRun(run.id);
@@ -60,6 +61,7 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
       kind: i.kind,
       status: i.status,
       nextAttemptAt: i.nextAttemptAt,
+      suspended: i.suspendedAt !== null,
       deadlineAt: i.deadlineAt,
       handoffOwed: i.handoffAt !== null && i.consumedAt === null,
       lastError: i.lastError,

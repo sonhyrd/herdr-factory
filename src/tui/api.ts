@@ -70,6 +70,10 @@ export interface RepoStatus {
   }[];
   active: ActiveRun[];
   finished: { id: number; ticketKey: string; phase: string; outcome: string | null; prNumber: number | null }[];
+  /** Repo-level problems for the red per-repo line: suspended jobs (retries stopped after the
+   *  10-attempt cap), auth-stuck uploads (AWS creds), live source auth failures. Present on the
+   *  quick path too (cheap reads, no probes). */
+  problems?: { kind: string; detail: string }[];
   /** Evidence-upload credential (AWS SSO) health for the dashboard light. "na" = no evidence config. */
   evidenceSso?: { state: "ok" | "down" | "na"; detail?: string };
 }
@@ -195,11 +199,13 @@ export function postResume(repo: string, key: string, source?: string | null): P
   return postBody<ResumeOutcome>(`/repos/${encodeURIComponent(repo)}/resume`, source ? { key, source } : { key });
 }
 
-/** Make backed-off retries due now + flush them. `requeued` counts rows that were actually waiting
- *  out a backoff; `flushed` is false when a tick held the repo lock (that pass delivers them). */
+/** Clear suspensions and make waiting retries due now + flush them. `requeued` counts rows that
+ *  were actually stuck; `unsuspended` is the subset that had suspended (10 failed attempts) and got
+ *  a fresh window; `flushed` is false when a tick held the repo lock (that pass delivers them). */
 export interface RetryNowOutcome {
   ok: boolean;
   requeued?: number;
+  unsuspended?: number;
   flushed?: boolean;
   message?: string;
 }

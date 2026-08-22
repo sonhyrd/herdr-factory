@@ -826,6 +826,20 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE run_steps DROP COLUMN baseline_frozen_at;
     `,
   },
+  {
+    version: 36,
+    // SUSPENSION: retries are now a flat 30s interval capped at MAX_RETRY_ATTEMPTS (10) — the
+    // exponential backoff (60s doubling to 1h) is gone. A pending intent that exhausts the cap
+    // stamps `suspended_at` and stops being due: still status 'pending' (the obligation stands —
+    // it keeps blocking claims and per-run FIFO order, and the status CHECK needs no rebuild),
+    // but the due queries skip it until an operator (`retry-now` / `s` on the TUI board) or a
+    // cause-recovery probe clears the stamp and resets `attempts`. Expand-only: NULL everywhere,
+    // and rows mid-backoff simply become due on the new flat clock.
+    sql: `
+      ALTER TABLE intents ADD COLUMN suspended_at INTEGER;
+      CREATE INDEX idx_intents_suspended ON intents(repo) WHERE suspended_at IS NOT NULL AND status = 'pending';
+    `,
+  },
 ];
 
 /** Apply pending migrations in a transaction. Idempotent. */

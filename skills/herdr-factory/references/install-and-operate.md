@@ -314,7 +314,7 @@ imported on first activation — you may see ` loading...` or ` failed to load: 
 
 | Tab | For | Notes |
 |---|---|---|
-| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; banner `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention. Server down ⇒ the banner reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
+| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; banner `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention. Each repo row shows its **problems in red** after the active count (`⚠ N jobs suspended after 10 failed retries (…) — press s to retry` · `evidence uploads blocked on AWS creds — …` · `<source>: <auth failure>`), fed by `/status.problems` on the quick path. Server down ⇒ the banner reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
 | **Config** | the five-section config editor over `~/.config/herdr-factory/repos/<name>/config.yml` + its `env` file, with a `+ new repo…` wizard | edits a YAML `Document`, so comments and formatting survive |
 | **Doctor** | the machine-wide health checks | see the caveat at the end of this section |
 
@@ -371,7 +371,7 @@ a confirm modal, and the result lands on the bottom action line:
 | `d` | **repo** row → repo detail (AWS SSO, per-source auth, per-belt steps/health/eligible counts); **run** card → full work-item detail (overview + step progress + timeline) | repo, run |
 | `t` | run one reconcile tick on that row's repo — `Run a reconcile tick on "<repo>"?` | any card/row |
 | `c` | claim the item — picks the belt automatically when the source has exactly one, otherwise asks | `ready` cards |
-| `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk due-now** (`Retry "<scope>"'s backed-off background jobs now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now — flushed`, or `— a tick is mid-pass`, or `"<scope>": no backed-off jobs were waiting`). A run card scopes to that run; a repo row is repo-wide | run, repo, ready |
+| `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk clear-and-retry** (`Clear "<scope>"'s suspended background jobs and retry them now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now (M suspensions cleared) — flushed`, or `— a tick is mid-pass`, or `"<scope>": no suspended or waiting jobs`). A run card scopes to that run; a repo row is repo-wide and clears every suspension the repo row flags in red | run, repo, ready |
 | `x` | tear the run down — `Tear down "<key>" (removes its worktree)?` | run cards |
 | `r` | refresh now | anywhere |
 

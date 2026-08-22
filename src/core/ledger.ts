@@ -12,8 +12,9 @@
 import type { Deps } from "./deps.ts";
 import type { Intent, Run } from "../types.ts";
 import type { OutboxFlow } from "./outbox.ts";
-import { INTENT_KINDS, intentKindFor, intentRetryDelay, type IntentConsumeVerdict, type IntentKindDef } from "../intents/registry.ts";
-import { notifyDue } from "../schedule.ts";
+import { INTENT_KINDS, intentKindFor, type IntentConsumeVerdict, type IntentKindDef } from "../intents/registry.ts";
+import { MAX_RETRY_ATTEMPTS, notifyDue, RETRY_INTERVAL_SECONDS } from "../schedule.ts";
+import { reportToPane } from "./pane-display.ts";
 
 function err(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -36,21 +37,48 @@ async function applyOutcome(deps: Deps, kind: IntentKindDef, row: Intent, outcom
       deps.store.markIntentHandoff(row.id, outcome.marker, { resolve: outcome.resolve, error: outcome.error });
       return;
     case "retry": {
-      const updated = deps.store.recordIntentAttempt(row.id, outcome.error, outcome.errorClass, intentRetryDelay(kind, row));
-      deps.log("warn", `${row.ticketKey ?? row.scope}: ${row.kind} intent deferred (attempt ${updated?.attempts}): ${outcome.error}`);
+      const updated = deps.store.recordIntentAttempt(row.id, outcome.error, outcome.errorClass, RETRY_INTERVAL_SECONDS);
+      // The attempt that crossed MAX_RETRY_ATTEMPTS suspended the row (the store stamps it):
+      // retries stop until an operator (`s` / retry-now) or a cause probe clears it. That is a
+      // state change the operator must hear about NOW — notify unthrottled, once.
+      if (updated?.suspendedAt != null && row.suspendedAt == null) {
+        deps.log("error", `${row.ticketKey ?? row.scope}: ${row.kind} intent SUSPENDED after ${updated.attempts} failed attempts: ${outcome.error}`);
+        await notifySuspended(deps, kind.kind, updated, outcome.error);
+        return;
+      }
+      deps.log("warn", `${row.ticketKey ?? row.scope}: ${row.kind} intent deferred (attempt ${updated?.attempts} of ${MAX_RETRY_ATTEMPTS}): ${outcome.error}`);
       await maybeNotify(deps, kind, row, { errorClass: outcome.errorClass, reason: outcome.error });
       return;
     }
   }
 }
 
-/** The kind's operator notify for a failure, throttled per row by attention_renotify_seconds. */
+/** The one-time SUSPENSION notify: unthrottled (it fires exactly once per suspension — the row
+ *  stops retrying, so there is no repeat), naming the failure and both recovery paths. A suspension
+ *  is a MECHANICAL failure (the factory's own delivery machinery), so it also reports into the
+ *  run's own agent pane when the run is still live — never onto the work item. Exported for the
+ *  reconciler's transition flow, which delivers its kind outside this kernel. */
+export async function notifySuspended(deps: Deps, kindName: string, row: { id: number; runId: number | null; ticketKey: string | null }, reason: string): Promise<void> {
+  const what = row.ticketKey ? `${row.ticketKey}'s ${kindName.replaceAll("_", " ")}` : `a ${kindName.replaceAll("_", " ")} job`;
+  const body = `${what} failed ${MAX_RETRY_ATTEMPTS} times and stopped retrying (${reason}). Fix the cause, then press s on the dashboard or run \`herdr-factory --repo ${deps.config.repoName} retry-now\`.`;
+  await deps.herdr.notify(`herdr-factory: ${deps.config.repoName} — job suspended`, body).catch(() => {});
+  const run = row.runId != null ? deps.store.getRun(row.runId) : undefined;
+  if (run && run.endedAt == null) await reportToPane(deps, run, `⚠ background job suspended: ${body}`);
+  deps.store.markIntentNotified(row.id);
+}
+
+/** The kind's operator notify for a failure, throttled per row by attention_renotify_seconds.
+ *  A failing background delivery is a MECHANICAL error, so the same (throttled) message also
+ *  reports into the run's own agent pane when the run is still live — where the work happened,
+ *  and where the operator is already looking. Never onto the work item. */
 async function maybeNotify(deps: Deps, kind: IntentKindDef, row: Intent, failure: { errorClass: string; reason: string }): Promise<void> {
   if (!kind.notify) return;
   if (!notifyDue(row.notifiedAt, deps.config.limits.attentionRenotifySeconds, deps.now())) return;
   const note = kind.notify(deps, row, failure);
   if (!note) return;
   await deps.herdr.notify(note.title, note.body).catch(() => {});
+  const run = row.runId != null ? deps.store.getRun(row.runId) : undefined;
+  if (run && run.endedAt == null) await reportToPane(deps, run, `⚠ ${note.title}: ${note.body}`);
   deps.store.markIntentNotified(row.id);
 }
 

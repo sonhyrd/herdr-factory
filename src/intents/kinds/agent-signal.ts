@@ -7,12 +7,10 @@
 // durability, single-slot supersession (latest-wins: an agent re-deciding replaces its prior
 // signal), the timeline, and teardown abandonment.
 import type { IntentKindDef } from "../registry.ts";
-import { OUTBOX_BACKOFF_CAP_SECONDS } from "../../schedule.ts";
 
 export const agentSignalKind: IntentKindDef = {
   kind: "agent_signal",
   ordering: "latest-wins",
-  retryCapSeconds: OUTBOX_BACKOFF_CAP_SECONDS, // unused — waiting rows are never retried
   consumedBy: "reconciler",
   // Crash backstop only: a mis-created pending row (enqueue stamps the handoff atomically, so this
   // should never run) converts itself into the handoff it was meant to be.

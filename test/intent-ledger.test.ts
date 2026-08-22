@@ -112,7 +112,7 @@ describe("intents store — enqueue/dedup/FIFO/lease mechanics", () => {
     expect(store.fulfilIntent(wait.id)).toBeUndefined(); // second fulfil is a no-op
   });
 
-  it("retryIntentsNow (operator bulk due-now) counts only backed-off pending rows, keeps attempts, and scopes by run", () => {
+  it("retryIntentsNow (operator bulk due-now) counts only stuck pending rows, keeps attempts, and scopes by run", () => {
     const { store, setNow } = makeStore();
     // A second run, so the run-scoped form can be shown NOT to touch its sibling.
     const other = store.createRun({ repo: "r", workSource: "src", belt: "b", ticketKey: "K-2" });
@@ -128,27 +128,77 @@ describe("intents store — enqueue/dedup/FIFO/lease mechanics", () => {
 
     // Run-scoped: only run 1's backed-off rows. `alreadyDue` was never stuck, so it isn't counted;
     // the sibling run is untouched.
-    expect(store.retryIntentsNow("r", { runId: 1 })).toBe(2);
+    expect(store.retryIntentsNow("r", { runId: 1 })).toEqual({ requeued: 2, unsuspended: 0 });
     expect(store.getIntent(upload.id)!.nextAttemptAt).toBe(1100);
     expect(store.getIntent(writeBack.id)!.nextAttemptAt).toBe(1100);
     expect(store.getIntent(alreadyDue.id)!.nextAttemptAt).toBe(1000);
     expect(store.getIntent(otherRun.id)!.nextAttemptAt).toBe(1000 + 3600);
-    // Attempts survive: a still-broken cause backs off to where it was, not to the start of the curve.
+    // Attempts survive on a merely mid-interval row: they still count toward the suspension cap.
     expect(store.getIntent(upload.id)!.attempts).toBe(1);
     // A second press re-queues nothing (everything is already due) — the count stays honest.
-    expect(store.retryIntentsNow("r", { runId: 1 })).toBe(0);
+    expect(store.retryIntentsNow("r", { runId: 1 })).toEqual({ requeued: 0, unsuspended: 0 });
 
     // Repo-wide picks up the sibling run; `waiting` rows (external-trigger waits) are never retried.
-    expect(store.retryIntentsNow("r")).toBe(1);
+    expect(store.retryIntentsNow("r")).toEqual({ requeued: 1, unsuspended: 0 });
     expect(store.getIntent(otherRun.id)!.nextAttemptAt).toBe(1100);
     expect(store.getIntent(waiting.id)!.status).toBe("waiting");
-    expect(store.retryIntentsNow("other-repo")).toBe(0);
+    expect(store.retryIntentsNow("other-repo")).toEqual({ requeued: 0, unsuspended: 0 });
 
     // A backed-off row owing an unconsumed handoff is in the RUN's court — skipped, like dueIntents.
     const owed = enqueue(store, { dedupKey: "h" });
     store.recordIntentAttempt(owed.id, "500", "transient", 3600);
     store.markIntentHandoff(owed.id, "stale");
-    expect(store.retryIntentsNow("r")).toBe(0);
+    expect(store.retryIntentsNow("r")).toEqual({ requeued: 0, unsuspended: 0 });
+  });
+
+  it("suspension: attempt #10 stamps suspended_at, drops the row from the due walk, and retry-now clears it fresh", () => {
+    const { store, setNow } = makeStore();
+    const row = enqueue(store, { dedupKey: "s" });
+    for (let i = 0; i < 9; i++) store.recordIntentAttempt(row.id, "boom", "transient", 30);
+    expect(store.getIntent(row.id)!.suspendedAt).toBeNull();
+    store.recordIntentAttempt(row.id, "boom", "transient", 30);
+    const suspended = store.getIntent(row.id)!;
+    expect(suspended.attempts).toBe(10);
+    expect(suspended.suspendedAt).not.toBeNull();
+    expect(suspended.status).toBe("pending"); // the obligation stands: claim veto + FIFO keep holding
+    // Never due again on its own, no matter how much time passes.
+    setNow(999_999);
+    expect(store.dueIntents("r").map((i) => i.id)).not.toContain(row.id);
+    // It surfaces on the suspended listing and in the timeline.
+    expect(store.suspendedIntents("r").map((i) => i.id)).toContain(row.id);
+    expect(store.timeline("r", "K-1").some((e) => e.type === "intent_suspended")).toBe(true);
+    // The FIFO gate still blocks a later sibling behind it.
+    const later = enqueue(store, { dedupKey: "later" });
+    expect(store.earlierPendingIntentInScope("k", "run:1", later.seq)).toBe(true);
+    // retry-now clears it with a fresh attempt window; it is due (and counted) again. The `later`
+    // sibling is already due, so it is not counted — only the suspended row was stuck.
+    expect(store.retryIntentsNow("r")).toEqual({ requeued: 1, unsuspended: 1 });
+    const cleared = store.getIntent(row.id)!;
+    expect(cleared.suspendedAt).toBeNull();
+    expect(cleared.attempts).toBe(0);
+    expect(store.dueIntents("r").map((i) => i.id)).toContain(row.id);
+  });
+
+  it("suspension: a cause-recovery requeue clears it too; a waiting row never suspends; re-enqueue reopens fresh", () => {
+    const { store } = makeStore();
+    // Cause recovery (the SSO probe path) un-suspends and resets attempts.
+    const stuck = enqueue(store, { dedupKey: "c", causeScope: "publisher:s3" });
+    for (let i = 0; i < 10; i++) store.recordIntentAttempt(stuck.id, "sso expired", "auth", 30);
+    expect(store.getIntent(stuck.id)!.suspendedAt).not.toBeNull();
+    expect(store.authStuckIntents("r", "k")).toBe(true); // still drives the probe + dashboard light
+    expect(store.requeueIntentsByCause("r", "publisher:s3", "auth")).toBe(1);
+    expect(store.getIntent(stuck.id)!).toMatchObject({ suspendedAt: null, attempts: 0 });
+    // A waiting row (human poll, external wait) records attempts but never suspends here — its
+    // escalation is the run-locked policy's job.
+    const waiting = enqueue(store, { dedupKey: "w", status: "waiting" });
+    for (let i = 0; i < 12; i++) store.recordIntentAttempt(waiting.id, "poll failed", "transient", 30);
+    expect(store.getIntent(waiting.id)!.suspendedAt).toBeNull();
+    // A re-enqueue is a fresh obligation: suspension and attempts clear, so the row can deliver.
+    const dead = enqueue(store, { dedupKey: "d" });
+    for (let i = 0; i < 10; i++) store.recordIntentAttempt(dead.id, "boom", "transient", 30);
+    const reopened = enqueue(store, { dedupKey: "d" });
+    expect(reopened.id).toBe(dead.id);
+    expect(reopened).toMatchObject({ suspendedAt: null, attempts: 0, status: "pending" });
   });
 
   it("abandonIntentsForRun drops only live rows of the given kinds; a repo-scoped handoff self-acknowledges", () => {
@@ -169,12 +219,11 @@ describe("ledger kernel — outcome application, FIFO gate, deadlines, notify th
   const fakeKind = (kind: string, deliver: (deps: Deps, row: import("../src/types.ts").Intent) => Promise<IntentOutcome>, over: Partial<IntentKindDef> = {}): IntentKindDef => ({
     kind,
     ordering: "independent",
-    retryCapSeconds: 3600,
     deliver,
     ...over,
   });
 
-  it("applies each outcome: delivered / retry (kind curve) / reschedule (no attempt) / failed / handoff", async () => {
+  it("applies each outcome: delivered / retry (flat 30s) / reschedule (no attempt) / failed / handoff", async () => {
     const { store, now } = makeStore();
     const deps = makeDeps(store, now);
     const rows = {
@@ -195,7 +244,7 @@ describe("ledger kernel — outcome application, FIFO gate, deadlines, notify th
     expect(store.getIntent(rows.ok.id)!.status).toBe("delivered");
     const r = store.getIntent(rows.retry.id)!;
     expect(r.attempts).toBe(1);
-    expect(r.nextAttemptAt).toBe(now() + 60); // shared curve, attempt 1
+    expect(r.nextAttemptAt).toBe(now() + 30); // the flat interval, attempt 1
     const rs = store.getIntent(rows.resched.id)!;
     expect(rs.attempts).toBe(0); // a miss is not an error
     expect(rs.nextAttemptAt).toBe(now() + 120);
@@ -221,9 +270,9 @@ describe("ledger kernel — outcome application, FIFO gate, deadlines, notify th
     ];
     enqueue(store, { kind: "f", dedupKey: "first" });
     enqueue(store, { kind: "f", dedupKey: "second" });
-    await flushOutbox(deps, ledgerFlow(deps, kinds)); // first fails (backs off 60s); second is due but BLOCKED
+    await flushOutbox(deps, ledgerFlow(deps, kinds)); // first fails (retries in 30s); second is due but BLOCKED
     expect(attempts).toEqual(["first"]);
-    setNow(1061);
+    setNow(1031);
     // first (due again) delivers; second unblocks within the same pass — the gate re-checks the DB,
     // not a pass-start snapshot (the legacy transition-outbox semantics).
     await flushOutbox(deps, ledgerFlow(deps, kinds));
@@ -276,7 +325,7 @@ describe("consumeIntentHandoffs — the run-locked half", () => {
     store.markIntentHandoff(plain.id, "fulfilled");
     store.markIntentHandoff(throwing.id, "fulfilled");
     const kinds: IntentKindDef[] = [
-      { kind: "boom", ordering: "independent", retryCapSeconds: 60, deliver: async () => ({ kind: "delivered" }), consume: async () => { throw new Error("kaput"); } },
+      { kind: "boom", ordering: "independent", deliver: async () => ({ kind: "delivered" }), consume: async () => { throw new Error("kaput"); } },
     ];
     expect(await consumeIntentHandoffs(deps, run, kinds)).toBeNull();
     expect(store.getIntent(plain.id)!.consumedResult).toBe("acknowledged");
@@ -294,7 +343,6 @@ describe("consumeIntentHandoffs — the run-locked half", () => {
       {
         kind: "esc",
         ordering: "independent",
-        retryCapSeconds: 60,
         deliver: async () => ({ kind: "delivered" }),
         consume: async () => ({ result: "escalated", escalate: { reason: "external_wait_deadline", attentionReason: "wait expired", body: "b" } }),
       },
@@ -366,17 +414,17 @@ describe("agent_signal on the ledger (v31 cutover)", () => {
 });
 
 describe("human_reply_poll on the ledger (v32 cutover)", () => {
-  it("the poll clock lives on the ledger: miss backoff, stacked error curve, reset, and close-on-answer", () => {
+  it("the poll clock lives on the ledger: flat 30s misses and errors, reset, and close-on-answer", () => {
     const { store, run, setNow } = makeStore();
     const q = store.createHumanQuestion({ runId: run.id, repo: "r", workSource: "s", ticketKey: "K-1", question: "which flag?" });
     expect(q.nextPollAt).toBeLessThanOrEqual(1000); // armed due-now
-    // Two misses: 60s then 120s, errors stay 0 (a miss is a successful poll).
-    expect(store.recordHumanPollMiss(q.id)).toMatchObject({ pollAttempts: 1, pollErrors: 0, nextPollAt: 1060 });
-    setNow(1060);
-    expect(store.recordHumanPollMiss(q.id)).toMatchObject({ pollAttempts: 2, pollErrors: 0, nextPollAt: 1060 + 120 });
-    // An error STACKS on the miss exponent: backoff(2 misses + 1 error) = 240s.
+    // Two misses: flat 30s each, errors stay 0 (a miss is a successful poll).
+    expect(store.recordHumanPollMiss(q.id)).toMatchObject({ pollAttempts: 1, pollErrors: 0, nextPollAt: 1030 });
+    setNow(1030);
+    expect(store.recordHumanPollMiss(q.id)).toMatchObject({ pollAttempts: 2, pollErrors: 0, nextPollAt: 1030 + 30 });
+    // An error is counted separately but keeps the same flat cadence.
     setNow(1180);
-    expect(store.recordHumanPollError(q.id)).toMatchObject({ pollAttempts: 2, pollErrors: 1, nextPollAt: 1180 + 240 });
+    expect(store.recordHumanPollError(q.id)).toMatchObject({ pollAttempts: 2, pollErrors: 1, nextPollAt: 1180 + 30 });
     // A later miss resets the error run.
     setNow(1420);
     expect(store.recordHumanPollMiss(q.id)).toMatchObject({ pollAttempts: 3, pollErrors: 0 });

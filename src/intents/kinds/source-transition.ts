@@ -20,7 +20,6 @@
 //  - cause "source:<name>" powers the auth-gate recovery requeue (all classes — a source coming
 //    back should also retry the merely network-flaky rows, the legacy semantics).
 import type { IntentKindDef } from "../registry.ts";
-import { OUTBOX_BACKOFF_CAP_SECONDS } from "../../schedule.ts";
 
 /** The kind-owned payload of a source_transition row. */
 export interface SourceTransitionPayload {
@@ -32,7 +31,6 @@ export interface SourceTransitionPayload {
 export const sourceTransitionKind: IntentKindDef = {
   kind: "source_transition",
   ordering: "fifo",
-  retryCapSeconds: OUTBOX_BACKOFF_CAP_SECONDS,
   deliveredBy: "reconciler",
   consumedBy: "reconciler",
   survivesTeardown: true,

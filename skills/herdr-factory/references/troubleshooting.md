@@ -239,14 +239,14 @@ curl -s '127.0.0.1:8765/repos/<r>/obligations?key=<KEY>' | jq '.intents.humanQue
 herdr-factory --repo <r> logs 100 | grep 'waiting for human reply'
 ```
 
-Poll backoff is `min(60 × 2^(misses-1), 300)` seconds — log line
+The poll runs on a flat 30-second cadence — log line
 `waiting for human reply to question #N (next poll in Xs)`.
 
 | Branch | Signature | Fix |
 |---|---|---|
 | Never posted | `human_questions.external_id IS NULL`; log `human question #N post deferred: …`, then `human question #N still not posted: …` each pass (`question recorded; posting deferred:` is the ask-human command's own output, not a log line) | The engine re-posts every pass. Fix source auth/permissions; the question text is in the DB and in `.memory/herdr-factory/human-question-<step>.md` |
 | Reply exists but wasn't seen | the poll matches on `externalId` + `externalCreatedAt` | Reply as a **new comment** on the item (not an edit of the question), then wait one poll window |
-| Parked `human_poll_failing` | 20 consecutive poll **throws** (auth failures don't count) | `doctor --deep` the source, then `resume` (fresh window, error run cleared) |
+| Parked `human_poll_failing` | 10 consecutive poll **throws** (auth failures don't count) | `doctor --deep` the source, then `resume` (fresh window, error run cleared) |
 | Parked `human_wait_missing_question` | phase says waiting, no pending question row | Fix `run.step` or `teardown` |
 | Pending question with **no** `human_reply_poll` intent (Q9 `poll_intent_id IS NULL`) | the clock's only home is missing: `nextPollAt` reads 0, so it polls every pass and the miss bookkeeping throws — you see a repeating `error` event `recordHumanPollMiss: question N has no poll clock` | A real human reply still lands and resolves it. Otherwise `teardown` and re-claim; `resume` cannot re-arm a missing clock |
 | PR merged while parked | merge outranks the park — the run tears down `merged` | Normal |
@@ -259,7 +259,7 @@ closing the question as `answered` with a synthetic answer + a `human_question_m
 `human_questions.answer` before assuming the human's guidance was applied.
 
 A run parked out of the human loop with its question still pending returns to `waiting_for_human`
-on `resume` (with the backoff reset), not to `running` — resuming to `running` would orphan the reply.
+on `resume` (with a fresh poll window), not to `running` — resuming to `running` would orphan the reply.
 
 ### 2.8 The PR opened but nothing happened after
 
@@ -294,10 +294,10 @@ herdr-factory --repo <r> timeline <KEY> | grep -E 'evidence_uploaded|evidence_up
 
 | Branch | Signature | Fix |
 |---|---|---|
-| AWS creds expired | `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'` | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is backed off — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it now: `herdr-factory --repo <r> retry-now` (or `s` on the TUI board, or `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}`) |
+| AWS creds expired | `doctor`: `<n> stuck on AWS creds — refresh AWS credentials …`; intent `error_class = 'auth'`; the throttled notify is also reported into the run's own pane while the run is live | Refresh them. Recovery is automatic (the publish kind's pre-pass probes liveness every tick — even while the row is waiting or suspended — and re-queues: `evidence publish: creds recovered — re-queued N stuck upload(s) for immediate retry`). To force it now: `herdr-factory --repo <r> retry-now` (or `s` on the TUI board, or `POST /repos/<r>/intents/recover` `{"causeScope":"publisher:s3"}`) |
 | **You logged in and it's STILL auth-stuck** | `doctor --deep` says the publisher is **writable** (a fresh process resolves creds fine) while the server keeps deferring the same row | The server can't see your credentials, or is holding a stale view of where they come from. Two distinct causes — check both:<br>1. **A credential helper the SDK can't read.** The resident server is launchd-spawned: creds `assume`/`aws-vault` export into your *shell*, and granted's SSO token in the **macOS keychain**, are both invisible to it. Prove it with `env -u AWS_ACCESS_KEY_ID -u AWS_SESSION_TOKEN aws sts get-caller-identity --profile <p>` — "Token has expired and refresh failed" means the server sees the same. Fix: a **dedicated** `credential_process` profile (below) and point `evidence.profile` at it.<br>2. **A pre-`ignoreCache` server.** Builds before that fix memoized `~/.aws/config` for the process's whole life, so a profile added/repointed while it ran never resolved. `herdr-factory restart` (and `update` to get the fix). |
 | Permanent failure | `error_class = 'permanent'`, event `evidence_upload_failed`, notify `herdr-factory: <key> evidence publish failed`, amber `⚠` on the run's TUI dashboard card. **The run is untouched — this is never a park** | `doctor --deep` shows the real reason (bucket/region/access-denied/command exit) |
-| Transient retrying | `<n> pending — retrying (last: …)`, notify is deliberately **silent** | Backoff is 60 s doubling to a 3600 s cap and **never gives up**. Nothing auto-recovers a `transient` row (only `auth` is probed), so once you have fixed the cause use `herdr-factory --repo <r> retry-now [KEY]` — or `s` on the TUI board — instead of waiting out the curve |
+| Transient retrying, then **suspended** | `<n> pending — retrying (last: …)`, notify is deliberately **silent** while retrying. After 10 failed attempts (flat 30 s apart) the row **suspends**: `intent_suspended` event, an error log (`… intent SUSPENDED after 10 failed attempts: …`), an unthrottled notification (`herdr-factory: <repo> — job suspended`), a report into the run's own agent pane (when the run is still live), and a red problem entry on the repo's TUI row | Nothing auto-recovers a `transient` row (only `auth` is probed), so once you have fixed the cause use `herdr-factory --repo <r> retry-now [KEY]` — or `s` on the TUI board — to clear the suspension (fresh 10-attempt window) and flush |
 | Dropped at teardown | `<KEY>: N evidence upload(s) dropped at teardown — bytes never reached S3 (likely SSO was down through merge)` | Unrecoverable; the worktree is gone. Fix creds before the next run |
 | Worktree removed first | intent failed with `evidence dir gone (torn down before publish)` | Same |
 | No files | `evidence-upload: no files in the evidence dir — nothing to publish` | The capture step wrote nothing; see the capture prompt/skill |
@@ -424,7 +424,12 @@ holding all the workspace slots (Q1b).
 records an `attention` event, flags the run's pane with an `⚠ ATTENTION <KEY>` title +
 `hf_state=attention` token (display-only `pane report-metadata` — the pane's real label, which a step's
 `pane:` target resolves by, is never touched), fires a herdr notify,
-and (unless `skipSourceNote`) posts a note on the work item ending with the ready-made
+and **routes the reason report by what broke**: a *mechanical* code (every factory watchdog and
+plumbing reason — budgets, stalls, layout waits, capture caps, poll failures, config drift, plugin
+guards) is reported into the run's own agent pane as a framed `[herdr-factory report — for the
+operator; no action needed] …` message; only a *work* error (`bounce_limit`, `pr_closed`) posts a
+note on the work item — and on a file-channel source (`local_markdown`) even those go to the pane.
+Both forms end with the ready-made
 ``Resume with: herdr-factory --repo <repo> resume <KEY>`` and
 ``Or let your agent diagnose it: herdr-factory --repo <repo> triage <KEY>`` lines.
 
@@ -443,7 +448,7 @@ and (unless `skipSourceNote`) posts a note on the work item ending with the read
 | `unknown_step` | phase dispatch | `step "<s>" is not in belt "<b>"` | **no** | Restore the step name in the belt, or `teardown`. A `resume` with an invalid `run.step` falls back to `claiming` |
 | `human_reply_unknown_step` | human-reply resume | `human reply arrived for unknown step "<s>"` | **no** | Restore the step name and `resume`; the reply file is already in the worktree |
 | `human_wait_missing_question` | the human-reply loop | `waiting_for_human without a pending question` | **no** | DB inconsistency. Fix `run.step` or `teardown` |
-| `human_poll_failing` | 20 consecutive poll **throws** | `reply polling has failed N times in a row` | **no** | `doctor --deep`, then `resume` (fresh window, error run cleared) |
+| `human_poll_failing` | 10 consecutive poll **throws** | `reply polling has failed N times in a row` | **no** | `doctor --deep`, then `resume` (fresh window, error run cleared) |
 | `external_wait_deadline` | an `external_wait` intent's deadline | `external wait expired[: <note>]` | **no** (payload `on_deadline: "ignore"` opts out of parking) | `POST /repos/<r>/intents/<id>/fulfil` late, or `resume` / `teardown` |
 | *(a plugin guard's reason)* | a registered `GuardSpec` + evaluator | evaluator-defined | per its `autoRescueOnDone` / `autoRespawnLimit` | `obligations` reports the derived `rescue` class |
 
@@ -652,10 +657,11 @@ SELECT id, run_id, datetime(ts,'unixepoch') AS ts, type, detail
 FROM events WHERE repo = :repo AND ticket_key = :key ORDER BY id;
 ```
 
-**Q4 — stuck / backed-off intents**
+**Q4 — stuck / suspended intents**
 
 ```sql
 SELECT id, kind, scope, ticket_key, status, attempts, error_class,
+       suspended_at,                       -- non-NULL = retries stopped (10 failures); clear with retry-now / `s`
        datetime(next_attempt_at,'unixepoch') AS next_attempt,
        next_attempt_at - unixepoch() AS due_in_sec,
        lease_until, handoff_marker, consumed_at,
@@ -759,7 +765,7 @@ SELECT name AS repo, datetime(last_tick_at,'unixepoch') AS last_tick,
 SELECT datetime(ts,'unixepoch') AS ts, repo, run_id, ticket_key, type, detail FROM events
 WHERE repo = :repo
   AND type IN ('error','attention','stale','signal_rejected','evidence_upload_failed',
-               'layout_apply_failed','intent_deadline') ORDER BY id DESC LIMIT 40;
+               'layout_apply_failed','intent_deadline','intent_suspended') ORDER BY id DESC LIMIT 40;
 ```
 
 ### Safe to hand-edit vs never
@@ -829,12 +835,15 @@ An **intent** is one durable, retried side effect on the `intents` table. Five k
 | `human_reply_poll` | the reply-poll clock for one pending question | independent | no |
 | `external_wait` | an externally fulfilled wait (the only kind you may create) | independent | no |
 
-Retry/backoff: `min(60 × 2^(attempts-1), cap)` → 60s, 120s, 240s, 480s, 960s, 1920s, 3600s, …
-Cap is 3600 s for transitions and evidence, 300 s for reply polls. **An outbox intent never gives up
-on its own.** At most **25** rows are attempted per pass, so a backlog drains over several ticks.
+The retry clock is **flat**: every failed attempt reschedules 30 s out, and at **10 failed attempts
+the row SUSPENDS** (`suspended_at` stamped): retries stop, an `intent_suspended` event and an
+unthrottled notification fire, and the repo's TUI row turns red. A suspended row stays `pending` —
+it keeps the claim veto and its FIFO slot — until `retry-now` / `s` (attempts reset to 0) or a
+cause-recovery probe clears it. At most **25** rows are attempted per pass, so a backlog drains
+over several ticks.
 
 Two behaviours explain most "it never fired": **the FIFO gate is checked against the DB**, so an
-earlier sibling in the same `(kind, scope)` blocks a later one *even while it is merely backed off*
+earlier sibling in the same `(kind, scope)` blocks a later one *even while it is waiting or suspended*
 (one transition stuck on auth holds every later transition for that run — Q4's blockage query finds
 it); and **a row with an unconsumed handoff is deliberately not delivered** — it is in the run's
 court, waiting for the next run-locked pass (`handoff_at IS NOT NULL AND consumed_at IS NULL`).
@@ -849,8 +858,8 @@ world" section (attempt count, next retry time, the credential fix for an auth-c
 Retrying:
 
 ```sh
-herdr-factory --repo <r> retry-now [KEY]                              # ALL backed-off rows due now + flush
-curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/retry            # skip the backoff, one row
+herdr-factory --repo <r> retry-now [KEY]                              # clear ALL suspensions + rows due now + flush
+curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/retry            # un-suspend + due now, one row
 curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/<id>/fulfil \
      -H 'content-type: application/json' -d '{"result":{}}'            # resolve an external_wait
 curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/recover \
@@ -858,19 +867,20 @@ curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/recover \
 ```
 
 - `retry-now` (`POST /repos/<r>/retry-now`, body `{}` or `{"key":"<KEY>"}`; `s` on the TUI board) is the
-  blunt instrument and usually the right one: every backed-off `pending` row in the repo — or one run's —
-  becomes due now, then Phase 0 is flushed **under the repo tick lock** so the rows land on that call
-  (`flushed: false` in the answer means a tick already held the lock and will deliver them). It reports
-  `requeued`, counting only rows that were actually backed off, so `0` means the delay is **not** a
-  backoff. `attempts` is not reset — a still-broken cause backs off to where it was rather than
-  restarting the curve on each press. It changes nothing about any run: no phase, no clocks.
+  blunt instrument and usually the right one: every suspended `pending` row in the repo — or one run's —
+  is cleared with a fresh 10-attempt window (`attempts` reset to 0), every merely mid-interval row
+  becomes due now (its `attempts` kept), then Phase 0 is flushed **under the repo tick lock** so the
+  rows land on that call (`flushed: false` in the answer means a tick already held the lock and will
+  deliver them). It reports `requeued` (rows that were actually stuck — `0` means the delay is
+  elsewhere) and `unsuspended` (the cleared suspensions). It changes nothing about any run: no phase,
+  no clocks.
 - `retry`/`retry-now` only touch `status='pending'` rows — a `failed`/`abandoned` row **cannot** be
   retried this way; the engine re-opens it on the next natural trigger. `waiting` rows (external
   triggers) are untouched too.
 - **AWS creds recovery path**: refresh the credentials, then either wait (the publish kind's
   pre-pass probes liveness and re-queues automatically) or force it with `retry-now` /
   `intents/recover {"causeScope":"publisher:s3"}`. Cause strings are `source:<sourceName>` and
-  `publisher:s3|local|command`. Note `resume` does **not** make a backed-off upload due now unless the
+  `publisher:s3|local|command`. Note `resume` does **not** make a stuck upload due now unless the
   kind opts in (`refundOnResume`) — and no shipped kind does; `retry-now` is the tool for that, and it
   works on a healthy, unparked run, which `resume` refuses.
 - A source-auth recovery re-queues that source's held write-backs automatically the moment any call
@@ -899,10 +909,10 @@ curl -s -X POST 127.0.0.1:8765/repos/<r>/intents/recover \
 |---|---|---|
 | 1 | `herdr-factory reload` | Re-reads every repo's config into the running server. No run is touched. Can refuse a repo (read `failures[]`) |
 | 2 | `herdr-factory --repo <r> tick` | Forces one reconcile pass now (via the server if up, else in-process under the tick lock). Level-triggered: it can only do what the next tick would have done anyway |
-| 3 | `herdr-factory --repo <r> retry-now [KEY]` | Makes every backed-off `pending` ledger row in the repo (or one run's) due now, then flushes Phase 0 under the tick lock. Touches only those rows' schedules — no phase, no clocks, no run. The right move when you have already fixed a cause the engine can't probe (anything not `auth`-classified). `s` on the TUI board |
+| 3 | `herdr-factory --repo <r> retry-now [KEY]` | Clears every suspended `pending` ledger row in the repo (or one run's) with a fresh attempt window, makes every waiting one due now, then flushes Phase 0 under the tick lock. Touches only those rows' schedules — no phase, no clocks, no run. The right move when you have already fixed a cause the engine can't probe (anything not `auth`-classified). `s` on the TUI board |
 | 4 | `herdr-factory --repo <r> step-done <KEY> <step>` | Records the step complete, exactly as the agent would. Validated against the belt, the active step, and the `--pass` stamp. Un-parks a `rescue: terminal-signal` watchdog park. **Only use it if the work really is finished** |
 | 5 | `herdr-factory --repo <r> resume <KEY>` | Un-parks an `attention` run back to `running`/`reviewing`/`claiming`/`waiting_for_human`: re-bases the step's watch clocks, refunds resume-scoped counters (capture, layout respawns, and — on a `bounce_limit` park — the bounce budget belt-wide), clears `lastThreadSig`/`resolverActive` for a PR watch, and nudges an idle pane to continue. Does **not** clear `run_steps.done`. Refuses while the belt is missing |
-| 6 | `POST /repos/<r>/intents/<id>/retry` | Makes ONE backed-off ledger row due now (no flush). Touches only that row's schedule |
+| 6 | `POST /repos/<r>/intents/<id>/retry` | Clears + re-queues ONE ledger row due now (no flush). Touches only that row's schedule |
 | 7 | `herdr-factory restart` | Graceful `POST /shutdown` + SIGTERM, SIGKILL only after 18 s (outlasting the server's 15 s in-flight-tick drain), then re-spawn. In-flight runs survive; their agents keep working; locks the dead process held expire. This is the fix for a wedged tick |
 | 8 | `herdr-factory --repo <r> teardown <KEY>` | **Destructive.** Fires the terminal write-back, then removes the herdr worktree, closes the workspace, `rm -rf`s the worktree path and **deletes the branch (`git branch -D`)**. Any uncommitted or unpushed work in that worktree is gone, and pending evidence uploads are abandoned (logged as `N evidence upload(s) dropped at teardown`). The run ends with an outcome; re-claiming the item starts a fresh run on a fresh branch |
 

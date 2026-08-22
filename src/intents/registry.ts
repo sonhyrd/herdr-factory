@@ -18,7 +18,6 @@
 // escalation — that the reconciler applies; it never imports reconciler machinery (no cycles).
 import type { Deps } from "../core/deps.ts";
 import type { Intent, Run } from "../types.ts";
-import { backoffDelaySeconds } from "../schedule.ts";
 import { agentSignalKind } from "./kinds/agent-signal.ts";
 import { evidencePublishKind } from "./kinds/evidence-publish.ts";
 import { externalWaitKind } from "./kinds/external-wait.ts";
@@ -29,7 +28,8 @@ import { sourceTransitionKind } from "./kinds/source-transition.ts";
 export type IntentOutcome =
   /** The obligation is met — the row closes. */
   | { kind: "delivered" }
-  /** A retryable failure: attempts++, back off on the kind's curve, classify for cause recovery. */
+  /** A retryable failure: attempts++, retry on the flat 30s interval (suspending at
+   *  MAX_RETRY_ATTEMPTS), classify for cause recovery. */
   | { kind: "retry"; error: string; errorClass: "auth" | "transient" }
   /** Not an error — probe again later (a reply-poll miss). Optionally replaces kind-owned state. */
   | { kind: "reschedule"; delaySeconds: number; state?: string }
@@ -54,10 +54,6 @@ export interface IntentKindDef {
    *  - "latest-wins" — enqueue supersedes the scope's other live rows (agent signals, re-captures);
    *  - "independent" — rows deliver in any order. */
   readonly ordering: "fifo" | "latest-wins" | "independent";
-  /** Backoff cap for `retry` outcomes (the shared 60s-doubling curve, unless nextDelay overrides). */
-  readonly retryCapSeconds: number;
-  /** Irregular curves (a stacked poll-error exponent) override the shared one. */
-  nextDelay?(row: Intent): number;
   /** May POST /repos/:repo/intents create rows of this kind? Off for engine-owned kinds — hand-made
    *  source_transition rows would be a footgun; on for external_wait (webhooks/CI callbacks). */
   readonly externallyEnqueuable?: boolean;
@@ -91,10 +87,4 @@ export const INTENT_KINDS: readonly IntentKindDef[] = [agentSignalKind, evidence
 
 export function intentKindFor(kind: string): IntentKindDef | undefined {
   return INTENT_KINDS.find((k) => k.kind === kind);
-}
-
-/** The retry delay for a row's NEXT attempt (already bumped): the kind's own curve, else the
- *  shared 60s-doubling curve at the kind's cap. */
-export function intentRetryDelay(kind: IntentKindDef, row: Intent): number {
-  return kind.nextDelay ? kind.nextDelay(row) : backoffDelaySeconds(row.attempts + 1, kind.retryCapSeconds);
 }

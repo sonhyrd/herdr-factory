@@ -368,7 +368,7 @@ describe("Store", () => {
       const otherSrc = store.enqueueTransition({ runId: other.id, repo: "r", workSource: "gh", ticketKey: "G-1", toState: "in_review" });
       // Back the jira intent off (as an auth failure would), so it's no longer due.
       store.recordTransitionAttempt(held.id, "401 not authenticated");
-      expect(store.getTransitionIntent(held.id)!.nextAttemptAt).toBe(1060);
+      expect(store.getTransitionIntent(held.id)!.nextAttemptAt).toBe(1030);
       expect(store.dueTransitions("r").map((i) => i.id)).not.toContain(held.id);
 
       const requeued = store.retryTransitionsForSource("r", "jira");

@@ -63,10 +63,11 @@ const CaptureAttemptResponse = z
   .object({ ok: z.boolean(), attempts: z.number().optional(), escalated: z.boolean().optional(), message: z.string().optional() })
   .openapi("CaptureAttempt");
 const ResumeResponse = z.object({ ok: z.boolean(), phase: z.string().optional(), message: z.string().optional() }).openapi("Resume");
-// `requeued` counts the rows that were actually backed off (0 = nothing was waiting). `flushed` is
-// false when a tick already held the repo lock — the rows are due, that pass delivers them.
+// `requeued` counts the rows that were actually waiting (0 = nothing was stuck); `unsuspended` is
+// the subset that had SUSPENDED (failed MAX_RETRY_ATTEMPTS times) and got a fresh retry window.
+// `flushed` is false when a tick already held the repo lock — the rows are due, that pass delivers them.
 const RetryNowResponse = z
-  .object({ ok: z.boolean(), requeued: z.number(), flushed: z.boolean(), message: z.string().optional() })
+  .object({ ok: z.boolean(), requeued: z.number(), unsuspended: z.number(), flushed: z.boolean(), message: z.string().optional() })
   .openapi("RetryNow");
 // Belt rename/delete cleanup. `ok` is false when a delete was blocked by in-flight work (`blocked`)
 // or the repo failed to reload (`failures`); the caller (TUI) then reverts the config file. Counts
@@ -140,6 +141,10 @@ const StatusResponse = z
         problem: z.object({ kind: z.literal("evidence-upload"), detail: z.string() }).optional(),
       }),
     ),
+    // Repo-level problems for the dashboard's red per-repo line: suspended jobs (retries stopped
+    // after MAX_RETRY_ATTEMPTS failures) and live auth failures. Cheap DB/in-memory reads only, so
+    // quick mode carries them too.
+    problems: z.array(z.object({ kind: z.string(), detail: z.string() })),
     finished: z.array(
       z.object({
         id: z.number(),

@@ -12,6 +12,7 @@
 // factory-driven "what is every run doing" view needs no factory UI.
 
 import type { Deps } from "./deps.ts";
+import type { Run } from "../types.ts";
 
 /** Token names published on every factory-owned pane. Prefixed so they can't collide with another
  *  plugin's tokens in a shared `[ui.sidebar]` row config. */
@@ -34,6 +35,26 @@ export type PaneRunState = "running" | "attention" | "watching";
  *  the agent's own lifecycle hook and can't be set externally, so a parked run needs a cue that
  *  outlives the tick — while a healthy pane leaves the title alone and lets the agent's own terminal
  *  title show through. */
+/** Deliver an operator-facing ERROR REPORT into the run's own agent pane — where the work actually
+ *  happened, and where the operator is already looking. This is the reporting channel for
+ *  MECHANICAL failures (factory workings: budgets, stalls, evidence uploads, logins, suspensions):
+ *  a ticket comment about factory plumbing is noise to whoever reads the ticket, and a note file in
+ *  a hidden folder is where nobody looks. The text is submitted as a pane message (herdr
+ *  `agentSend`), framed explicitly as a report so the agent does not treat it as a task — the
+ *  factory's own machinery (resume, retry-now, the auth probes) owns recovery.
+ *
+ *  Best-effort by design: returns false when the run has no pane or herdr could not submit — the
+ *  caller's desktop notification (sent regardless) is the fallback channel. */
+export async function reportToPane(deps: Deps, run: Pick<Run, "paneId" | "ticketKey">, body: string): Promise<boolean> {
+  if (!run.paneId) return false;
+  const text = `[herdr-factory report — for the operator; no action needed] ${body}`;
+  try {
+    return await deps.herdr.agentSend(run.paneId, text);
+  } catch {
+    return false;
+  }
+}
+
 export async function showRunPane(
   deps: Deps,
   paneId: string,

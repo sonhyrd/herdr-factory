@@ -422,8 +422,8 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
 - **The ask-human cord.** A blocked or unsure agent runs `ask-human`: the factory posts the
   question through the work source (a Jira or GitHub issue comment, or an inbox file for
   markdown sources), parks
-  the run as `waiting_for_human` — **freeing its concurrency slot** — polls for the reply with
-  backoff, then writes the answer into the worktree and resumes the same step automatically.
+  the run as `waiting_for_human` — **freeing its concurrency slot** — polls for the reply every
+  30 seconds, then writes the answer into the worktree and resumes the same step automatically.
   The wait is never a trap: an agent that gets past the blocker on its own and signals `step-done`
   (or bounces the work back) un-parks the run and moves the belt on, closing the now-moot question
   with a note on the ticket so nobody answers into the void.
@@ -432,15 +432,19 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   `max_bounces` backstop keeps a disagreement loop from running forever.
 - **Attention is a workflow, not a dead end.** When something needs a person — budget exceeded,
   stalled commits, a closed PR, a pane that never appeared — the run parks: desktop notification,
-  the pane relabelled `⚠ ATTENTION`, the reason (with ready-made resume + triage commands) posted to the
-  work source, and an hourly re-notify so it can't go stale silently. `resume <KEY>` puts it right
+  the pane relabelled `⚠ ATTENTION`, the reason (with ready-made resume + triage commands) reported
+  **where it belongs** — a *mechanical* failure (a factory watchdog, a login, evidence gathering)
+  is reported into the run's own agent pane, while an error about the *designated work itself* (the
+  rework loop hit its bounce cap, a human closed the PR) is posted on the work item (for
+  `local_markdown`, whose notes are just files, it goes to the pane too) — and an hourly re-notify
+  so it can't go stale silently. `resume <KEY>` puts it right
   back where it was, with fresh clocks — and re-prompts the step's own idle agent, so a step that
   finished but never signalled `step-done` completes on resume instead of quietly re-parking.
   Parked runs keep their worktree but hold no claim slot.
   A layout-pane wait self-heals before it ever needs a person: no pane means no agent (so no
   `step-done` could rescue it), so the engine re-attempts the spawn across a bounded number of
   extra wait windows — auto-un-parking a run already parked that way — and only parks for a human
-  once that budget is spent. And no park (or backoff, or watch) has to be decoded from logs:
+  once that budget is spent. And no park (or retry, or watch) has to be decoded from logs:
   **`explain <KEY>`** narrates why a run is where it is — the armed clocks, the background
   retries with their next attempt time, and the exact command that would move it — and
   **`triage <KEY>`** opens your own agent CLI on the run, pre-briefed with that diagnosis, when
@@ -453,8 +457,8 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   until the backend confirms — an upload survives an AWS SSO session expiring mid-run (or any
   transient backend outage) instead of shipping a PR with broken evidence links. For the `s3`
   publisher a persistent auth failure pings you to refresh your AWS credentials, and the next tick
-  auto-retries the moment they come back — it re-queues due-now instead of waiting out the backoff,
-  so there's nothing to press (and the credential *config* is re-read every attempt, so repointing a
+  auto-retries the moment they come back — it re-queues due-now (clearing any suspension) instead of
+  waiting out the retry clock, so there's nothing to press (and the credential *config* is re-read every attempt, so repointing a
   profile never needs a server restart). One catch worth knowing: the resident server resolves
   credentials from `~/.aws`, so a helper that only exports them into your interactive shell — or
   caches its SSO token somewhere the AWS SDK doesn't read, like [granted](https://granted.dev)'s
@@ -842,7 +846,7 @@ evidence:
 **`command`** — bring-your-own backend (GCS, Azure, an internal artifact store). The executable is
 run with two trailing args — the capture directory and the key prefix — and must upload the bytes
 and print one public URL per file to stdout (each ending in that file's path). A non-zero exit or a
-timeout is retried on the outbox's backoff. Because the URLs come from stdout, they are known only
+timeout is retried on the outbox's flat 30s clock (suspending after 10 failures). Because the URLs come from stdout, they are known only
 after a successful run (a deferred `command` publish has no links to embed until it lands).
 
 ```yaml
@@ -1148,7 +1152,7 @@ herdr-factory --repo <name> run [--follow]                          # run the fa
 herdr-factory --repo <name> claim <KEY> [--belt <name>]
 herdr-factory --repo <name> teardown <KEY> [--source <name>]
 herdr-factory --repo <name> resume <KEY> [--source <name>]          # un-park an `attention` run
-herdr-factory --repo <name> retry-now [KEY] [--source <name>]       # you fixed the cause: stop waiting out the backoff, retry now
+herdr-factory --repo <name> retry-now [KEY] [--source <name>]       # you fixed the cause: clear suspensions, retry now
 herdr-factory --repo <name> auth status                            # each source's credential presence (no network)
 
 # agent → dispatcher signals (rendered into every step prompt; you rarely type these)
@@ -1176,15 +1180,17 @@ and fall back to executing directly against the DB when it isn't; reads (`status
 `timeline`, `logs`, `explain`) always go straight to the DB. `--source` disambiguates a key active
 in more than one source; `claim --belt` is required only when the repo has more than one belt.
 
-`retry-now` is the way out of a **backoff you have already fixed**. The durable retries — source
-status write-backs and evidence uploads — back off 60s doubling to one attempt per
-hour, and the engine only shortens that by itself for causes it can probe (expired AWS credentials,
-which it re-tests and re-queues on the next tick). For everything else — a timeout, a source that was
-briefly down — the fix lands and the retry still sits there for up to an hour. `retry-now` makes the
-repo's backed-off retries due immediately and flushes them on the spot; pass a `KEY` to scope it to
-one run. It reports how many were actually waiting, so `0` tells you the delay is somewhere else.
-Nothing else about a run changes — which is why it is the right tool for a perfectly healthy run
-whose only stuck thing is a background upload, where `resume` (an `attention`-only un-park) refuses.
+`retry-now` is the way out of a **suspension whose cause you have already fixed**. The durable
+retries — source status write-backs and evidence uploads — retry on a flat 30-second clock and, after
+**10 failed attempts, suspend**: the engine stops retrying, notifies you, flags the repo row in the
+TUI, and waits. The engine clears a suspension by itself only for causes it can probe (expired AWS
+credentials, which it re-tests every tick). For everything else — a timeout, a source that was
+briefly down — you fix the cause and run `retry-now`: it clears the repo's suspensions (each gets a
+fresh 10-attempt window), makes every waiting retry due immediately, and flushes them on the spot;
+pass a `KEY` to scope it to one run. It reports how many were actually stuck, so `0` tells you the
+delay is somewhere else. Nothing else about a run changes — which is why it is the right tool for a
+perfectly healthy run whose only stuck thing is a background upload, where `resume` (an
+`attention`-only un-park) refuses.
 
 `explain <KEY>` answers "why does this run look stuck?" in plain language: the run's current story
 (what it waits on, which budget/stall/layout clock is armed and when it fires), every background
@@ -1192,7 +1198,7 @@ debt still being retried — status write-backs, evidence uploads, queued signal
 counts and the next retry time, the bounce counters, and the ready-made command that would move it
 (`resume`, a reply, a credential refresh). A park explains its own reason code and whether the
 engine can still rescue it by itself. It also warns when no server is ticking the repo — the
-commonest reason a backoff never fires. The same narrative appears in the TUI: press `d` on a run.
+commonest reason a retry never fires. The same narrative appears in the TUI: press `d` on a run.
 
 `triage <KEY>` goes one step further: when reading isn't enough, it opens a **conversation**. It
 writes a briefing — the `explain` narrative, the run's recent events, where the worktree and logs
@@ -1201,8 +1207,8 @@ without your OK) — then launches your configured agent harness interactively i
 pointed at it. The harness comes from the repo's [`agent:`](#agent-optional) block (`claude` by
 default) with the worker flags deliberately dropped — you are present to approve actions.
 `--print` prints the briefing instead of launching (any harness, tmux, pipes). It runs in your
-terminal, not a herdr pane, so it works even when herdr itself is the problem. Attention notes
-posted to the work source advertise it alongside the resume command.
+terminal, not a herdr pane, so it works even when herdr itself is the problem. Attention reports
+(in the pane, or on the work item for work errors) advertise it alongside the resume command.
 
 `run` is the **foreground first-run** path — the fastest way to see the factory work before you
 install the background supervisor. It reconciles the repo on its configured cadence (the same
@@ -1240,12 +1246,14 @@ cursor.
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
+  Each repo row also shows its **problems in red** — suspended jobs, evidence uploads blocked on AWS
+  creds, a source that cannot authenticate — so a broken repo is visible at a glance.
   `s` is the "I fixed it, go now" key, and it reads the situation: on a run parked for `⚠` attention
   it **resumes** (the CLI's [`resume`](#commands) — un-park and pick up where it left off); on any
-  other run it makes that run's **backed-off retries due now**; on a repo row it does the same
-  repo-wide, which is the shape of the usual cause — one expired `aws sso login` stalls every run's
-  evidence upload at once. It is what saves you waiting out a retry curve that has doubled its way to
-  one attempt per hour after you have already fixed the thing it is retrying against.
+  other run it **clears that run's suspended background jobs** and makes its waiting retries due now;
+  on a repo row it does the same repo-wide, which is the shape of the usual cause — one expired
+  `aws sso login` stalls every run's evidence upload at once. Background retries run on a flat
+  30-second clock and suspend after 10 failures, so `s` is how a fixed cause gets a fresh window.
   Press `d` for Detail, which is contextual: on a **run** it opens the work item's full detail — the
   untruncated summary, type, source/belt, branch, live status and worker state, PR, age, a
   **"What's happening" narrative** (the same plain-language story `explain <KEY>` prints: what the

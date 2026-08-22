@@ -96,6 +96,7 @@ export type EventType =
   | "evidence_uploaded" // the evidence-upload outbox delivered a capture's media to S3
   | "evidence_upload_failed" // the evidence-upload outbox hit a permanent (non-retryable) failure
   | "stale" // a write-back found the item gone at the source (deleted/transferred)
+  | "intent_suspended" // a durable intent failed MAX_RETRY_ATTEMPTS times — retries stop until an operator (or a creds probe) clears it
   | "intent_fulfilled" // a waiting external-trigger intent was fulfilled (POST /intents/:id/fulfil)
   | "intent_deadline" // a waiting intent's deadline expired (kernel sweep; run-scoped ⇒ may park)
   | "human_question"
@@ -288,6 +289,11 @@ export interface Intent {
   status: IntentStatus;
   attempts: number;
   nextAttemptAt: number;
+  /** Set when the row failed MAX_RETRY_ATTEMPTS times: still `pending` (the obligation stands, it
+   *  keeps blocking claims and FIFO order) but the engine stops retrying it until an operator
+   *  (`retry-now` / `s` on the TUI) or a cause-recovery probe clears it — which also resets
+   *  `attempts` so the row gets a fresh window. */
+  suspendedAt: number | null;
   leaseUntil: number | null; // in-flight lease (an inline CLI attempt vs the Phase-0 flush)
   deadlineAt: number | null; // waiting rows: escalate via handoff when it passes
   lastError: string | null;
@@ -305,7 +311,7 @@ export interface Intent {
 }
 
 /** One intended source status write-back, persisted until confirmed delivered (the transition
- *  outbox). `attempts`/`nextAttemptAt` drive the reconciler's exponential retry; `deliveredAt`
+ *  outbox). `attempts`/`nextAttemptAt` drive the reconciler's flat 30s retry; `deliveredAt`
  *  set = the source accepted it (or reported it a no-op — already there / unmapped state). */
 export interface TransitionIntent {
   id: number;
@@ -321,6 +327,9 @@ export interface TransitionIntent {
   toStatus: string;
   attempts: number;
   nextAttemptAt: number;
+  /** Mirrors Intent.suspendedAt: the write-back failed MAX_RETRY_ATTEMPTS times and stopped
+   *  retrying (it still blocks re-claiming) until an operator or cause recovery clears it. */
+  suspendedAt: number | null;
   lastError: string | null;
   createdAt: number;
   updatedAt: number;

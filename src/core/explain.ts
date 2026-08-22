@@ -5,10 +5,10 @@
 // design: type-only imports, no store/Effect/telemetry, so the TUI's eager startup graph
 // (test/tui-startup-graph.test.ts) stays clean when the dashboard imports it.
 //
-// The invisible-by-design robustness — backoffs, bounded waits, outbox retries — is exactly what
-// makes a healthy-but-retrying factory look wedged, so every clock and counter here renders WITH
-// its next firing time and its rescue: what the engine will do on its own, and what only a human
-// can do.
+// The invisible-by-design robustness — flat 30s retries, bounded waits, outbox suspensions — is
+// exactly what makes a healthy-but-retrying factory look wedged, so every clock and counter here
+// renders WITH its next firing time and its rescue: what the engine will do on its own, and what
+// only a human can do.
 import type { RunObligations } from "./obligations-shape.ts";
 
 export interface ExplainInput {
@@ -244,9 +244,9 @@ function phaseStory(ob: RunObligations, input: ExplainInput, resumeCmd: string):
         q.posted
           ? "The question is posted on the work item."
           : "The question is still queued to post to the source — the outbox retries it until it lands.",
-        `Reply checks so far: ${q.pollAttempts}; the next check runs ${inAbout(now, q.nextPollAt)} (checks back off 60s → 5min).`,
+        `Reply checks so far: ${q.pollAttempts}; the next check runs ${inAbout(now, q.nextPollAt)} (checks run every 30s).`,
       ];
-      if (q.pollErrors > 0) body.push(`⚠ ${q.pollErrors} reply checks in a row have FAILED — at 20 the run parks for attention. Check the source's credentials.`);
+      if (q.pollErrors > 0) body.push(`⚠ ${q.pollErrors} reply checks in a row have FAILED — at 10 the run parks for attention. Check the source's credentials.`);
       body.push("The wait is not a trap: an agent that gets past the blocker and signals step-done (or bounces) resumes the run and closes the question.");
       return {
         headline: `The run waits for a human answer to the ${q.step ?? step} step's question. It holds no workspace slot while it waits.`,
@@ -281,12 +281,13 @@ function phaseStory(ob: RunObligations, input: ExplainInput, resumeCmd: string):
  *  beyond what the phase said. */
 function owedLines(ob: RunObligations, now: number): string[] {
   const lines: string[] = [];
+  const suspendedNote = "SUSPENDED after 10 failed attempts — retries stopped; fix the cause, then press s on the dashboard (or run retry-now)";
   for (const t of ob.intents.transitions) {
     if (t.staleUnhandled) {
       lines.push(`· status write-back → ${t.toStatus || t.toState}: the item is GONE at the source — the stale policy runs on the next pass.`);
       continue;
     }
-    lines.push(`· status write-back → ${t.toStatus || t.toState}: attempt ${t.attempts}, next try ${inAbout(now, t.nextAttemptAt)}.`);
+    lines.push(`· status write-back → ${t.toStatus || t.toState}: ${t.suspended ? suspendedNote : `attempt ${t.attempts}, next try ${inAbout(now, t.nextAttemptAt)}`}.`);
     if (t.lastError) lines.push(`    last error: ${t.lastError}`);
   }
   for (const u of ob.intents.evidenceUploads) {
@@ -296,7 +297,9 @@ function owedLines(ob: RunObligations, now: number): string[] {
         : u.errorKind === "permanent"
           ? " — config error: run `doctor --deep`"
           : "";
-    lines.push(`· evidence upload${u.keyPrefix ? ` (${u.keyPrefix})` : ""}: attempt ${u.attempts}, next try ${inAbout(now, u.nextAttemptAt)}${cause}.`);
+    lines.push(
+      `· evidence upload${u.keyPrefix ? ` (${u.keyPrefix})` : ""}: ${u.suspended ? suspendedNote : `attempt ${u.attempts}, next try ${inAbout(now, u.nextAttemptAt)}`}${cause}.`,
+    );
     if (u.lastError) lines.push(`    last error: ${u.lastError}`);
   }
   const sig = ob.intents.pendingSignal;
@@ -308,7 +311,11 @@ function owedLines(ob: RunObligations, now: number): string[] {
       continue;
     }
     if (narrated.has(row.kind)) continue;
-    const when = row.deadlineAt != null ? `deadline ${inAbout(now, row.deadlineAt)}` : `next attempt ${inAbout(now, row.nextAttemptAt)}`;
+    const when = row.suspended
+      ? suspendedNote
+      : row.deadlineAt != null
+        ? `deadline ${inAbout(now, row.deadlineAt)}`
+        : `next attempt ${inAbout(now, row.nextAttemptAt)}`;
     lines.push(`· ${row.kind} #${row.id} (${row.status}): ${when}.${row.lastError ? ` last error: ${row.lastError}` : ""}`);
   }
   return lines;
@@ -329,7 +336,7 @@ export function explainRun(input: ExplainInput): string[] {
 
   const owed = owedLines(ob, now);
   if (owed.length) {
-    lines.push("", "Owed to the world (durable, retried until delivered):");
+    lines.push("", "Owed to the world (durable — retried every 30s, suspended after 10 failures):");
     lines.push(...owed.map((l) => `  ${l}`));
   }
 

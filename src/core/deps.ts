@@ -105,8 +105,11 @@ export interface HerdrApi {
 }
 
 /** Declarative ownership/capability record for a work source. Consumed by doctor, the TUI, and
- *  the shared contract test suite ONLY — the reconciler never branches on it, so it cannot drift
- *  into a second state machine. Must be constant for the instance's lifetime. */
+ *  the shared contract test suite — the reconciler never branches on it for LIFECYCLE (so it
+ *  cannot drift into a second state machine); its one engine read is report ROUTING:
+ *  `replyChannel === "file"` sends work-error attention notes to the run's pane instead of
+ *  `postNote` (a note file in a hidden folder is where nobody looks). Must be constant for the
+ *  instance's lifetime. */
 export interface WorkSourceSpec {
   /** "external": the backend owns lifecycle (Jira statuses, GitHub labels/open-closed) and the
    *  source MUST NEVER touch the work_items table (db/migrate.ts v6 comment).

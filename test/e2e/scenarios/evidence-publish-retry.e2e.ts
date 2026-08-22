@@ -4,7 +4,7 @@
 //
 // It also pins the operator's way out: a run whose background delivery is stuck carries a `problem`
 // flag on `/status` (the dashboard's amber ⚠, orthogonal to its steps reading done), and
-// `POST /intents/recover` makes the stuck rows due NOW rather than waiting out an hour of backoff.
+// `POST /intents/recover` makes the stuck rows due NOW rather than waiting out the retry clock.
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "vitest";

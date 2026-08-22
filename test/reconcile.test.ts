@@ -2198,16 +2198,16 @@ describe("transition outbox — source write-backs retried until delivered", () 
     expect(store.pendingTransitionForKey("demo", "jira", "K-T1")).toBe(false);
   });
 
-  it("failed attempts back off exponentially (not due again immediately)", async () => {
+  it("failed attempts wait out the flat 30s interval (not due again immediately)", async () => {
     const { deps, store, state, calls, setNow } = build();
     state.eligible = [ticket("K-T2")];
     state.failTransitions = true;
-    await reconcileRepo(deps); // attempt 1 fails → next due at +60s
+    await reconcileRepo(deps); // attempt 1 fails → next due at +30s
     state.failTransitions = false;
-    setNow(1000 + 30);
+    setNow(1000 + 15);
     await flushTransitionOutbox(deps); // not due yet
     expect(calls.transitions).toEqual([]);
-    setNow(1000 + 61);
+    setNow(1000 + 31);
     await flushTransitionOutbox(deps); // due → delivered
     expect(calls.transitions).toContainEqual(["K-T2", "in_development"]);
   });
@@ -2384,21 +2384,21 @@ describe("human-loop resilience — poll errors back off; a gone item escalates"
     expect(store.getRun(run.id)!.phase).toBe("attention");
   });
 
-  it("20 consecutive poll ERRORS escalate (a failing source must not poll invisibly forever)", async () => {
+  it("10 consecutive poll ERRORS escalate (a failing source must not poll invisibly forever)", async () => {
     const { deps, store, state, worktree, setNow } = build();
     const run = seed(store, worktree, "K-H3", "running", "fix");
     const asked = await requestHumanInput(deps, run, "fix", "Which flag wins?");
     state.humanPollError = new Error("HTTP 429: rate limited");
     let now = 1000;
-    for (let i = 0; i < 20; i++) {
-      now += 301; // always past the 5-min backoff cap
+    for (let i = 0; i < 10; i++) {
+      now += 31; // always past the flat 30s interval
       setNow(now);
       await reconcileRun(deps, store.getRun(run.id)!);
     }
     const got = store.getRun(run.id)!;
-    expect(store.getHumanQuestion(asked.questionId)!.pollErrors).toBe(20);
+    expect(store.getHumanQuestion(asked.questionId)!.pollErrors).toBe(10);
     expect(got.phase).toBe("attention");
-    expect(got.attentionReason).toContain("failed 20 times");
+    expect(got.attentionReason).toContain("failed 10 times");
   });
 
   it("resume of a run parked out of the human loop returns it to waiting_for_human with a fresh poll window", async () => {
@@ -2538,25 +2538,52 @@ describe("attention workflow — resume, parked slots, re-notification", () => {
     expect(store.countOccupying("demo")).toBe(1);
   });
 
-  it("escalation posts the attention reason to the work source; parked runs re-notify periodically", async () => {
+  it("a MECHANICAL escalation reports into the run's pane, never onto the work item; parked runs re-notify periodically", async () => {
     const { deps, store, state, worktree, calls, setNow } = build();
     const run = seed(store, worktree, "K-A4", "running", "review");
-    setNow(1000 + 1801); // review over budget, worker idle → attention
+    setNow(1000 + 1801); // review over budget, worker idle → attention (a factory watchdog = mechanical)
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(calls.notify).toBe(1);
-    expect(calls.postNotes.length).toBe(1); // reason written back to the source
-    expect(calls.postNotes[0]![0]).toBe("K-A4");
-    expect(calls.postNotes[0]![1]).toContain("resume K-A4");
+    expect(calls.postNotes).toEqual([]); // factory plumbing is noise on the ticket
+    const report = calls.agentSend.find(([, text]) => text.includes("parked for attention"));
+    expect(report).toBeDefined(); // …the pane where the work happened gets the report instead
+    expect(report![0]).toBe("w1:p1");
+    expect(report![1]).toContain("herdr-factory report");
+    expect(report![1]).toContain("resume K-A4");
 
-    // Within the renotify window: silent. Past it: notified again (but no second source note).
+    // Within the renotify window: silent. Past it: notified again (but no second pane report).
+    const reports = () => calls.agentSend.filter(([, text]) => text.includes("parked for attention")).length;
+    const before = reports();
     setNow(1000 + 1801 + 3599);
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(1);
     setNow(1000 + 1801 + 3601);
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(2);
+    expect(reports()).toBe(before);
+  });
+
+  it("a WORK-ERROR escalation (pr_closed) is posted on the work item; on a file-channel source it goes to the pane", async () => {
+    const { deps, store, state, worktree, calls } = build({ multi: true });
+    // A comments-channel source (jira): the closed PR is about the designated work — ticket note.
+    const run = seed(store, worktree, "K-A5", "reviewing", null, { prNumber: 7 });
+    state.pr = { number: 7, state: "CLOSED", url: "u" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(calls.postNotes.length).toBe(1);
+    expect(calls.postNotes[0]![0]).toBe("K-A5");
+    expect(calls.postNotes[0]![1]).toContain("resume K-A5");
+
+    // A file-channel source (local_markdown): its "notes" are hidden files nobody watches — the
+    // same work error reports into the pane instead.
+    const lmRun = seed(store, worktree, "M-A5", "reviewing", null, { prNumber: 7 }, "lmship", "lm");
+    await reconcileRun(deps, store.getRun(lmRun.id)!);
+    expect(store.getRun(lmRun.id)!.phase).toBe("attention");
+    expect(calls.postNotes.length).toBe(1); // unchanged — nothing new posted
+    const report = calls.agentSend.find(([, text]) => text.includes("resume M-A5"));
+    expect(report).toBeDefined();
+    expect(report![1]).toContain("herdr-factory report");
   });
 });
 
@@ -2650,15 +2677,13 @@ describe("rate limiting — batched PR polling, claim admission, poll backoff", 
     expect(store.countActive("demo")).toBe(5); // backlog drained
   });
 
-  it("human-reply poll misses back off exponentially and cap at 5min", () => {
+  it("human-reply poll misses reschedule on the flat 30s cadence", () => {
     const { store } = build();
     const run = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-B1", branch: "b" });
     const q = store.createHumanQuestion({ runId: run.id, repo: "demo", workSource: "jira", ticketKey: "K-B1", question: "?" });
-    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 60);
-    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 120);
-    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 240);
-    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 300); // capped
-    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 300);
+    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 30);
+    expect(store.recordHumanPollMiss(q.id).nextPollAt).toBe(1000 + 30); // flat — no doubling
+    expect(store.recordHumanPollMiss(q.id).pollAttempts).toBe(3); // misses still counted
   });
 });
 

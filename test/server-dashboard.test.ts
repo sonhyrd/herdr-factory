@@ -6,6 +6,7 @@ interface StatusBody {
   belts: { name: string; diagnostic?: { state: string } }[];
   evidenceSso?: { state: string };
   active: { worker: string | null }[];
+  problems: { kind: string; detail: string }[];
 }
 
 describe("dashboard server payloads", () => {
@@ -52,6 +53,7 @@ describe("dashboard server payloads", () => {
           getSourceAuth: () => undefined,
           authStuckIntents: () => false,
           listIntents: () => [],
+          suspendedIntents: () => [],
         },
         herdr: { paneState },
         resolveSource: (name: string) => (name === "paused-jira" ? pausedSource : source),
@@ -72,6 +74,8 @@ describe("dashboard server payloads", () => {
     expect(quick.belts[0]?.diagnostic).toBeUndefined();
     expect(quick.evidenceSso).toBeUndefined();
     expect(quick.active).toEqual([expect.objectContaining({ worker: null })]);
+    // Repo-level problems ride the quick path too (cheap reads, no probes) — empty when healthy.
+    expect(quick.problems).toEqual([]);
     expect(authStatus).not.toHaveBeenCalled();
     expect(health).not.toHaveBeenCalled();
     expect(paneState).not.toHaveBeenCalled();

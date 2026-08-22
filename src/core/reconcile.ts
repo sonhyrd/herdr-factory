@@ -8,15 +8,15 @@ import type { StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
-import { notifyDue } from "../schedule.ts";
+import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
-import { showRunPane } from "./pane-display.ts";
+import { reportToPane, showRunPane } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
 import { flushOutbox, type OutboxFlow } from "./outbox.ts";
-import { consumeIntentHandoffs, ledgerFlow } from "./ledger.ts";
+import { consumeIntentHandoffs, ledgerFlow, notifySuspended } from "./ledger.ts";
 import { INTENT_KINDS } from "../intents/registry.ts";
 import { wakeResolver } from "./watch.ts";
 import { recordSourceAuthEvent, recordTick, recordTickDuration, recordTickLockSkipped, telemetryEvent, telemetrySpan } from "../telemetry/index.ts";
@@ -73,7 +73,8 @@ function noteSourceAuthRecovered(deps: Deps, source: string): void {
 // --- source status write-backs (the transition outbox) -----------------------
 // A transition is an INTENT persisted until the source confirms it, not a one-shot call: run
 // phases advance regardless (a flaky Jira must never wedge the pipeline), and the outbox retries
-// with backoff until the status of record converges. Without this, a dropped in_development
+// every 30s (suspending + flagging at MAX_RETRY_ATTEMPTS) until the status of record converges
+// or an operator steps in. Without this, a dropped in_development
 // transition left the ticket To Do — and since eligibility queries by status, the ticket would be
 // claimed AGAIN after teardown and the merged work re-done.
 
@@ -81,7 +82,7 @@ function noteSourceAuthRecovered(deps: Deps, source: string): void {
  *  gone — deleted/transferred; retrying cannot help) ALSO marks it delivered but stamps stale_at
  *  for the run-locked Phase A stale policy. This function is called LOCK-FREE from the Phase 0
  *  outbox flush, so it must never mutate the run itself — only the intent row + events.
- *  On a throw it records the attempt + backoff and returns false (throw = retry me). */
+ *  On a throw it records the attempt (suspending at the cap) and returns false (throw = retry me). */
 async function deliverTransition(deps: Deps, src: SourceRuntime, intent: TransitionIntent): Promise<boolean> {
   try {
     // The run's belt's pickup label, so a label-driven source can clear what listEligible filtered
@@ -143,12 +144,20 @@ async function deliverTransition(deps: Deps, src: SourceRuntime, intent: Transit
   } catch (e) {
     // An auth failure here is a PAUSE, not a lost write-back: record + notify (once) so the operator
     // knows why the status isn't moving. The intent stays queued and re-queues promptly on recovery
-    // (retryTransitionsForSource), rather than burning its exponential backoff out to an hour blindly.
+    // (retryTransitionsForSource) instead of waiting out its retry interval.
     if (isSourceUnauthenticated(e)) await noteSourceAuthFailure(deps, src.name, e);
     const after = deps.store.recordTransitionAttempt(intent.id, err(e));
+    // The attempt that crossed MAX_RETRY_ATTEMPTS suspended the row (the store stamps it): the
+    // write-back stops retrying — and keeps vetoing a re-claim of the item — until an operator
+    // (`s` / retry-now) or the source's auth-recovery requeue clears it. Say so loudly, once.
+    if (after.suspendedAt != null && intent.suspendedAt == null) {
+      deps.log("error", `${intent.ticketKey}: ${intent.toState} write-back SUSPENDED after ${after.attempts} failed attempts: ${err(e)}`);
+      await notifySuspended(deps, "source_transition", { id: after.id, runId: after.runId, ticketKey: after.ticketKey }, err(e));
+      return false;
+    }
     deps.log(
       "warn",
-      `${intent.ticketKey}: ${intent.toState} transition deferred (attempt ${after.attempts}, retry in ${after.nextAttemptAt - deps.now()}s): ${err(e)}`,
+      `${intent.ticketKey}: ${intent.toState} transition deferred (attempt ${after.attempts} of ${MAX_RETRY_ATTEMPTS}, retry in ${after.nextAttemptAt - deps.now()}s): ${err(e)}`,
     );
     return false;
   }
@@ -262,8 +271,9 @@ export async function flushTransitionOutbox(deps: Deps): Promise<void> {
 
 /** Phase 0 as a callable unit: one flush pass over every registered durable-intent outbox, isolating
  *  a failing flow so it can't starve the others. The tick's own Phase 0, and also what the operator
- *  due-now paths (`retry-now`) run straight after re-queueing — the point of dropping the backoff is
- *  that the rows land now, not on the next tick. LOCK-FREE by the OutboxFlow contract, but callers
+ *  due-now paths (`retry-now`) run straight after re-queueing — the point of clearing suspensions
+ *  and due times is that the rows land now, not on the next tick. LOCK-FREE by the OutboxFlow
+ *  contract, but callers
  *  outside the tick must still hold the repo tick lock so two passes never walk the same rows. */
 export async function flushDurableIntents(deps: Deps): Promise<void> {
   for (const flow of outboxFlows(deps)) {
@@ -910,8 +920,19 @@ function isPreDispatchClaim(deps: Deps, run: Run): boolean {
   return !deps.store.runStepsFor(run.id).some((s) => s.paneId);
 }
 
+/** Attention reasons that are about the DESIGNATED WORK itself — a rework loop that cannot agree
+ *  (`bounce_limit`), a PR a human closed (`pr_closed`). These are the only parks whose reason is
+ *  written back to the work item: the people who read the ticket care about the work, and a
+ *  comment about factory plumbing (a budget, a stalled pane, a failed login) is noise to them.
+ *  Everything else — including plugin guard codes — is MECHANICAL and reports into the run's own
+ *  agent pane instead (`reportToPane`), alongside the desktop notification. */
+const WORK_ERROR_REASONS = new Set(["bounce_limit", "pr_closed"]);
+
 /** Park a run for human attention: flip phase, record the reason, fire a notification, and put
- *  the reason where the humans already look — the work source itself (Jira comment / local note). */
+ *  the reason where the humans already look. WHERE depends on what broke: a mechanical failure
+ *  (the factory's own workings) reports into the run's agent pane; an error about the designated
+ *  work is posted on the work item — except for a file-channel source (local_markdown), whose
+ *  "notes" are hidden files nobody watches, so its work errors go to the pane too. */
 async function escalateAttention(
   deps: Deps,
   run: Run,
@@ -932,17 +953,20 @@ async function escalateAttention(
   // without touching the label a step's `pane:` target resolves by. Best-effort.
   if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: "attention" });
   await deps.herdr.notify(`herdr-factory: ${run.ticketKey} needs attention`, opts.body).catch(() => {});
-  // Best-effort source write-back (once, on escalation — the periodic re-notify stays local).
-  // Skipped when the escalation IS about the source item being gone — posting to it can't work.
-  const src = opts.skipSourceNote ? undefined : deps.resolveSource(run.workSource);
-  if (src) {
+  const commands = `Resume with: herdr-factory --repo ${deps.config.repoName} resume ${run.ticketKey}\nOr let your agent diagnose it: herdr-factory --repo ${deps.config.repoName} triage ${run.ticketKey}`;
+  // Work errors write back to the source (once, on escalation — the periodic re-notify stays
+  // local), unless the escalation IS about the source item being gone (posting to it can't work)
+  // or the source's reply channel is a local file (report to the pane instead — see the routing
+  // note above). Mechanical errors never reach the source: they report into the run's pane.
+  const src = opts.skipSourceNote || !WORK_ERROR_REASONS.has(opts.reason) ? undefined : deps.resolveSource(run.workSource);
+  if (src && src.client.spec.replyChannel === "comments") {
     await src.client
-      .postNote(
-        run.ticketKey,
-        `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\nResume with: herdr-factory --repo ${deps.config.repoName} resume ${run.ticketKey}\nOr let your agent diagnose it: herdr-factory --repo ${deps.config.repoName} triage ${run.ticketKey}`,
-      )
+      .postNote(run.ticketKey, `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\n${commands}`)
       .catch((e) => deps.log("warn", `${run.ticketKey}: attention note not posted to ${src.name}: ${err(e)}`));
+    return;
   }
+  const landed = await reportToPane(deps, run, `⚠ parked for attention: ${opts.attentionReason}. ${opts.body}\n${commands}`);
+  if (!landed) deps.log("info", `${run.ticketKey}: attention report not delivered to a pane (none live) — the notification is the record`);
 }
 
 async function postHumanQuestion(deps: Deps, src: SourceRuntime, q: HumanQuestion): Promise<HumanQuestion> {
@@ -1337,8 +1361,9 @@ export async function recordCaptureAttempt(
 }
 
 /** Consecutive pollHumanReply THROWS before a waiting run escalates (misses never count — humans
- *  are allowed to be slow). At the 5-min backoff cap this is ~100 min of a failing source. */
-const HUMAN_POLL_ERROR_ESCALATE = 20;
+ *  are allowed to be slow). Matches MAX_RETRY_ATTEMPTS: on the flat 30s cadence this is ~5 min of
+ *  a failing source before the run parks for attention. */
+const HUMAN_POLL_ERROR_ESCALATE = MAX_RETRY_ATTEMPTS;
 
 /** Attention reasons raised by a STEP's own execution while its agent is RUNNING — the evidence
  *  flaky-capture cap, the per-step budget, the commit-stall heartbeat, AND the read-only-posture
@@ -1531,8 +1556,8 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
   const externalId = q.externalId;
   if (!externalId) return;
 
-  // Poll backoff: humans answer in minutes-to-hours; per-tick polling of every waiting run was
-  // sustained source-API load for nothing. Misses double the interval (60s → 5min cap).
+  // Poll cadence: a flat 30s clock (RETRY_INTERVAL_SECONDS), gated here so a waiting run isn't
+  // polled hot on every event nudge between ticks.
   if (deps.now() < q.nextPollAt) return;
 
   let reply: HumanReply | null;
@@ -1545,12 +1570,12 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
     });
   } catch (e) {
     // The item backing the question is gone → escalate now. Anything else is a poll ERROR:
-    // backoff like a miss (a rate-limited source must not make the Phase A error path hot every
-    // tick) but count it separately — a slow HUMAN is normal, a persistently-throwing source is
-    // not, and a parked run doesn't occupy capacity so it would otherwise wedge invisibly.
+    // rescheduled like a miss (a rate-limited source must not make the Phase A error path hot
+    // every tick) but counted separately — a slow HUMAN is normal, a persistently-throwing source
+    // is not, and a parked run doesn't occupy capacity so it would otherwise wedge invisibly.
     if (e instanceof StaleItemError) return humanLoopStale(deps, run, q, err(e));
     if (isSourceUnauthenticated(e)) {
-      // Auth-held, NOT a poll failure: record + notify (once), back off like a normal miss, and
+      // Auth-held, NOT a poll failure: record + notify (once), reschedule like a normal miss, and
       // NEVER count toward the poll-error escalation. A human is still expected to answer — the
       // source just needs re-auth — so parking the run for attention would be wrong.
       await noteSourceAuthFailure(deps, src.name, e);

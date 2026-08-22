@@ -118,10 +118,11 @@ Nudges, least to most destructive: `reload` → `tick` → `retry-now [KEY]` →
 `resume <KEY>` → intent retry → `restart` → `teardown <KEY>`. **`teardown` destroys the worktree and
 branch** — never reach for it to "reset" a run without saying so first.
 
-`retry-now` is the one to reach for when the cause is already fixed and only a **backoff** is left
-(uploads, source write-backs — they double to one attempt per hour): it makes the repo's, or one run's,
-backed-off retries due now and flushes them, changing nothing else about the run. Only AWS creds
-recover on their own.
+`retry-now` is the one to reach for when the cause is already fixed and the jobs are **suspended**
+(uploads, source write-backs — they retry every 30 s and stop after 10 failures, flagging the repo row
+in red on the TUI): it clears the repo's, or one run's, suspensions (fresh 10-attempt window), makes
+every waiting retry due now, and flushes them, changing nothing else about the run. Only AWS creds
+and source auth recover on their own.
 
 ## Ground rules
 
