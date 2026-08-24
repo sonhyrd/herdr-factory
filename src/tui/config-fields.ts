@@ -220,7 +220,26 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
       } else if (publisher === "local") {
         d.push({ kind: "text", label: "public_base_url", path: ["evidence", "public_base_url"], placeholder: "(optional; default http://127.0.0.1:<port>)", indent: 1 });
       } else if (publisher === "command") {
-        d.push({ kind: "text", label: "command", path: ["evidence", "command"], placeholder: "./publish-evidence.sh", indent: 1 });
+        // command is z.union([string, array(string).min(1)]) (config.ts:102) — a bare executable
+        // name/path, OR a full argv array (executable + fixed flags). Render whichever shape is
+        // already on disk: a list (the agent_args idiom) when it's an array, else a plain text field.
+        // A generic text field would stringify an array on render and overwrite it with that string on
+        // the next flush; unlike agent_args, a non-empty string still satisfies this union's string
+        // branch, so save would SILENTLY SUCCEED — evidence publish then fails at runtime (ENOENT
+        // trying to execute the literal stringified array) with no signal at config-save time.
+        const cmdPath: Path = ["evidence", "command"];
+        const cmdNode = draft.getIn(cmdPath) as { items?: unknown[] } | undefined;
+        if (Array.isArray(cmdNode?.items)) {
+          const count = cmdNode.items!.length;
+          d.push({ kind: "header", label: "command (argv)", level: 2, indent: 1 });
+          for (let a = 0; a < count; a++) {
+            d.push({ kind: "text", label: `[${a}]`, path: [...cmdPath, a], placeholder: a === 0 ? "./publish-evidence.sh" : "--flag", indent: 2 });
+            d.push({ kind: "action", label: "‹ remove ›", indent: 2, run: () => { draft.deleteIn([...cmdPath, a]); rebuild(); } });
+          }
+          d.push({ kind: "action", label: "+ add command arg", indent: 2, run: () => { addToArray(cmdPath, ""); rebuild(); } });
+        } else {
+          d.push({ kind: "text", label: "command", path: cmdPath, placeholder: "./publish-evidence.sh", indent: 1 });
+        }
         d.push({ kind: "text", label: "timeout_seconds", path: ["evidence", "timeout_seconds"], placeholder: "300", numeric: true, clearable: true, indent: 1 });
       }
       // Shared across every publisher (uniform key layout).
@@ -411,14 +430,33 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
           if (agentKind === "(none)") {
             d.push({ kind: "text", label: "command", path: [...base, "command"], placeholder: "mise run dev (an agent pane picks an `agent` instead)", clearable: true, indent: 3 });
           } else {
-            d.push({ kind: "text", label: "agent_args", path: [...base, "agent_args"], placeholder: "--dangerously-skip-permissions (a YAML list)", clearable: true, indent: 3 });
+            // agent_args is a z.array(...) (config.ts:241) — one editable row per element (the same
+            // list idiom used for work_sources' scalar-array fields above), not a single text field.
+            // A generic text field here would stringify the array on render and, on the very next
+            // flush (any navigation, not just an edit), overwrite it with that string — failing the
+            // schema's `expected array, received string` check without the user ever touching it.
+            const argsPath: Path = [...base, "agent_args"];
+            const argsSeq = draft.getIn(argsPath) as { items?: unknown[] } | undefined;
+            const argCount = Array.isArray(argsSeq?.items) ? argsSeq.items.length : 0;
+            d.push({ kind: "header", label: "agent_args", level: 2, indent: 3 });
+            for (let a = 0; a < argCount; a++) {
+              d.push({ kind: "text", label: `[${a}]`, path: [...argsPath, a], placeholder: "--dangerously-skip-permissions", indent: 4 });
+              d.push({ kind: "action", label: "‹ remove ›", indent: 4, run: () => { draft.deleteIn([...argsPath, a]); rebuild(); } });
+            }
+            d.push({ kind: "action", label: "+ add agent_args", indent: 4, run: () => { addToArray(argsPath, ""); rebuild(); } });
             d.push({ kind: "text", label: "agent_name", path: [...base, "agent_name"], placeholder: "lowercase, unique — derived when empty", clearable: true, indent: 3 });
           }
           d.push({ kind: "bool", label: "setup", value: p?.setup === true, indent: 3, apply: (next) => { draft.setIn([...base, "setup"], next); rebuild(); } });
           // split — optional; a leading "(unset)" clears it (a tab's first pane ignores split anyway).
           const splitCur = p?.split == null ? "(unset)" : String(p.split);
           d.push({ kind: "enum", label: "split", value: splitCur, choices: ["(unset)", ...SPLIT_CHOICES], indent: 3, apply: (next) => { if (next === "(unset)") draft.deleteIn([...base, "split"]); else draft.setIn([...base, "split"], next); rebuild(); } });
-          d.push({ kind: "text", label: "size", path: [...base, "size"], placeholder: '"40%", a 0<n<1 fraction, or cells', clearable: true, indent: 3 });
+          // size is PaneSizeSchema (config.ts:212) — a percentage STRING ("40%") or a bare NUMBER (a
+          // 0<n<1 fraction or a ≥1 cell count), with no coercion on the number branch. `numeric: true`
+          // makes the flush write an actual number for "0.4"/"3" (Number(t) is finite) while leaving a
+          // "40%" string alone (Number("40%") is NaN) — without it, a bare-number size would get
+          // reflushed as a plain string on the next navigation and fail `expected number, received
+          // string`, the same corruption class fixed for agent_args above.
+          d.push({ kind: "text", label: "size", path: [...base, "size"], placeholder: '"40%", a 0<n<1 fraction, or cells', clearable: true, numeric: true, indent: 3 });
           d.push({ kind: "action", label: "‹ remove pane ›", indent: 3, run: () => { void ctx.confirm(`Remove pane "${paneTitles[k]}"?`).then((ok) => { if (ok) { draft.deleteIn(base); rebuild(); } }); } });
         });
         d.push({ kind: "action", label: "+ add pane", indent: 2, run: () => { draft.addIn(["layouts", i, "tabs", j, "panes"], draft.createNode({ title: uniqueName("pane", paneTitles), agent: "claude" })); open(["layouts", i, "tabs", j, "panes", panes.length]); rebuild(); } });

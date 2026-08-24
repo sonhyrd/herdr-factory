@@ -184,6 +184,82 @@ describe("config-fields: layouts section", () => {
       expect(f.clearable).toBe(true);
     }
   });
+
+  // Regression: agent_args is a z.array(...) (config.ts:241). A single stringified text field would
+  // clobber it into a scalar on the very next flush (any navigation), which then fails
+  // RepoConfigSchema with "expected array, received string" even though the on-disk value was
+  // never touched by the user.
+  it("renders agent_args as a list (header + one row per element + add), not a single text field", () => {
+    const doc = parseDocument(`work_sources: []
+belt: []
+layouts:
+  - id: app-dev
+    tabs:
+      - title: work
+        panes:
+          - { title: agent, agent: claude, agent_args: ["--dangerously-skip-permissions"] }
+`);
+    const paths = [["layouts", 0], ["layouts", 0, "tabs", 0], ["layouts", 0, "tabs", 0, "panes", 0]];
+    const fields = layoutFields(doc, paths);
+    expect(fields.some((f) => f.kind === "header" && f.label === "agent_args")).toBe(true);
+    expect(fields.some((f) => f.kind === "text" && f.label === "agent_args")).toBe(false);
+    const elem = fields.find((f) => f.kind === "text" && f.label === "[0]");
+    if (elem?.kind !== "text") throw new Error("expected an agent_args[0] row");
+    expect(elem.path).toEqual(["layouts", 0, "tabs", 0, "panes", 0, "agent_args", 0]);
+    expect(fields.some((f) => f.kind === "action" && f.label === "+ add agent_args")).toBe(true);
+    expect((doc.toJS() as any).layouts[0].tabs[0].panes[0].agent_args).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  // Regression: PaneSizeSchema (config.ts:212) accepts a percentage STRING ("40%") or a bare NUMBER
+  // (a fraction or cell count) with NO coercion on the number branch. Without `numeric: true`, the
+  // editor's flush (config-editor.ts flushInputs) always writes back a plain string — so a config
+  // that already had a numeric size (e.g. `size: 3`) would get silently rewritten to the string "3"
+  // on the next navigation and then fail `expected number, received string`, the same corruption
+  // class as the agent_args bug above.
+  it("marks size numeric so a bare-number size (fraction/cells) round-trips as a number, not a string", () => {
+    const paths = [["layouts", 0], ["layouts", 0, "tabs", 0], ["layouts", 0, "tabs", 0, "panes", 0]];
+    const size = layoutFields(layoutDoc(), paths).find((f) => f.kind === "text" && f.label === "size");
+    if (size?.kind !== "text") throw new Error("expected a text field for size");
+    expect(size.numeric).toBe(true);
+  });
+});
+
+// Regression: evidence.command is z.union([string, array(string).min(1)]) (config.ts:102) — a bare
+// executable, or a full argv array. Both fully validate, so a generic text field stringifying the
+// array on render and clobbering it back into a string scalar on the next flush wouldn't even fail
+// save — it would silently corrupt the config, and evidence publish would fail at runtime instead.
+describe("config-fields: evidence.command (string executable vs argv array)", () => {
+  const generalFields = (doc: Document): FieldDesc[] => buildDescriptors(doc, () => {}, ctx(), new WeakSet(), "general");
+
+  it("renders a plain text field when command is a bare string", () => {
+    const doc = parseDocument(`work_sources: []\nbelt: []\nevidence: { publisher: command, command: "./publish-evidence.sh" }\n`);
+    const fields = generalFields(doc);
+    const cmd = fields.find((f) => f.kind === "text" && f.label === "command");
+    if (cmd?.kind !== "text") throw new Error("expected a text field for command");
+    expect(cmd.path).toEqual(["evidence", "command"]);
+    expect(fields.some((f) => f.kind === "header" && f.label === "command (argv)")).toBe(false);
+  });
+
+  it("renders a list (header + one row per arg + add), not a single text field, when command is an array", () => {
+    const doc = parseDocument(`work_sources: []\nbelt: []\nevidence: { publisher: command, command: ["node", "scripts/publish.js", "--flag"] }\n`);
+    const fields = generalFields(doc);
+    expect(fields.some((f) => f.kind === "header" && f.label === "command (argv)")).toBe(true);
+    expect(fields.some((f) => f.kind === "text" && f.label === "command")).toBe(false);
+    const elems = fields.filter((f) => f.kind === "text" && "path" in f && (f.path as (string | number)[])?.[0] === "evidence" && (f.path as (string | number)[])?.[1] === "command");
+    expect(elems.map((f) => (f as Extract<FieldDesc, { kind: "text" }>).path)).toEqual([
+      ["evidence", "command", 0],
+      ["evidence", "command", 1],
+      ["evidence", "command", 2],
+    ]);
+    expect(fields.some((f) => f.kind === "action" && f.label === "+ add command arg")).toBe(true);
+    expect((doc.toJS() as any).evidence.command).toEqual(["node", "scripts/publish.js", "--flag"]);
+  });
+
+  it("+ add command arg appends an empty element to the argv array", () => {
+    const doc = parseDocument(`work_sources: []\nbelt: []\nevidence: { publisher: command, command: ["node"] }\n`);
+    actionRun(generalFields(doc), "+ add command arg");
+    expect((doc.toJS() as any).evidence.command).toEqual(["node", ""]);
+  });
 });
 
 describe("config-fields: belt references a layout", () => {
