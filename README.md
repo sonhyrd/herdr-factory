@@ -351,7 +351,8 @@ failing checks — a resolver agent is woken in the worktree to address them. Th
 limit** — it rides until the PR merges or closes, however long review takes — and it holds a
 [`max_active_workspaces`](#limits-all-optional) slot **only while a resolver is actively working**,
 so an idle PR-in-review never starves the belt of new claims. Merge → teardown (worktree removed,
-branch deleted; re-claiming the same ticket later gets a fresh branch and a fresh PR). Closed
+every local branch the run created deleted — the name it was claimed under and any name it was
+renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).
 
 Bounces are per-target-step counted; past `max_bounces` (default 6, per-belt override, `0`
@@ -653,13 +654,15 @@ no label concept — `local_markdown` / `sentry`), `priority` (default 100, lowe
 while any of its in-flight runs progress to completion as usual; the flag only gates new claims, so
 it's a delete-free way to disable a belt), optional
 `match` (see [Multiple belts](#multiple-belts)), optional `max_bounces` override, and optional
-`workspace_name` — the branch/worktree name template, default
-`{{semantic_work_prefix}}/{{work_id}}-{{work_full_slug}}`. It must contain
+`workspace_name` — the **worktree/workspace** name template (and the branch the worktree starts on),
+default `{{semantic_work_prefix}}/{{work_id}}-{{work_full_slug}}`. It must contain
 `{{work_id}}`; other vars: `{{work_slug}}`, `{{work_full_slug}}`, `{{work_type}}`,
 `{{semantic_work_prefix}}`. The prefix taxonomy behind `{{semantic_work_prefix}}` and the slug-length
 caps are configurable — see [`branch`](#branch-optional) (defaults: fix/chore/feature, `{{work_slug}}`
 ≤20, `{{work_full_slug}}` ≤50). A short unique suffix is always appended, so
-re-claiming a previously-merged item gets a fresh branch and PR. Optional `default_layout` +
+re-claiming a previously-merged item gets a fresh worktree and PR. This name is the run's
+**identity**; the branch can move off it later — see
+[Branch names are tracked, not fixed](#branch-names-are-tracked-not-fixed). Optional `default_layout` +
 `layout_matching` pick which `layouts` entry (below) the factory builds into this belt's worktrees —
 see [Layouts](#layouts). Optional `effects` — configurable task progression onto source statuses
 (see [Effects](#effects--configurable-task-progression)).
@@ -901,6 +904,37 @@ A work **type** is matched against each `prefixes` key **case-insensitively by s
 (first match wins). The reserved `default` key is the fallback for an unmatched type — omit it and the
 fallback is `feature`. A belt's `prefixes` map **fully replaces** the repo's (it's not merged), while
 each slug cap overrides independently; unset fields fall back to the repo block, then the defaults.
+
+#### Branch names are tracked, not fixed
+
+A run's **identity is its worktree** — the name from `workspace_name`, the herdr workspace, the
+checkout path — never its branch. The factory can only name a branch from what the work source knows
+**at claim time**, and plenty of repos need a name it cannot know then: a CI rule that every branch
+carries a ticket key, a ticket the agent itself creates during the work step, a prefix taken from a
+convention document in the repo.
+
+So the branch is **tracked**. An agent renames it once, before it pushes:
+
+```
+herdr-factory --repo <name> set-branch <KEY> fix/RWR-18500-toast-crash
+```
+
+…which is what `@@SET_BRANCH_CMD@@` renders into every step prompt (the shipped `work` prompt tells
+the agent to use it when the repo's convention needs another shape). The engine renames the branch in
+the worktree, records the change on the run's timeline, and from then on uses the new name for
+prompts, PR discovery, and cleanup. A rename made **without** the command (a bare `git branch -m`) is
+picked up on the next reconcile pass anyway — the command exists so a bad rename fails loudly at the
+agent instead of silently at the wrong moment. It refuses:
+
+- a name that isn't a valid git ref, or one that already exists in the repo;
+- a **protected** branch — the `base_ref` or whatever the main checkout has checked out (these are
+  also never deleted at teardown);
+- any rename **after the run's PR is open** — the PR's head is the branch that was pushed, and
+  renaming then would strand it.
+
+Nothing else changes: the worktree keeps the name it was created under (so `layout_matching` and the
+layout hook still resolve it), teardown deletes both names, and PR discovery looks under both. A belt
+whose repo has no such convention never sees any of this.
 
 ### `agent` (optional)
 
@@ -1159,6 +1193,7 @@ herdr-factory --repo <name> auth status                            # each source
 herdr-factory --repo <name> step-done <KEY> <step> [--source <name>]
 herdr-factory --repo <name> bounce <KEY> <toStep> --reason|--reason-file … [--source <name>]
 herdr-factory --repo <name> ask-human <KEY> <step> --question|--question-file … [--source <name>]
+herdr-factory --repo <name> set-branch <KEY> <branch> [--source <name>]   # move the run onto this repo's branch convention
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]
 herdr-factory capture-lock acquire|release <resource> [owner]       # machine-global exclusive_resource lock
 

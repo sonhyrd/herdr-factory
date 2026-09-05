@@ -133,6 +133,7 @@ See §4 for semantics and messages.
 | `bounce <key> <toStep> [--source <n>] [--reason <text>\|--reason-file <path>] [--step <n>] [--pass <n>]` | yes | server-first |
 | `ask-human <key> <step> [--source <n>] [--question <text>\|--question-file <path>]` | yes | server-first |
 | `capture-attempt <key> <step> [--source <n>]` | yes | server-first |
+| `set-branch <key> <branch> [--source <n>]` | yes | server-first |
 | `evidence-upload <key> [--source <n>]` | yes | **in-process only — never routes** |
 | `capture-lock <acquire\|release> <resource> [owner]` | **no** | in-process, global DB |
 
@@ -192,15 +193,26 @@ None of these take `--repo` — the server serves every configured repo.
 
 ## 4. Agent→dispatcher signals
 
-`step-done`, `bounce`, `ask-human`, `capture-attempt`, `evidence-upload` are **rendered into step prompts** as `@@STEP_DONE_CMD@@`, `@@BOUNCE_CMD@@`, `@@ASK_HUMAN_CMD@@`, `@@CAPTURE_ATTEMPT_CMD@@`, `@@EVIDENCE_UPLOAD_CMD@@` and are normally run by the worker agent, not typed by hand. A diagnosing agent does sometimes need to fire one manually — most often `step-done` for a run whose agent died after finishing its work.
+`step-done`, `bounce`, `ask-human`, `capture-attempt`, `set-branch`, `evidence-upload` are **rendered into step prompts** as `@@STEP_DONE_CMD@@`, `@@BOUNCE_CMD@@`, `@@ASK_HUMAN_CMD@@`, `@@CAPTURE_ATTEMPT_CMD@@`, `@@SET_BRANCH_CMD@@`, `@@EVIDENCE_UPLOAD_CMD@@` and are normally run by the worker agent, not typed by hand. A diagnosing agent does sometimes need to fire one manually — most often `step-done` for a run whose agent died after finishing its work.
 
 Rendered form (single source of truth, `src/signals/registry.ts`): `<abs path to bin/herdr-factory> --repo <repo> <signal> <positionals…> [--flag value…]` — `--repo` comes **before** the signal name and values are **not shell-quoted**. Prompts render the *file* variants (`--reason-file .memory/herdr-factory/bounce-<step>.md`, `--question-file .memory/herdr-factory/human-question-<step>.md`).
 
 **Cross-release compatibility.** A rendered prompt outlives the engine that rendered it — an agent may still be sitting on a command string from before the last auto-update or restart. So this surface is **additive only**: new arguments arrive as *optional* flags (`--pass` and `bounce --step` are both marked "optional for upgrade safety" in the registry), never as new required positionals, and an unstamped signal is still accepted. When constructing a signal by hand, pass only what you need; omitting `--source`/`--pass` is always valid.
 
+**`set-branch` — the branch is tracked, the worktree is the identity.** The factory names a run's
+branch at claim time from the work item; a repo whose branching/CI convention needs another shape
+(commonly "every branch carries a ticket key") has its agent rename it **once, before pushing**:
+`set-branch <key> <branch>` does the `git branch -m` inside the worktree, patches `runs.branch`, and
+records a `branch_changed` event. It is refused for an invalid or already-taken name, for a protected
+branch (the repo's `base_ref` or the main checkout's branch), while HEAD is detached, and **after the
+run's PR is open** (the PR head is the pushed branch — renaming then strands it). A rename done
+without the command is picked up by the next reconcile pass anyway (`syncRunBranch`), so a run never
+"loses" its branch; the command exists to fail loudly and early. `runs.worktree_name` never moves —
+it is what the layout hook matches, and teardown deletes every name the run used.
+
 File arguments (`--reason-file`, `--question-file`) resolve against **your** current directory — the launcher deliberately does not change directory, so the relative paths the prompts render (`.memory/herdr-factory/bounce-<step>.md`) resolve inside the agent's worktree, where the agent was told to write them.
 
-All four dispatcher signals go through the same `applySignal` engine function on both the server and the local path, so the two can't drift. **A rejected signal prints to stderr and exits 1** — the exit code is an agent's only feedback, and a rejection that exited 0 used to leave the agent believing it had finished while the run sat until its step budget expired. Success (including the idempotent `already recorded done`) still exits 0:
+All five dispatcher signals go through the same `applySignal` engine function on both the server and the local path, so the two can't drift. **A rejected signal prints to stderr and exits 1** — the exit code is an agent's only feedback, and a rejection that exited 0 used to leave the agent believing it had finished while the run sat until its step budget expired. Success (including the idempotent `already recorded done`) still exits 0:
 
 | signal | success output | rejection messages (stderr, **exit 1**) |
 |---|---|---|
@@ -208,6 +220,7 @@ All four dispatcher signals go through the same `applySignal` engine function on
 | `bounce` | `<key>: bounced to <toStep>[ — <message>]` | `<key>: run busy — bounce to <toStep> recorded; it will be applied on the next reconcile pass` · cap hit → `<key>: bounce limit exceeded — escalated to attention` (the run is parked, **not** sent back; `<key>: cap exceeded — parked for attention` only when a concurrent reconcile pass consumed the bounce first) · `<key>: step "<toStep>" is not in belt "<b>"` |
 | `ask-human` | `<key>: waiting for human answer (question #<id>)` (`, posting deferred` when the source write is queued) | `<key>: run busy — question recorded; it will be posted on the next reconcile pass` |
 | `capture-attempt` | `<key>: capture attempt #<n> recorded` | cap hit → `<key>: <message>` (parked for attention) |
+| `set-branch` | `<key>: branch renamed <old> -> <new>` (plus ` — note: "<old>" was already pushed; delete the stale remote branch (git push origin --delete <old>)` when it had a remote ref) · `<key>: already on <new>` · `<key>: tracking <new>` | `"<n>" is not a valid branch name: <why>` · `branch "<n>" already exists in this repo …` · `"<n>" is a protected branch …` · `PR #<n> is already open from "<b>" — renaming now would strand it …` · `the worktree's HEAD is detached …` · `this run has no worktree yet …` |
 
 Flag errors also exit 1: `ask-human: pass either --question or --question-file, not both` · `ask-human: provide a non-empty --question or --question-file` · `bounce: pass either --reason or --reason-file, not both` · `bounce: provide a non-empty --reason or --reason-file (the findings the earlier step must address)`.
 
@@ -217,7 +230,7 @@ Step semantics (what a bounce rewinds, what a cap does) live in [belts-and-steps
 
 ## 5. Server routing and the fallback contract
 
-- `server-first` commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `step-done`, `ask-human`, `bounce`, `capture-attempt`) POST to `127.0.0.1:<port>` with a 10-minute timeout (they do real work).
+- `server-first` commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `step-done`, `ask-human`, `bounce`, `capture-attempt`, `set-branch`) POST to `127.0.0.1:<port>` with a 10-minute timeout (they do real work).
 - The local fallback fires **only** when there is no server to reach: no `<stateRoot>/server.json`, connection refused, or timeout. A server we *reached* that answers non-2xx propagates its error and exits 1 — there is no silent fallback.
 - The single most useful "my CLI and my server disagree" diagnostic (HTTP 404):
   ```
@@ -414,7 +427,7 @@ Install-time shell knobs, read by `install.sh` only and never by the CLI: `HERDR
 ## 9. Things the README doesn't mention
 
 1. `watch` exists, marked `[legacy/dev]` — one repo, resident, all output on stderr. The server replaces it.
-2. `capture-attempt` is a real command with a prompt token.
+2. `capture-attempt` and `set-branch` are real commands with prompt tokens.
 3. `telemetry-smoke` and the `layout-hook` launcher arg.
 4. `evidence-upload` **never** routes through the server (the README's routed-signal list implies it does; the source is explicit that it doesn't).
 5. `update` is channel-aware (README says "hard reset to the branch's upstream"; only true off `stable`).

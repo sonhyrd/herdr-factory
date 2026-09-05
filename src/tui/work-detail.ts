@@ -22,6 +22,9 @@ export interface WorkItemDetail {
   issueType: string | null;
   workSource: string | null;
   belt: string | null;
+  /** The name the worktree was created under (the run's identity). Shown only when the branch has
+   *  moved off it — a rename to the repo's convention is exactly what an operator needs to see. */
+  worktreeName?: string | null;
   branch: string | null;
   phase: string;
   step: string | null; // the active belt step (when phase is "running")
@@ -70,6 +73,7 @@ export function formatWorkItemDetail(detail: WorkItemDetail, timelineLines: stri
   if (detail.issueType) out.push(`${field("type")}${detail.issueType}`);
   out.push(`${field("source")}${detail.workSource ?? "?"}${detail.belt ? ` · belt ${detail.belt}` : ""}`);
   if (detail.branch) out.push(`${field("branch")}${detail.branch}`);
+  if (detail.worktreeName && detail.worktreeName !== detail.branch) out.push(`${field("worktree")}${detail.worktreeName}`);
   const status = [humanize(detail.phase)];
   if (detail.step) status.push(`step ${detail.step}`);
   if (detail.outcome) status.push(`outcome ${detail.outcome}`);

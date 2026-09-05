@@ -34,6 +34,7 @@ interface RunRow {
   ticket_key: string;
   summary: string | null;
   issue_type: string | null;
+  worktree_name: string | null;
   branch: string | null;
   phase: string;
   step: string | null;
@@ -62,6 +63,7 @@ function toRun(r: RunRow): Run {
     ticketKey: r.ticket_key,
     summary: r.summary,
     issueType: r.issue_type,
+    worktreeName: r.worktree_name,
     branch: r.branch,
     phase: r.phase as Run["phase"],
     step: r.step,
@@ -362,14 +364,30 @@ export class Store {
     return row ? toRun(row) : undefined;
   }
 
-  /** The active run whose worktree branch matches — how the layout hook tells a factory-created
-   *  worktree (use that run's belt for layout selection) from a hand-made one (walk belts). Branches
-   *  carry a per-claim uid suffix, so this is effectively unique among active runs. */
-  activeRunForBranch(repo: string, branch: string): Run | undefined {
-    const row = this.db
-      .prepare(`${RUN_SELECT} WHERE r.repo = ? AND r.branch = ? AND r.ended_at IS NULL`)
-      .get(repo, branch) as RunRow | undefined;
-    return row ? toRun(row) : undefined;
+  /** The active run that OWNS a worktree — how the layout hook tells a factory-created worktree
+   *  (use that run's belt for layout selection) from a hand-made one (walk belts).
+   *
+   *  Matched by checkout PATH first (recorded once herdr reports the worktree, and immune to
+   *  everything an agent does inside it), then by name: the name the worktree was created under
+   *  (`worktree_name`) OR the branch it is currently on. Both names are needed because the branch
+   *  is tracked, not fixed — a run whose agent renamed the branch still answers to the name its
+   *  worktree carries, and a hook firing at CREATE time (before any path is recorded) only knows
+   *  the branch. Names carry a per-claim uid suffix, so this stays effectively unique among
+   *  active runs. */
+  activeRunForWorktree(repo: string, opts: { path?: string | null; branch?: string | null }): Run | undefined {
+    if (opts.path) {
+      const row = this.db
+        .prepare(`${RUN_SELECT} WHERE r.repo = ? AND r.worktree_path = ? AND r.ended_at IS NULL`)
+        .get(repo, opts.path) as RunRow | undefined;
+      if (row) return toRun(row);
+    }
+    if (opts.branch) {
+      const row = this.db
+        .prepare(`${RUN_SELECT} WHERE r.repo = ? AND (r.worktree_name = ? OR r.branch = ?) AND r.ended_at IS NULL`)
+        .get(repo, opts.branch, opts.branch) as RunRow | undefined;
+      if (row) return toRun(row);
+    }
+    return undefined;
   }
 
   /** All active runs for a ticket key, across sources — for the manual CLI (claim/teardown/
@@ -462,15 +480,19 @@ export class Store {
     ticketKey: string;
     summary?: string | null;
     issueType?: string | null;
+    /** The name the worktree is created under (identity, frozen). Defaults to `branch` — they are
+     *  the same string at claim; only a later rename separates them. */
+    worktreeName?: string | null;
     branch?: string | null;
   }): Run {
     const t = this.now();
+    const worktreeName = input.worktreeName ?? input.branch ?? null;
     const info = this.db
       .prepare(
-        `INSERT INTO runs (repo, work_source, belt, ticket_key, summary, issue_type, branch, phase, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'claiming', ?, ?)`,
+        `INSERT INTO runs (repo, work_source, belt, ticket_key, summary, issue_type, worktree_name, branch, phase, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claiming', ?, ?)`,
       )
-      .run(input.repo, input.workSource, input.belt, input.ticketKey, input.summary ?? null, input.issueType ?? null, input.branch ?? null, t, t);
+      .run(input.repo, input.workSource, input.belt, input.ticketKey, input.summary ?? null, input.issueType ?? null, worktreeName, input.branch ?? null, t, t);
     const run = this.getRun(Number(info.lastInsertRowid));
     if (!run) throw new Error("createRun: row vanished after insert");
     telemetryEvent("store.run.create", {

@@ -283,8 +283,12 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
   const { buildDeps } = await import("../build-deps.ts");
   const deps: Deps = await buildDeps(repoName);
 
+  // Which run owns this worktree? By checkout PATH first (immune to anything an agent does inside
+  // it — including renaming the branch), then by name: at CREATE time — the event this hook exists
+  // for — no path is recorded yet, and the worktree's branch is still the name the run was claimed
+  // under (`worktree_name`), which the store matches alongside the run's current branch.
   const branch = await deps.herdr.worktreeBranch(workspaceId, checkoutPath);
-  const ownerRun = branch ? deps.store.activeRunForBranch(repoName, branch) : undefined;
+  const ownerRun = deps.store.activeRunForWorktree(repoName, { path: checkoutPath, branch });
   const matched = resolveHookLayout(deps.config.belts, deps.config.layouts, ownerRun?.belt ?? undefined, branch ?? undefined);
   if (!matched) return done(`no layout matches ${checkoutPath}`);
   const { layout } = matched;

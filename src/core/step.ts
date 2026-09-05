@@ -558,6 +558,9 @@ async function renderStepPromptImpl(
   // evidence-upload publishes @@EVIDENCE_DIR@@ to S3/CloudFront (no-op if `evidence:` is unconfigured);
   // capture-attempt signals the start of a capture so the engine caps flaky-capture loops. Both are
   // capability-gated below (injected only when `evidence` is ACTIVE for this step — see isActive).
+  // The branch an agent may rename to (`<new-branch-name>` is a placeholder it substitutes) — the
+  // repo's own branching/CI convention is never knowable at claim time.
+  const setBranchCmd = signalCommand(CLI_PATH, repo, "set-branch", { key: run.ticketKey, branch: "<new-branch-name>", source: src.name });
   const evidenceUploadCmd = signalCommand(CLI_PATH, repo, "evidence-upload", { key: run.ticketKey, source: src.name });
   const captureAttemptCmd = signalCommand(CLI_PATH, repo, "capture-attempt", { key: run.ticketKey, step: step.name, source: src.name });
   // For a step that may bounce (evidence/review), a ready-made command that returns the run to its
@@ -589,6 +592,7 @@ async function renderStepPromptImpl(
     "@@BOUNCE_TARGET@@": bounceTarget ?? "",
     "@@BOUNCE_REASON_FILE@@": bounceTarget ? `${MEMORY_DIR}/bounce-${step.name}.md` : "",
     "@@ASK_HUMAN_CMD@@": askHumanCmd,
+    "@@SET_BRANCH_CMD@@": setBranchCmd,
     "@@CLI@@": CLI_PATH,
     "@@HANDOFF_IN@@": prior ? `${MEMORY_DIR}/handoff-${prior.step}.md` : "(none — first step)",
     "@@HANDOFF_OUT@@": `${MEMORY_DIR}/handoff-${step.name}.md`,

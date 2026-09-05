@@ -711,6 +711,7 @@ export function createDashboard(
         issueType: run.issueType,
         workSource: run.workSource,
         belt: run.belt,
+        worktreeName: run.worktreeName,
         branch: run.branch,
         phase: run.phase,
         step: run.step,

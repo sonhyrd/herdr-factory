@@ -861,6 +861,20 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 38,
+    // BRANCH STOPS BEING THE RUN'S IDENTITY. `worktree_name` freezes the name the worktree +
+    // workspace were created under (the rendered `workspace_name`) — what the layout hook matches a
+    // worktree by, and what teardown must still reap — while `branch` becomes TRACKED state: the
+    // branch the worktree is currently ON, which an agent may rename to the repo's branch
+    // convention mid-run (`herdr-factory set-branch`, or a bare `git branch -m` the engine
+    // follows). Expand-only, and the backfill is EXACT: until this migration the two were the same
+    // string by construction (the claim rendered one name and created the worktree from it).
+    sql: `
+      ALTER TABLE runs ADD COLUMN worktree_name TEXT;
+      UPDATE runs SET worktree_name = branch WHERE worktree_name IS NULL;
+    `,
+  },
 ];
 
 /** Apply pending migrations in a transaction. Idempotent. */

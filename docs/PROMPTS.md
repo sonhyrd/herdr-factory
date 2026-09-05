@@ -100,7 +100,7 @@ in a matching `@@WHEN:<product>@@` clause to reference it portably.
 | `@@STEP@@` | this step's name |
 | `@@TYPE@@` | the work item's type (feature/bug/chore/…); may be empty |
 | `@@SUMMARY@@` | the work item's summary/title |
-| `@@BRANCH@@` | the run's git branch |
+| `@@BRANCH@@` | the branch the run's worktree is currently on (tracked — an agent may rename it with `@@SET_BRANCH_CMD@@`) |
 | `@@WORKTREE@@` | absolute path to the run's worktree |
 | `@@MEMORY_DIR@@` | the per-run working dir (`.memory/herdr-factory`), relative to the worktree |
 | `@@WORK_DOC@@` | path to the materialized work doc (`ticket.json` / `task.md` / `task/`) |
@@ -111,11 +111,22 @@ in a matching `@@WHEN:<product>@@` clause to reference it portably.
 | `@@PRIOR_SESSION@@` | the prior step's agent session id ("(none)" if none) |
 | `@@STEP_DONE_CMD@@` | the exact command to signal this step complete |
 | `@@ASK_HUMAN_CMD@@` | the exact command to ask a human and park the run |
+| `@@SET_BRANCH_CMD@@` | the exact command to put this run's worktree on another branch name (the repo's branch convention) — rename BEFORE pushing; refused once the PR is open |
 | `@@BOUNCE_CMD@@` | command to send the work back to the earlier step (empty when this step can't bounce) |
 | `@@BOUNCE_TARGET@@` | the step name a bounce returns to (empty when this step can't bounce) |
 | `@@BOUNCE_REASON_FILE@@` | path to write bounce findings to (empty when this step can't bounce) |
 | `@@CLI@@` | absolute path to the herdr-factory CLI binary |
 | `@@COMMIT_CONVENTIONS@@` | the repo's commit-message conventions (from `conventions.commits`); empty when that key is unset |
+
+`@@SET_BRANCH_CMD@@` renders with a `<new-branch-name>` placeholder the agent replaces. The run's
+identity is its **worktree**, not its branch: the factory names the branch at claim time from what
+the work source knows, and a project whose branching/CI convention needs another name (a ticket key
+the agent only obtains mid-run, a required prefix) renames it with this command. The engine then
+tracks the new name for prompts, PR discovery, and branch cleanup. It refuses a name that isn't a
+valid ref, one that already exists, a protected branch (the base ref / the main checkout's branch),
+and any rename once the run's PR is open — the message says which. A rename made without the command
+(a bare `git branch -m`) is picked up on the next reconcile pass anyway; the command exists to fail
+loudly instead of silently at the wrong moment.
 
 The three `@@BOUNCE_*@@` tokens are universal but render **empty** on a step that cannot bounce
 (a step with no earlier `bounce_feedback` consumer), so they are always safe to reference.

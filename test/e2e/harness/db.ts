@@ -14,6 +14,9 @@ export interface RunRow {
   ticket_key: string;
   summary: string | null;
   issue_type: string | null;
+  /** The name the worktree/workspace was created under (identity, frozen at claim). */
+  worktree_name: string | null;
+  /** The branch the worktree is on NOW — tracked, so it moves when an agent renames it. */
   branch: string | null;
   phase: string;
   workspace_id: string | null;

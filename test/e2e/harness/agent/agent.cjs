@@ -24,7 +24,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { execFileSync, spawnSync } = require("node:child_process");
 
-const SIGNALS = ["step-done", "bounce", "ask-human", "capture-attempt", "evidence-upload"];
+const SIGNALS = ["step-done", "bounce", "ask-human", "capture-attempt", "evidence-upload", "set-branch"];
 // Steps whose primitive produces commits — the agent commits there by default and nowhere else, so
 // a `review`/`evidence` behaviour that sets `commit: true` is a deliberate read-only violation.
 const COMMIT_STEPS = new Set(["work", "pr", "fix"]);
@@ -227,6 +227,15 @@ function handle(text) {
     git(["add", "-A"], cwd);
     git(["commit", "-m", `chore(${step}): scripted change ${i} (pass ${pass})`], cwd);
     log(`  committed ${path.relative(cwd, f)} HEAD=${git(["rev-parse", "--short", "HEAD"], cwd)}`);
+  }
+
+  // The repo's branch convention: rename onto it through the rendered set-branch command, exactly
+  // as the shipped work prompt tells an agent to (its `<new-branch-name>` placeholder is the one
+  // token an agent is expected to substitute).
+  if (b.setBranch) {
+    const cmd = cmds["set-branch"];
+    if (!cmd) log(`  WANTED set-branch but the prompt renders no such command`);
+    else sh(cmd.replace(/<new-branch-name>/, b.setBranch), cwd);
   }
 
   for (const cmd of b.run || []) sh(cmd, cwd);

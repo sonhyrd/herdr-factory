@@ -86,6 +86,24 @@ export const SIGNAL_DESCRIPTORS: readonly SignalDescriptor[] = [
     ],
   },
   {
+    // The run's BRANCH is tracked state, not identity (core/run-branch.ts): the factory can only
+    // name a branch from what the work source knows at claim time, while the repo's branching/CI
+    // convention may demand a name the agent only learns mid-run (a ticket key it just created, a
+    // required prefix). This is the front door for moving the worktree onto that name — validated
+    // and recorded, and refused once a PR is open.
+    // WAITING: it mutates git AND the run row together, a non-monotonic pair that must not race the
+    // reconcile pass which reads the branch for prompts, PR discovery, and cleanup.
+    name: "set-branch",
+    scope: "run",
+    lockDiscipline: "waiting",
+    token: "@@SET_BRANCH_CMD@@",
+    args: [
+      { name: "key", required: true },
+      { name: "branch", required: true },
+      { name: "source", required: false, flag: true },
+    ],
+  },
+  {
     name: "evidence-upload",
     scope: "product-outbox",
     lockDiscipline: "fire-and-forget",

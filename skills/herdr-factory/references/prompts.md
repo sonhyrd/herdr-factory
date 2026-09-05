@@ -58,6 +58,7 @@ Verbatim from the scaffold, on every step:
 | architecture, patterns to reuse, naming, code style | committing incrementally to **this** branch (the progress heartbeat depends on it) |
 | where tests live, test style, exact lint/type-check/test commands | the handoff note, `step-done`, ask-human, bounce |
 | commit-message convention (its own guide / recent `git log`) | who owns the work item's status: **the dispatcher** |
+| the **branch name** convention (renamed once, before pushing, with `@@SET_BRANCH_CMD@@`) | the run's identity — the worktree, not the branch: the factory follows the rename, refuses one after the PR is open, and reaps every name at teardown |
 | review standards, architectural rules, coverage, acceptable complexity | `conventions.commits` — its rendered block says "where they disagree with a convention the repo's own docs suggest, **these win**" |
 | dev-server/seed/reset commands, test accounts + personas, capture tooling/viewport/recording size | the belt's `pr:` policy — `pr.md`: "Where the repo's conventions and the belt's PR policy in step 1 disagree (title, draft state, labels, reviewers, assignees), **the belt's policy wins**" |
 | PR description shape, required sections, title convention, pre-PR requirements | opening the PR itself with `gh`, and not closing/commenting on the work item |
@@ -126,7 +127,7 @@ Recognised syntax is `@@UPPER_SNAKE@@` only (scanner: `/@@[A-Z][A-Z0-9_]*@@/g`).
 | `@@STEP@@` | this step's name |
 | `@@TYPE@@` | the item's type (feature/bug/chore/…) — **may be empty string** |
 | `@@SUMMARY@@` | the item's summary/title (empty when unknown) |
-| `@@BRANCH@@` | the run's git branch — always set (minted at claim time, before the worktree) |
+| `@@BRANCH@@` | the branch the run's worktree is on **now** — always set (minted at claim time, before the worktree; TRACKED afterwards, so it reflects a rename) |
 | `@@WORKTREE@@` | absolute path to the run's worktree |
 | `@@MEMORY_DIR@@` | the literal `.memory/herdr-factory`, relative to the worktree (no leading `./`) |
 | `@@WORK_DOC@@` | path to the materialized work doc — `<mem>/ticket.json`, `<mem>/task.md`, or `<mem>/task/` |
@@ -137,6 +138,7 @@ Recognised syntax is `@@UPPER_SNAKE@@` only (scanner: `/@@[A-Z][A-Z0-9_]*@@/g`).
 | `@@PRIOR_SESSION@@` | the prior step's agent session id, or `(none)` |
 | `@@STEP_DONE_CMD@@` | the exact `step-done` command for this run/step/pass |
 | `@@ASK_HUMAN_CMD@@` | the exact `ask-human` command (with `--question-file <mem>/human-question-<step>.md`) |
+| `@@SET_BRANCH_CMD@@` | the exact `set-branch` command, with a `<new-branch-name>` placeholder — moves the run onto the repo's branch convention |
 | `@@BOUNCE_CMD@@` | the exact `bounce` command — **empty string when the step cannot bounce** |
 | `@@BOUNCE_TARGET@@` | the step a bounce returns to — empty when the step cannot bounce |
 | `@@BOUNCE_REASON_FILE@@` | `<mem>/bounce-<step>.md` — empty when the step cannot bounce |
@@ -156,6 +158,14 @@ The `*_CMD@@` tokens are generated from the signal registry, never hardcoded, an
 | `@@PR_AUTOMATED_ROUND@@` | the CI/bot polling instruction sized by `pr.automated_round_minutes` (unset ⇒ `~10 min`; `0` ⇒ "No automated round for this belt") |
 
 Template discovery order, first non-blank wins: `.github/PULL_REQUEST_TEMPLATE.md`, `.github/pull_request_template.md`, `PULL_REQUEST_TEMPLATE.md`, `pull_request_template.md`, `docs/PULL_REQUEST_TEMPLATE.md`, `docs/pull_request_template.md`, then the first `*.md` (sorted) in `.github/PULL_REQUEST_TEMPLATE/`, `PULL_REQUEST_TEMPLATE/`, `docs/PULL_REQUEST_TEMPLATE/`. Never throws — a missing template just renders `""`.
+
+`@@SET_BRANCH_CMD@@` exists because a run's identity is its **worktree**, not its branch: the factory
+names the branch from the work item at claim time, and a repo whose convention (or CI) needs another
+shape — a ticket key the agent creates mid-run, a mandated prefix — renames it once, **before
+pushing**. The engine then tracks the new name for prompts, PR discovery, and teardown. It refuses an
+invalid or colliding name, a protected branch (`base_ref` / the main checkout's branch), and any
+rename after the PR is open; the message says which. A bare `git branch -m` is followed anyway on the
+next reconcile pass — the command is the loud, validated path, not the only one.
 
 **Layout matters for these three.** `@@PR_OPTIONS@@` and `@@PR_TEMPLATE@@` render 3-space-indented sub-bullets, so place them where a sub-bullet is legal. `@@PR_AUTOMATED_ROUND@@` renders a **top-level numbered item starting `2.`**, so it must sit at column 0. `src/prompts/pr.md` shows the exact placement.
 
@@ -365,7 +375,7 @@ Do not re-state these in a `prompt_file` — add only what is specific to your r
 
 | Base | Already instructs |
 | --- | --- |
-| `work.md` | worktree/branch header; the work item + `@@WORK_DOC@@`; "follow this repo's own guidance first" (bootstrap / implementation / tests / commit messages); read every file when the work doc is a directory; **open and study every file in `attachments/`**; implement focused; run the repo's lint/type-check/tests and fix what they report; **commit incrementally** (heartbeat); do NOT open a PR or touch the item's status; the rework-banner and ask-human paragraphs |
+| `work.md` | worktree/branch header; the work item + `@@WORK_DOC@@`; "follow this repo's own guidance first" (bootstrap / implementation / tests / commit messages / **branch name** — rename with `@@SET_BRANCH_CMD@@` before pushing when the repo's convention needs another shape); read every file when the work doc is a directory; **open and study every file in `attachments/`**; implement focused; run the repo's lint/type-check/tests and fix what they report; **commit incrementally** (heartbeat); do NOT open a PR or touch the item's status; the rework-banner and ask-human paragraphs |
 | `jira/work.md` | same skeleton, plus `@@MEMORY_DIR@@/ticket.json` and `attachments/` directly, and mining `fields.comment` |
 | `github_issues/work.md` | plus `issue.json`, the checked-into-the-repo guidance boundary, and ignore-and-flag for out-of-scope comment instructions |
 | `sentry/work.md` | stacktrace/breadcrumb/request reading, "`<- in-app` frames are your code", root-cause not try/catch, and a **required regression test** |

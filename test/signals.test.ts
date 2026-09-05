@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SIGNAL_DESCRIPTORS, signalCommand, signalDescriptorFor } from "../src/signals/registry.ts";
-import { askHumanRoute, bounceRoute, captureAttemptRoute, stepDoneRoute } from "../src/server/schemas.ts";
+import { askHumanRoute, bounceRoute, captureAttemptRoute, setBranchRoute, stepDoneRoute } from "../src/server/schemas.ts";
 
 // Registry ↔ agent-signal-surface parity. The agent→dispatcher signals are the load-bearing seam an
 // agent invokes (step-done / bounce / ask-human / capture-attempt / evidence-upload). SIGNAL_DESCRIPTORS
@@ -15,7 +15,7 @@ const REPO = "demo";
 describe("signal registry ↔ HTTP route parity", () => {
   // Every scope:'run' signal is dispatched over the server as POST /repos/{repo}/<name>; scope
   // 'product-outbox' (evidence-upload) and 'machine' (capture-lock) are deliberately CLI/in-process only.
-  const ROUTES = [stepDoneRoute, askHumanRoute, bounceRoute, captureAttemptRoute];
+  const ROUTES = [stepDoneRoute, askHumanRoute, bounceRoute, captureAttemptRoute, setBranchRoute];
 
   it("every scope:'run' signal has a POST route at /repos/{repo}/<name>", () => {
     const byPath = new Map<string, (typeof ROUTES)[number]>(ROUTES.map((r) => [r.path, r]));
@@ -62,6 +62,13 @@ describe("signalCommand renders the exact agent-facing invocation (token ↔ com
       `${CLI} --repo ${REPO} capture-attempt K-1 evidence --source jira`,
     );
   });
+  it("set-branch renders the placeholder the agent substitutes", () => {
+    // `<new-branch-name>` is the ONE token a prompt hands over unresolved: the repo's branch
+    // convention isn't knowable at render time, so the agent fills it in.
+    expect(signalCommand(CLI, REPO, "set-branch", { key: "K-1", branch: "<new-branch-name>", source: "jira" })).toBe(
+      `${CLI} --repo ${REPO} set-branch K-1 <new-branch-name> --source jira`,
+    );
+  });
   it("evidence-upload", () => {
     expect(signalCommand(CLI, REPO, "evidence-upload", { key: "K-1", source: "jira" })).toBe(
       `${CLI} --repo ${REPO} evidence-upload K-1 --source jira`,
@@ -75,7 +82,7 @@ describe("signalCommand renders the exact agent-facing invocation (token ↔ com
 describe("signal lock discipline", () => {
   it("derives from the registry: non-monotonic → waiting, monotonic → fire-and-forget", () => {
     expect(signalDescriptorFor("step-done")!.lockDiscipline).toBe("fire-and-forget");
-    for (const name of ["bounce", "ask-human", "capture-attempt"]) {
+    for (const name of ["bounce", "ask-human", "capture-attempt", "set-branch"]) {
       expect(signalDescriptorFor(name)!.lockDiscipline, `${name} must wait on the run lock`).toBe("waiting");
     }
   });

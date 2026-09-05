@@ -17,6 +17,15 @@ interface CheckRollup {
 
 const FAILING = /FAIL|ERROR|TIMED_OUT|CANCELLED|FAILURE/;
 
+/** GitHub's ISO-8601 timestamps → epoch SECONDS (the clock the store and `Run.createdAt` use);
+ *  undefined for a missing/unparseable value, so a caller can tell "older than the run" from
+ *  "unknown" instead of treating an absent field as 1970. */
+function epochSeconds(iso: string | undefined): number | undefined {
+  if (!iso) return undefined;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+}
+
 /** Read-only GitHub queries via the `gh` CLI (uses the user's gh auth). */
 export class GitHubClient {
   private readonly gh: string;
@@ -36,15 +45,23 @@ export class GitHubClient {
 
   /** Discover a PR by its head branch. Used only for the FIRST sighting of a run's PR (before we've
    *  recorded its number) — `--head` stops matching once the head branch is deleted, so once a number
-   *  is known callers poll `prByNumber` instead, which survives head-branch deletion on merge. */
+   *  is known callers poll `prByNumber` instead, which survives head-branch deletion on merge.
+   *
+   *  `createdAt` rides along because a head branch name is NOT unique over time: a re-claim, or a
+   *  branch an agent renamed to the repo's convention (no per-claim uid), can resolve to a PREVIOUS
+   *  attempt's already-merged PR. The caller compares it against the run's own start before adopting
+   *  (see reconcile's currentPr). */
   async prForBranch(repo: string, branch: string): Promise<PrInfo | null> {
-    const arr = await runJson<{ number: number; state: string; url: string; isDraft: boolean }[]>(
+    type Row = { number: number; state: string; url: string; isDraft: boolean; createdAt?: string };
+    const arr = await runJson<Row[]>(
       this.gh,
-      ["pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--json", "number,state,url,isDraft", "--limit", "1"],
+      ["pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--json", "number,state,url,isDraft,createdAt", "--limit", "1"],
       { allowFail: true },
-    ).catch(() => [] as { number: number; state: string; url: string; isDraft: boolean }[]);
+    ).catch(() => [] as Row[]);
     const first = arr[0];
-    return first ? { number: first.number, state: first.state as PrState, url: first.url, isDraft: !!first.isDraft } : null;
+    return first
+      ? { number: first.number, state: first.state as PrState, url: first.url, isDraft: !!first.isDraft, createdAt: epochSeconds(first.createdAt) }
+      : null;
   }
 
   /** Look up a PR by number — the durable identity once a run has adopted one. Unlike `--head`,

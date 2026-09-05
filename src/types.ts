@@ -106,6 +106,7 @@ export type EventType =
   | "merged"
   | "closed"
   | "torn_down"
+  | "branch_changed" // the run's worktree moved to another branch (agent rename via set-branch, or observed)
   | "belt_reassigned" // a belt was renamed; the run's belt name was migrated old → new
   | "belt_deleted" // a belt with no in-flight work was deleted; its run rows were purged (events kept)
   | "attention"
@@ -131,6 +132,14 @@ export interface Run {
   ticketKey: string;
   summary: string | null;
   issueType: string | null;
+  /** The name the run's worktree + workspace were CREATED under (the rendered `workspace_name`) —
+   *  the run's stable identity on the filesystem/in herdr. Frozen at claim: it is what the layout
+   *  hook matches a worktree by, and what teardown must still clean up after a rename. */
+  worktreeName: string | null;
+  /** The branch the run's worktree is currently on — TRACKED state, not identity. It starts as
+   *  {@link Run.worktreeName} and an agent may rename it to the repo's own branch convention
+   *  (`set-branch`, or a bare `git branch -m` the engine follows). Prompts, PR discovery, and
+   *  branch cleanup all read THIS. */
   branch: string | null;
   phase: Phase;
   step: string | null; // the active belt step when phase === "running"
@@ -834,6 +843,11 @@ export interface PrInfo {
   number: number;
   state: PrState;
   url: string;
+  /** When the PR was opened (epoch seconds), when the lookup carries it (`prForBranch`). A head
+   *  BRANCH is not unique over time — a re-claim, or a branch renamed to the repo's convention,
+   *  can resolve to a previous attempt's merged PR — so first-sighting adoption compares this
+   *  against the run's own start. Absent ⇒ unknown (never treated as old). */
+  createdAt?: number;
   /** A draft PR is not yet up for review. The reconciler adopts it (records the number) but does NOT
    *  hand off to the `reviewing` watch until it's marked ready-for-review — a draft keeps the
    *  step-done gate. A MERGED PR always hands off regardless. */

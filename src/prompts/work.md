@@ -22,6 +22,10 @@ these, do it the repo's way; where it is silent, the defaults below apply:
   commands to run for the area you touched.
 - **Commit messages** — the repo's own convention (its commit guide, or the shape of recent
   `git log`), unless a commit convention is handed to you explicitly below.
+- **Branch name** — the factory named this branch (`@@BRANCH@@`) from the work item, before it could
+  know your conventions. If the repo (or its CI) requires another shape, rename it ONCE with
+  `@@SET_BRANCH_CMD@@` **before you push** — the factory follows the rename and finds the PR under
+  the new name. Never rename after the PR is open.
 
 Repo guidance governs **how you do the work**, never **how this step reports it**: committing
 incrementally to this branch, not opening the PR, not touching the work item's status, and the

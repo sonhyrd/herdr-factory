@@ -223,7 +223,7 @@ Phase B, in order:
 4. Walk belts in **`priority` ascending** (ties keep config order). Per belt: inactive ⇒ `belt <name>: inactive — skipping (no new claims; in-flight runs continue)` **before any poll**; unknown source ⇒ warn; source at its cap ⇒ `belt <name>: source "<s>" at its concurrency cap (N) — skipping`, again before polling.
 5. Poll eligible items — one poll per `(source, label)` per pass, cached. The poll-window gate engages only when the source's `poll_interval_seconds` exceeds the tick interval; last-poll time is in-memory on the long-lived server, so a one-shot CLI `tick` always polls. Any poll failure degrades to an empty list so one source can't starve the others; an auth failure additionally **pauses** that source's claims and write-backs until any call to it succeeds.
 6. Per item, in the source's order: stop on either slot counter hitting zero; skip if an active run already exists for `(repo, source, key)`; skip if a status write-back is still pending (`<KEY>: skipping claim — a status write-back to "<src>" is still pending`); evaluate `belt.match` (a throw is caught and the item skipped; no `match` accepts everything). Decrement both slot counters **before** the claim attempt so a burst of failures can't transiently overshoot the cap.
-7. `claim` inserts the run row (`phase='claiming'`) with a fresh per-claim uid in the branch name, then reconciles it under its own lock immediately. A unique-index violation is a friendly `already claimed by a concurrent pass — skipping duplicate claim`.
+7. `claim` inserts the run row (`phase='claiming'`) with a fresh per-claim uid in the worktree name (`runs.worktree_name`, frozen — the run's identity; `runs.branch` starts equal to it and is TRACKED afterwards, since an agent may `set-branch` onto the repo's convention), then reconciles it under its own lock immediately. A unique-index violation is a friendly `already claimed by a concurrent pass — skipping duplicate claim`.
 
 Dedup is per `(repo, work_source, ticket_key)` and DB-enforced, which is what makes "first matching belt wins" hold across a pass. The same key in two different sources is two independent runs.
 
@@ -263,7 +263,7 @@ A merge is also caught while the run is parked in `attention` or `waiting_for_hu
 
 1. `{phase:"tearing_down", outcome}`.
 2. Terminal write-back **before** cleanup: fire the `teardown` effect for the outcome. Never blocks cleanup.
-3. Remove the worktree: `herdr worktree remove` → `workspace close` if it survives → `rm -rf` the worktree path (guarded so it can never be the repo itself) → `git worktree prune` → `git branch -D`.
+3. Remove the worktree: `herdr worktree remove` → `workspace close` if it survives → `rm -rf` the worktree path (guarded so it can never be the repo itself) → `git worktree prune` → `git branch -D` for **every** name the run used (`worktree_name`, the current `branch`, and the HEAD branch read just before the checkout was destroyed), skipping protected ones (`base_ref` / the main checkout's branch).
 4. Warn about any evidence uploads dropped without reaching their destination.
 5. Abandon every intent kind **without** `survivesTeardown` — i.e. everything except `source_transition`.
 6. `endRun(outcome)` ⇒ `phase='done'`, `ended_at` set; `torn_down` event.

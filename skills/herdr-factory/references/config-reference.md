@@ -207,7 +207,7 @@ write-backs are in [work-sources.md](./work-sources.md); the schema shape in one
 | `priority` | int, **negatives allowed** | no | **100** | Lower = matched first at claim time. |
 | `active` | boolean (strict) | no | **true** | `false` ⇒ no NEW claims; in-flight runs still progress. |
 | `label` | string trimmed min1 | conditional | **no default — deliberate** | The pickup label/trigger label for label-driven sources. |
-| `workspace_name` | template string | no | `"{{semantic_work_prefix}}/{{work_id}}-{{work_full_slug}}"` | Must contain `{{work_id}}`. |
+| `workspace_name` | template string | no | `"{{semantic_work_prefix}}/{{work_id}}-{{work_full_slug}}"` | Must contain `{{work_id}}`. Names the **worktree/workspace** (the run's identity, `runs.worktree_name`) and the branch it starts on; the branch can later be renamed by the agent (see below). |
 | `match` | path to a `.ts` module | no | unset ⇒ the belt accepts anything from its source | `export default (ctx) => boolean`. |
 | `max_bounces` | int non-negative | no | `limits.max_bounces` | |
 | `default_layout` | a `layouts[].id` | no | unset ⇒ the factory builds no layout | Setting it turns on the step→pane allocation checks (§6.3 #10–10c) **and** obliges the belt's first *surviving* step to carry `tab`+`pane` (#10d). |
@@ -220,7 +220,17 @@ write-backs are in [work-sources.md](./work-sources.md); the schema shape in one
 `workspace_name` template vars: `{{work_id}}` (case preserved), `{{work_type}}` (lowercased),
 `{{semantic_work_prefix}}`, `{{work_full_slug}}` (≤ `full_slug_max`), `{{work_slug}}` (≤ `slug_max`).
 Unknown `{{vars}}` render empty. The rendered name is git-sanitised and a short per-claim uid is
-appended, so a re-claim gets a distinct branch.
+appended, so a re-claim gets a distinct worktree.
+
+**The branch is not the run's identity.** `workspace_name` names the worktree (frozen at claim, in
+`runs.worktree_name`) and the branch it starts on. An agent may then move the run onto the name this
+repo's branching/CI convention requires — a ticket key it only obtains mid-run, a mandated prefix —
+with `herdr-factory --repo <name> set-branch <KEY> <branch>` (rendered into every step prompt as
+`@@SET_BRANCH_CMD@@`; a bare `git branch -m` is followed too, on the next reconcile pass). The engine
+then uses the new name for prompts, PR discovery, and teardown cleanup, and it deletes BOTH names at
+teardown. The rename is refused for an invalid/colliding name, a **protected** branch (the `base_ref`
+or the main checkout's branch), or once the run's PR is open. There is **no config key** for the
+convention itself — say it in the belt's `prompt_file`, where the repo's own rules live.
 
 `.strict()` here is what rejects the **removed** `belt_type:` and `agents:` keys, as
 `Unrecognized key: "belt_type"`.

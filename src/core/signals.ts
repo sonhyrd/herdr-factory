@@ -12,6 +12,7 @@ import type { Deps } from "./deps.ts";
 import { resolveActiveRun } from "../resolve.ts";
 import { stepByName } from "./step.ts";
 import { consumePendingSignal, reconcileRun, recordCaptureAttempt, withRunLock, withRunLockWaiting } from "./reconcile.ts";
+import { setRunBranch } from "./run-branch.ts";
 
 /** The parsed body an agent signal carries — a superset; each signal reads only the fields it needs.
  *  Structurally compatible with every run-scoped route's validated JSON body (StepDoneBody, …). */
@@ -22,6 +23,8 @@ export interface SignalBody {
   source?: string;
   question?: string;
   reason?: string;
+  /** set-branch: the branch name to put the run's worktree on. */
+  branch?: string;
   /** The step pass whose prompt minted this signal (step-done / bounce). Absent on prompts rendered
    *  before pass stamping existed — validation then skips the pass check (upgrade safety). */
   pass?: number | string;
@@ -35,6 +38,7 @@ export interface SignalResult {
   questionId?: number; // ask-human
   posted?: boolean; // ask-human: was the question posted to the source (vs deferred)?
   attempts?: number; // capture-attempt: attempts recorded this pass
+  branch?: string; // set-branch: the branch the run is on afterwards
   escalated?: boolean; // bounce / capture-attempt: cap hit → parked for attention
   queued?: boolean; // bounce / ask-human: run lock busy — the durable intent applies on the next pass
   message?: string;
@@ -157,6 +161,11 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "signal_queued", detail: { signal: "bounce", toStep: body.toStep, intentId: intent.id } });
       deps.log("info", `${body.key}: run busy — bounce to ${body.toStep} queued (intent #${intent.id}); the next reconcile pass applies it`);
       return { ok: true, queued: true, message: `run busy — bounce to ${body.toStep} recorded; it will be applied on the next reconcile pass` };
+    }
+    case "set-branch": {
+      // Rename + track under the run lock: the effect writes git and the run row together, and a
+      // concurrent pass would otherwise observe (or overwrite) half of it.
+      return underRunLockWaiting(deps, run.id, name, async () => setRunBranch(deps, fresh(), body.branch ?? ""));
     }
     case "capture-attempt": {
       const belt = deps.resolveBelt(run.belt);

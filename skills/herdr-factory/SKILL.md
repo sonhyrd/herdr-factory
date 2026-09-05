@@ -111,12 +111,13 @@ Triage by symptom — each row has a full playbook in
 | step never starts | herdr never created the worktree · no herdr plugin link so no layout was ever built · the belt's FIRST step had no `tab`/`pane`, so its own pane pre-empted the build (only possible on a `layout_matching`-only belt — `default_layout` rejects that shape at load) · its `tab`/`pane` names no pane the layout defines · the target pane's agent never came up (look for `could not start <kind> in <pane>` / a "agent did not start" notification) · (for a step with no `tab`/`pane`) the agent binary is missing from the **service** PATH |
 | agent says it's done, run didn't advance | the `step-done` signal never landed — check the timeline, then fire it by hand |
 | stuck in `reviewing` | that's normal — the PR watch has no time limit and holds no slot while idle |
+| the PR is open but the run never adopts it | its head is a branch the run doesn't know, or the PR predates the run — the run's identity is its **worktree**, and adoption tries `runs.branch` then `runs.worktree_name`. A branch renamed to the repo's convention is supported (`set-branch`); check the timeline for `branch_changed` |
 | config edits do nothing | `herdr-factory reload` (or the server never picked the repo up at boot) |
 | server up but nothing ticks | wedged tick loop — `doctor` does **not** catch this; check `/health`'s per-repo `lastTickAt` |
 
 Nudges, least to most destructive: `reload` → `tick` → `retry-now [KEY]` → `step-done` →
 `resume <KEY>` → intent retry → `restart` → `teardown <KEY>`. **`teardown` destroys the worktree and
-branch** — never reach for it to "reset" a run without saying so first.
+branches** — never reach for it to "reset" a run without saying so first.
 
 `retry-now` is the one to reach for when the cause is already fixed and the jobs are **suspended**
 (uploads, source write-backs — they retry every 30 s and stop after 10 failures, flagging the repo row

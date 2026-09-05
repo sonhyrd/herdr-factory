@@ -118,7 +118,7 @@ function bounceReasonText(opts: { reason?: string; reasonFile?: string }): strin
   return text.trim();
 }
 
-/** Send a run-scoped agent signal (step-done · ask-human · bounce · capture-attempt): route it
+/** Send a run-scoped agent signal (step-done · ask-human · bounce · capture-attempt · set-branch): route it
  *  through the running server for a warm reconcile, with a direct in-process fallback so it still
  *  lands while the server restarts (the next tick is the backstop either way). BOTH paths run the
  *  same engine effect — `applySignal` on the server, or here in-process — so they can't drift. */
@@ -650,6 +650,22 @@ program
         return;
       }
       console.log(`${key}: bounced to ${toStep}${d.message ? ` — ${d.message}` : ""}`);
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("set-branch <key> <branch>")
+  .description("a belt agent puts its run's worktree on another branch (this repo's branch convention) — rename BEFORE pushing")
+  .option("--source <name>", "the work source the run belongs to (passed by the agent)")
+  .action(cliAction("set-branch", async (key: string, branch: string, opts: { source?: string }) => {
+    try {
+      const d = await dispatchSignal(requireRepo(), "set-branch", { key, branch, source: opts.source });
+      // A refusal is the WHOLE point of this signal (a bad name, a collision, a PR already open):
+      // signalRejected exits non-zero with the engine's message, which is the agent's only channel.
+      if (signalRejected(key, d, "set-branch failed")) return;
+      console.log(`${key}: ${d.message ?? `branch set to ${d.branch ?? branch}`}`);
     } catch (e) {
       fail(e);
     }

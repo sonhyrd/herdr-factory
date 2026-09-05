@@ -273,9 +273,19 @@ sqlite3 "$DB" "SELECT * FROM run_products WHERE run_id = <id>;"
 - Handoff fires on **PR adoption** at the belt's **terminal** PR-opening step — not on `step-done`.
   A **draft** PR keeps the `step-done` gate; a MERGED PR always hands off.
 - No `pr_opened` event + no `run_products` row ⇒ the PR was never adopted: the step's `opens_pr`
-  isn't set, or the PR's head branch doesn't match the run's branch (adoption uses `prForBranch` on
-  first sighting, then `prByNumber`). A **closed** PR is only acted on when it is *ours*
-  (`pr.number === run.prNumber`), so a stale closed PR on a reused branch can't disturb a fresh attempt.
+  isn't set, or the PR's head branch is neither the run's current `branch` nor its `worktree_name`
+  (first-sighting adoption tries both with `prForBranch`, then polls `prByNumber`). A **closed** PR is
+  only acted on when it is *ours* (`pr.number === run.prNumber`), so a stale closed PR on a reused
+  branch can't disturb a fresh attempt — and a discovered PR **older than the run** is skipped
+  outright (`ignoring PR #N on <branch> — it predates this run`), which is what stops a re-claim, or a
+  branch renamed to a convention name, from adopting a previous attempt's merged PR. Check the run's
+  two names: `sqlite3 "$DB" "SELECT worktree_name, branch FROM runs WHERE id = <id>;"` against
+  `gh pr view <n> --json headRefName`.
+- The agent renamed the branch and the run kept up? That is supported: `set-branch` (or a bare
+  `git branch -m`, followed on the next pass) moves `runs.branch`, leaving `worktree_name` frozen —
+  look for a `branch_changed` event on the timeline. A rename **after** the PR is open is refused;
+  if one happened by hand anyway, the PR was already adopted by number, so the watch is unaffected —
+  but the pushed head is now orphaned and only a human can delete it.
 - No step on the belt produces `pull_request` (no `pr` step) ⇒ the derived `watchPr` is false (it is
   **not** a config key — `steps.some(… produces "pull_request")` in `src/config.ts`), so the last
   step's `step-done` completes the run (`completed`) and no review watch exists. Add a `pr` step to

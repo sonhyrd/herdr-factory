@@ -60,7 +60,8 @@ scenario({
 
 Agent behaviours available per step (and per pass): `commit`, `hangMs`, `signal`
 (`step-done`/`bounce`/`ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`,
-`openPr`, `run`, `noHandoff`. That is how attention parks, bounce loops and stuck runs are provoked
+`openPr`, `setBranch` (rename onto the repo's branch convention through the prompt's rendered
+`set-branch` command), `run`, `noHandoff`. That is how attention parks, bounce loops and stuck runs are provoked
 deterministically. Full guide: `test/e2e/README.md`.
 
 ## Facts worth knowing before you debug a pane

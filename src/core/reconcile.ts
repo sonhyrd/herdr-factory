@@ -10,6 +10,7 @@ import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkStat
 import { isUniqueViolation } from "../db/store.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
+import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
@@ -631,9 +632,12 @@ async function claim(deps: Deps, belt: BeltRuntime, src: SourceRuntime, ticket: 
 
 async function claimImpl(deps: Deps, belt: BeltRuntime, src: SourceRuntime, ticket: Ticket): Promise<void> {
   const repo = deps.config.repoName;
-  // The per-run uid makes the branch unique to THIS attempt, so a re-claimed ticket doesn't reuse a
-  // branch name whose prior PR was already merged (which the pr step would otherwise treat as done).
-  const branch = branchName(ticket.key, ticket.type, ticket.summary, belt.workspaceName, deps.uid(), belt.branch);
+  // The name the worktree + workspace are created under, and the branch it starts on — one name at
+  // claim time, and the run's identity from here (`worktree_name`, frozen). The per-run uid makes it
+  // unique to THIS attempt, so a re-claimed ticket doesn't reuse a name whose prior PR was already
+  // merged (which the pr step would otherwise treat as done). The BRANCH may move off it later: an
+  // agent can rename it to the repo's convention (see core/run-branch.ts).
+  const worktreeName = branchName(ticket.key, ticket.type, ticket.summary, belt.workspaceName, deps.uid(), belt.branch);
   let run: Run;
   try {
     run = deps.store.createRun({
@@ -643,7 +647,8 @@ async function claimImpl(deps: Deps, belt: BeltRuntime, src: SourceRuntime, tick
       ticketKey: ticket.key,
       summary: ticket.summary,
       issueType: ticket.type,
-      branch,
+      worktreeName,
+      branch: worktreeName,
     });
   } catch (e) {
     // The v25 one-active-run-per-(repo, source, key) index is the arbiter of the claim race both
@@ -658,8 +663,8 @@ async function claimImpl(deps: Deps, belt: BeltRuntime, src: SourceRuntime, tick
     }
     throw e;
   }
-  deps.store.recordEvent({ runId: run.id, repo, ticketKey: ticket.key, type: "claimed", detail: { branch, source: src.name, belt: belt.name } });
-  deps.log("info", `${belt.name}/${ticket.key}: claimed -> ${branch}`);
+  deps.store.recordEvent({ runId: run.id, repo, ticketKey: ticket.key, type: "claimed", detail: { branch: worktreeName, worktreeName, source: src.name, belt: belt.name } });
+  deps.log("info", `${belt.name}/${ticket.key}: claimed -> ${worktreeName}`);
   // Under the run lock like every other mutation of this run (uncontended for a fresh claim; the
   // guard matters once its first agent exists and can nudge).
   await withRunLock(deps, run.id, () => reconcileRun(deps, run));
@@ -759,6 +764,10 @@ async function reconcileRunImpl(deps: Deps, run: Run, ctx: TickCtx): Promise<voi
     if (escalate) return escalateAttention(deps, run, escalate);
     run = deps.store.getRun(run.id)!;
   }
+  // The branch is TRACKED, not fixed: follow the worktree onto whatever it is on now (an agent may
+  // rename it to the repo's branch convention) BEFORE the phase dispatch, so this pass's prompt
+  // render, PR discovery, and branch cleanup all read the branch that actually exists.
+  if (run.phase !== "done" && run.phase !== "tearing_down") run = await syncRunBranch(deps, run);
   await dispatchPhase(deps, run, belt, src, ctx);
   // Then, on every pass for every active run, try to apply any deferred focus shift. Doing
   // it here (not only on the tick that transitioned) is what lets a transition in an
@@ -857,7 +866,10 @@ export async function applyPendingFocus(deps: Deps, run: Run): Promise<void> {
 
 async function reconcileClaiming(deps: Deps, run: Run, belt: BeltRuntime, src: SourceRuntime): Promise<void> {
   const repo = deps.config.repoName;
-  const branch = run.branch;
+  // The worktree is created FROM (or re-attached BY) the branch the run is on: at claim these are
+  // the same string as `worktree_name`, and a re-attach after an agent renamed the branch resolves
+  // the worktree by the name it now carries.
+  const branch = run.branch ?? run.worktreeName;
   if (!branch) throw new Error(`${run.ticketKey}: claiming without a branch`);
 
   // 1. ensure worktree
@@ -1668,14 +1680,37 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   });
 }
 
+/** Clock slack when comparing GitHub's PR timestamp against the run's own start — the two clocks
+ *  are independent, and only a PR from a PREVIOUS attempt (hours/days old) is being excluded. */
+const PR_AGE_SLACK_SECONDS = 300;
+
 /**
  * Resolve the run's PR. Once a number has been adopted we poll BY NUMBER — that's the PR's durable
  * identity and it keeps resolving after the head branch is deleted (GitHub auto-delete-on-merge).
  * Only the first sighting, before any number is recorded, falls back to branch discovery.
+ *
+ * Discovery tries every name this run may have pushed — the branch it is on now, then the name its
+ * worktree was created under — because an agent may rename the branch to the repo's convention
+ * before pushing, and either name can be the PR's head.
+ *
+ * A discovered PR must be NEWER than the run. A head-branch name is not unique over time: a
+ * re-claim, or a convention-shaped rename that drops the per-claim uid, can resolve to the previous
+ * attempt's already-merged PR — and adopting that would hand off to the reviewing watch and tear
+ * this attempt down on someone else's merge. An unknown `createdAt` (a fake, an older `gh`) is
+ * accepted, keeping the old behaviour where the age can't be established.
  */
 async function currentPr(deps: Deps, run: Run): Promise<PrInfo | null> {
   if (run.prNumber) return deps.github.prByNumber(deps.ghRepo, run.prNumber);
-  return run.branch ? deps.github.prForBranch(deps.ghRepo, run.branch) : null;
+  for (const branch of runBranchNames(run)) {
+    const pr = await deps.github.prForBranch(deps.ghRepo, branch);
+    if (!pr) continue;
+    if (pr.createdAt != null && pr.createdAt < run.createdAt - PR_AGE_SLACK_SECONDS) {
+      deps.log("info", `${run.ticketKey}: ignoring PR #${pr.number} on ${branch} — it predates this run (a previous attempt's PR)`);
+      continue;
+    }
+    return pr;
+  }
+  return null;
 }
 
 /** A PR we own was closed without merging — hand it to a human rather than tearing down silently. */
@@ -2211,6 +2246,10 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
  * cleanup: it touches neither the DB nor the work source (teardown owns the run-state + write-back).
  */
 export async function removeRunWorktree(deps: Deps, run: Run): Promise<void> {
+  // Read the worktree's branch BEFORE the checkout is destroyed — it is the last chance to see a
+  // rename this run never reconciled (teardown can be the very next thing after it).
+  const observed = run.worktreePath ? await deps.git.currentBranch(run.worktreePath).catch(() => null) : null;
+  const deleted = new Set<string>();
   if (run.workspaceId) {
     await deps.herdr.worktreeRemove(run.workspaceId);
     if (await deps.herdr.workspaceExists(run.workspaceId)) {
@@ -2225,11 +2264,23 @@ export async function removeRunWorktree(deps: Deps, run: Run): Promise<void> {
     await deps.rmrf(run.worktreePath).catch(() => {});
   }
   await deps.git.worktreePrune(deps.config.repo.path).catch(() => {});
-  if (run.branch) {
+  // Delete EVERY local branch this run may have left behind: the name its worktree was created
+  // under, the branch it ended up on (an agent may have renamed it to the repo's convention), and
+  // whatever HEAD was pointing at just now — a rename between the last pass and this teardown would
+  // otherwise leak. Never a protected branch: a worktree that ended up on the base ref (or the main
+  // checkout's branch) is an accident, and deleting a shared branch is not this function's job.
+  const protectedNames = await protectedBranches(deps);
+  for (const branch of [...runBranchNames(run), observed].filter((b): b is string => !!b)) {
+    if (deleted.has(branch)) continue;
+    deleted.add(branch);
+    if (protectedNames.has(branch)) {
+      deps.log("warn", `${run.ticketKey}: not deleting "${branch}" — it is a protected branch (base ref / main checkout)`);
+      continue;
+    }
     // branchDelete force-removes any worktree still on the branch (an abandoned-while-running run
     // whose agent kept the dir busy) and retries; only warn if the branch STILL can't be deleted.
-    const deleted = await deps.git.branchDelete(deps.config.repo.path, run.branch);
-    if (!deleted) deps.log("warn", `${run.ticketKey}: branch ${run.branch} could not be deleted (still present after force-prune) — remove it manually`);
+    const gone = await deps.git.branchDelete(deps.config.repo.path, branch);
+    if (!gone) deps.log("warn", `${run.ticketKey}: branch ${branch} could not be deleted (still present after force-prune) — remove it manually`);
   }
 }
 

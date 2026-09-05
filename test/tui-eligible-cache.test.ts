@@ -15,6 +15,7 @@ const run = (over: Partial<ActiveRun> & { ticketKey: string }): ActiveRun => ({
   workSource: "markdown",
   belt: "work_to_main",
   issueType: null,
+  worktreeName: null,
   branch: null,
   phase: "running",
   step: "work",

@@ -59,6 +59,11 @@ const AskHumanResponse = z
 const BounceResponse = z
   .object({ ok: z.boolean(), escalated: z.boolean().optional(), queued: z.boolean().optional(), message: z.string().optional() })
   .openapi("Bounce");
+// set-branch: the branch the run's worktree ended up on, plus a message the agent surfaces (an
+// idempotent no-op, a refusal, or a warning that the OLD branch was already pushed).
+const SetBranchResponse = z
+  .object({ ok: z.boolean(), branch: z.string().optional(), message: z.string().optional() })
+  .openapi("SetBranch");
 const CaptureAttemptResponse = z
   .object({ ok: z.boolean(), attempts: z.number().optional(), escalated: z.boolean().optional(), message: z.string().optional() })
   .openapi("CaptureAttempt");
@@ -92,6 +97,9 @@ const RunSchema = z
     ticketKey: z.string(),
     summary: z.string().nullable(),
     issueType: z.string().nullable(),
+    // The name the worktree was created under (identity) vs the branch it is on NOW — the two
+    // differ once an agent renames the branch to the repo's convention.
+    worktreeName: z.string().nullable(),
     branch: z.string().nullable(),
     phase: z.string(),
     step: z.string().nullable(),
@@ -128,6 +136,7 @@ const StatusResponse = z
         workSource: z.string().nullable(),
         belt: z.string().nullable(),
         issueType: z.string().nullable(),
+        worktreeName: z.string().nullable(),
         branch: z.string().nullable(),
         phase: z.string(),
         step: z.string().nullable(),
@@ -202,6 +211,9 @@ export const BounceBody = z
 // No step field: the attempt always applies to the run's current running step (the engine validates
 // it is a gathersEvidence step), so the agent can't misattribute it.
 export const CaptureAttemptBody = z.object({ key: z.string(), step: z.string(), source: z.string().optional() }).openapi("CaptureAttemptBody");
+// `branch` is validated in the engine (core/run-branch.ts) against git's ref rules, the repo's
+// protected branches, and the run's own state — the shapes a message must explain, not a 422.
+export const SetBranchBody = z.object({ key: z.string(), branch: z.string().min(1), source: z.string().optional() }).openapi("SetBranchBody");
 export const ClaimBody = z.object({ key: z.string(), belt: z.string().optional() }).openapi("ClaimBody");
 export const TeardownBody = z.object({ key: z.string(), source: z.string().optional() }).openapi("TeardownBody");
 export const ResumeBody = z.object({ key: z.string(), source: z.string().optional() }).openapi("ResumeBody");
@@ -303,6 +315,18 @@ export const captureAttemptRoute = createRoute({
   request: { params: RepoParam, ...jsonBody(CaptureAttemptBody) },
   responses: {
     200: { description: "Attempt recorded", content: { "application/json": { schema: CaptureAttemptResponse } } },
+    ...repoErrors,
+  },
+});
+
+export const setBranchRoute = createRoute({
+  method: "post",
+  path: "/repos/{repo}/set-branch",
+  tags: ["repo"],
+  summary: "A belt agent puts its run's worktree on another branch (the repo's branch convention)",
+  request: { params: RepoParam, ...jsonBody(SetBranchBody) },
+  responses: {
+    200: { description: "Branch set (or refused, with the reason)", content: { "application/json": { schema: SetBranchResponse } } },
     ...repoErrors,
   },
 });

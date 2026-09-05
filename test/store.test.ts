@@ -78,6 +78,20 @@ describe("Store", () => {
     expect(store.activeRunForTicket("r", "jira", "K-1")?.id).toBe(run.id);
   });
 
+  it("activeRunForWorktree: matches by checkout path, by the worktree's name, and by its CURRENT branch", () => {
+    const { store } = makeStore();
+    const run = store.createRun({ repo: "r", workSource: "jira", belt: "ship", ticketKey: "K-WT", branch: "fix/K-WT-u1" });
+    expect(store.getRun(run.id)!.worktreeName).toBe("fix/K-WT-u1"); // defaults to the claim-time branch
+    store.updateRun(run.id, { worktreePath: "/wt/K-WT", branch: "fix/RWR-1-renamed" }); // the agent renamed it
+    expect(store.activeRunForWorktree("r", { path: "/wt/K-WT" })?.id).toBe(run.id);
+    expect(store.activeRunForWorktree("r", { branch: "fix/K-WT-u1" })?.id).toBe(run.id); // the name it was created under
+    expect(store.activeRunForWorktree("r", { branch: "fix/RWR-1-renamed" })?.id).toBe(run.id); // where it is now
+    expect(store.activeRunForWorktree("r", { branch: "someone/elses-branch" })).toBeUndefined();
+    expect(store.activeRunForWorktree("other-repo", { path: "/wt/K-WT" })).toBeUndefined();
+    store.endRun(run.id, "merged");
+    expect(store.activeRunForWorktree("r", { path: "/wt/K-WT" })).toBeUndefined(); // ended runs own nothing
+  });
+
   it("updates fields and bumps updated_at", () => {
     const { store, tick } = makeStore(1000);
     const run = store.createRun({ repo: "r", workSource: "jira", belt: "ship", ticketKey: "K-2" });
@@ -240,14 +254,14 @@ describe("Store", () => {
     // Include watch_deadline + pr_number + last_thread_sig + outcome (all part of the v1 CREATE
     // TABLE) so v17's and v18's DROP COLUMNs and v25's duplicate-active sweep apply cleanly
     // (resolver_active is ADDED by v17, then dropped by v18); seed run_steps (created back in v4)
-    // so v9's ALTER applies, and events (created in v1) so v28's attention backfill applies — a
-    // genuine v5 DB always has all three.
+    // so v9's ALTER applies, `branch` (v1) so v38's worktree_name backfill applies, and events
+    // (created in v1) so v28's attention backfill applies — a genuine v5 DB always has all of them.
     db.exec(`
       CREATE TABLE schema_version (version INTEGER NOT NULL);
       INSERT INTO schema_version (version) VALUES (5);
       CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, ticket_key TEXT, phase TEXT,
         pr_number INTEGER, last_thread_sig TEXT, outcome TEXT,
-        watch_deadline INTEGER, created_at INTEGER, updated_at INTEGER, ended_at INTEGER);
+        branch TEXT, watch_deadline INTEGER, created_at INTEGER, updated_at INTEGER, ended_at INTEGER);
       INSERT INTO runs (repo, ticket_key, phase, created_at, updated_at)
         VALUES ('r','OLD-1','attention',1,1), ('r','OLD-2','fixing',1,1);
       CREATE TABLE run_steps (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, step TEXT NOT NULL,

@@ -565,8 +565,9 @@ reverse-engineered during the bash prototype.
   **every watched PR in a tick**, replacing 3 `gh` subprocess calls per reviewing run per tick
   (~9k req/h at 50 runs — over the REST budget on its own). Its signature hash is bit-identical
   to `reviewSignature`'s, so batched and per-run polling mix freely.
-- **`git.ts`** — `branchExists`, `branchDelete`, `originUrl`, `worktreePrune`,
-  `headSha` (the worker progress heartbeat).
+- **`git.ts`** — `branchExists`, `branchDelete`, `branchRename`, `currentBranch` (what the worktree
+  is checked out on — the run's branch is tracked from it), `remoteBranchExists` (local-only: was
+  this branch ever pushed), `originUrl`, `worktreePrune`, `headSha` (the worker progress heartbeat).
 
 ---
 
@@ -589,7 +590,11 @@ CREATE TABLE runs(                       -- ONE attempt at a work item (history 
   work_source TEXT,                      -- which configured source it was claimed from (v6)
   belt TEXT, step TEXT,                  -- which belt processes it + the active step (v7)
   ticket_key TEXT NOT NULL,
-  summary TEXT, issue_type TEXT, branch TEXT, phase TEXT NOT NULL,
+  summary TEXT, issue_type TEXT, phase TEXT NOT NULL,
+  worktree_name TEXT,                    -- the name the worktree/workspace was CREATED under (v38):
+                                         -- the rendered `workspace_name`, frozen — the run's identity
+  branch TEXT,                           -- the branch the worktree is on NOW — tracked, not identity:
+                                         -- an agent may rename it to the repo's convention (§7)
   workspace_id TEXT, pane_id TEXT, worktree_path TEXT,
   -- PR-WATCH STATE IS NOT HERE: pr_number / resolver_active (a reviewing run holds a slot only
   -- while resolving — v17, replaced watch_deadline) / last_thread_sig moved to run_products in
@@ -929,8 +934,9 @@ an **undelivered status write-back is skipped** — its "eligible" listing is kn
 what prevents a merged run whose transition never landed from being claimed and re-done). One
 source's backend hiccup is caught per-source and never starves the others. Per-run errors are
 caught → recorded as an `error` event → the tick continues; the per-repo tick lock prevents
-overlapping passes. Each claim stamps `run.work_source`/`run.belt` and renders the branch from
-the belt's `workspace_name`. Status transitions (`in_development` on claim, `in_review` when the
+overlapping passes. Each claim stamps `run.work_source`/`run.belt` and renders the WORKTREE NAME from
+the belt's `workspace_name` (`runs.worktree_name` — the run's identity; the branch starts on it and
+may later move off it, see *Branch tracking* below). Status transitions (`in_development` on claim, `in_review` when the
 PR opens, terminal at teardown) are **enqueued as outbox intents and attempted immediately** —
 the healthy path is unchanged (status moves the same tick), but a failure is retried every 30s —
 suspending, loudly, at 10 failed attempts — until the source confirms or an operator steps in,
@@ -1090,6 +1096,39 @@ for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
 
 The git worktree is the shared medium: commits flow forward automatically; the
 handoff doc + session pointer carry the *intent* the commits don't.
+
+### Branch tracking (`core/run-branch.ts`)
+
+A run's identity is its **worktree**: `runs.worktree_name` (the rendered `workspace_name`, frozen at
+claim), the herdr `workspace_id`, and the checkout path. Its **branch is state**, not identity.
+
+The factory can only mint a branch name from what the work source knows at claim time, while a repo's
+branching/CI convention may demand one it cannot know then — a ticket key the agent creates during
+the work step, a required prefix, a validated shape. So the branch may move, two ways:
+
+- **`set-branch` signal** (the front door, rendered into every step prompt as `@@SET_BRANCH_CMD@@`) —
+  `setRunBranch` validates the name (git ref rules, no collision, not a protected branch, and **not
+  after the run's PR is open** — the PR's head is the pushed branch), performs the `git branch -m` in
+  the worktree, patches `runs.branch`, and records a `branch_changed` event. It also warns when the
+  OLD name had a remote-tracking ref: that head is now orphaned and only the agent can clean it up.
+- **`syncRunBranch`** — once per pass, before the phase dispatch, the engine reads the worktree's
+  actual HEAD branch and follows it. This is what makes a bare `git branch -m` (or a human in the
+  worktree) safe, and it guarantees the branch this pass renders into prompts, discovers the PR by,
+  and later deletes is the branch that exists. A **detached** HEAD reads as unknown and changes
+  nothing; a **protected** branch (base ref / the main checkout's branch) is refused, since a
+  worktree sitting on one is a mistake, not a rename.
+
+Three consequences the rest of the engine relies on:
+
+- **Layout-hook ownership** resolves by checkout path first, then by `worktree_name` OR the current
+  branch (`store.activeRunForWorktree`) — the create-time event has no path yet, and a renamed run
+  must still answer to the worktree it lives in.
+- **PR discovery** (`currentPr`) tries every name the run may have pushed — current branch, then
+  `worktree_name` — and, on FIRST sighting, requires the PR to be **newer than the run**
+  (`prForBranch` carries `createdAt`). A head branch name is not unique over time: a re-claim, or a
+  convention-shaped rename that drops the per-claim uid, can otherwise resolve to a previous
+  attempt's merged PR and tear this attempt down on someone else's merge.
+- **Teardown** deletes the whole name set, never a protected branch (§9).
 
 ### Orchestration — hybrid tick + event
 
@@ -1353,19 +1392,26 @@ with an error body, and once the git worktree is gone the command can't recover)
 which silently leaks the workspace + checkout dir. So:
 
 ```
+0. git -C <worktreePath> rev-parse --abbrev-ref HEAD  → the branch it is on RIGHT NOW (read first —
+                                                        the checkout is about to be destroyed)
 1. herdr worktree remove --workspace <id> --force   → workspace + dir + git registration (primary)
 2. if workspaceExists(<id>) still true → herdr workspace close <id>   → close panes + workspace
 3. rmrf <worktreePath> (guarded: never the main checkout)             → clear any orphaned dir
 4. git worktree prune                                                → drop the stale registration
-5. git branch -D <branch>                                            → safe now (worktree deregistered)
+5. git branch -D <each of: run.branch, run.worktree_name, the observed HEAD branch — never a
+   protected one>                                                    → safe now (worktree deregistered)
 ```
 
 The fallbacks (steps 2–4) are no longer "defensive-only" — teardown actively verifies
 the workspace is gone and closes it directly if not, then clears the dir, so a partial
-`worktree remove` self-heals instead of leaking. Deleting the local branch (step 5, after
-the worktree is deregistered so it isn't "checked out") lets a re-claim of the same ticket
-start fresh off the base ref. The remote/PR branch is GitHub's domain (merge auto-delete or
-left as-is).
+`worktree remove` self-heals instead of leaking. Deleting the local branches (step 5, after
+the worktree is deregistered so they aren't "checked out") lets a re-claim of the same ticket
+start fresh off the base ref. It is a SET, not one name, because the branch is tracked (§7,
+*Branch tracking*): a run renamed to the repo's convention must leave neither the name it was
+claimed under nor the one it ended on. **Protected** branches — the `base_ref` and whatever the main
+checkout has checked out — are skipped with a warning: a worktree that ended up on one is an
+accident, and deleting a shared branch is not teardown's job. The remote/PR branch is GitHub's
+domain (merge auto-delete or left as-is).
 
 The terminal status write-back (`merged`/`aborted`/`done`) is **enqueued in the transition
 outbox before cleanup** and attempted immediately — teardown never blocks on it, and a failed
@@ -1578,6 +1624,7 @@ herdr-factory --repo <name> resume <KEY> [--source <name>]        # un-park an `
 herdr-factory --repo <name> retry-now [KEY] [--source <name>]     # clear suspensions + retries due now + flush (after fixing the cause)
 herdr-factory --repo <name> step-done <KEY> <step> [--source <name>]  # agent → dispatcher (event-nudges)
 herdr-factory --repo <name> ask-human <KEY> <step> --question[-file] …  # agent → park until a human replies
+herdr-factory --repo <name> set-branch <KEY> <branch> [--source <name>]  # agent → put the run's worktree on the repo's branch convention
 herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agent → send work back for rework
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
@@ -1852,7 +1899,7 @@ command it finds there (which makes the suite a live check of the §14 agent-CLI
   a herdr plugin hook, so with no host there is nothing to fire `worktree.created`. `World.start()`
   refuses a fake-lane scenario that declares `layouts`; layout coverage is real-lane only.
 
-Coverage today is the core flows, the attention/human loop, the evidence station, the PR lifecycle,
+Coverage today is the core flows, branch renaming onto a repo's convention, the attention/human loop, the evidence station, the PR lifecycle,
 source parity for `jira` and `sentry`, belt/config breadth, a herdr outage, the four performance
 measures (call budgets, scale drain, tick latency, resource soak), a live TUI boot in a real PTY, and an
 opt-in tier that hands the SHIPPED prompts to a local model. `github_issues` parity waits on a
@@ -1871,10 +1918,20 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
 - herdr `worktree create` only from the **main checkout** → asserted in config.
 - **Teardown verifies and falls back** (§9): `herdr worktree remove --workspace --force`,
   then if the workspace still exists `herdr workspace close`, then `rmrf <worktreePath>` +
-  `git worktree prune` + `git branch -D <branch>` (in that order — branch delete last, after
+  `git worktree prune` + `git branch -D` for **every** name the run may have created (its
+  `worktree_name`, its current `branch`, and the HEAD branch read before the checkout was
+  destroyed), skipping protected ones (in that order — branch deletes last, after
   the worktree is deregistered). `worktree remove` can exit 0 yet leak the workspace+dir, so
   the fallbacks are active, not defensive-only. This sequence lives once in
   `removeRunWorktree` (teardown + belt deletion share it).
+- **A run is identified by its WORKTREE, never by its branch** (§7, *Branch tracking*).
+  `runs.worktree_name` is frozen at claim; `runs.branch` follows the worktree (an agent may rename
+  it to the repo's convention). Anything that must find or clean up a run — the layout hook's
+  ownership lookup, PR discovery, teardown — reads the worktree path/name first and treats the
+  branch as a moving second name. Never re-introduce a lookup keyed on the branch alone.
+- **A PR is adopted on first sighting only if it is NEWER than the run.** A head branch name is not
+  unique over time (a re-claim; a rename that drops the per-claim uid), and adopting a previous
+  attempt's merged PR tears the current attempt down on someone else's merge.
 - **Belt rename/delete is clean, not orphaning** (§9). A rename migrates every run (active +
   historical) onto the new belt name; a delete is refused while the belt has in-flight work and
   otherwise purges the belt's run rows + child rows while **keeping the events timeline** (detach
@@ -2027,7 +2084,7 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   process tree can't. On the adopt path `--kind` already declares the harness, and the hint instead
   makes the pane read as already-occupied — `agent start` then refuses it (`agent_pane_busy`).
 - **The agent-facing CLI surface is a cross-release compatibility contract.** Rendered prompts bake
-  the exact `step-done` / `bounce` / `ask-human` / `evidence-upload` command lines (flags included)
+  the exact `step-done` / `bounce` / `ask-human` / `set-branch` / `evidence-upload` command lines (flags included)
   into agents already running in panes — and those agents outlive any number of auto-update
   restarts. Renaming a command or flag strands every in-flight step: the agent's baked command
   errors, and the step can only die by budget → `attention`. Changes must be additive — new flags

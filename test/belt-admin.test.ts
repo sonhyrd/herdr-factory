@@ -29,6 +29,9 @@ function makeDeps(repo = "r") {
     },
     git: {
       worktreePrune: async () => {},
+      // The leaked worktree is already gone by the time a belt is deleted, so HEAD reads as
+      // unresolvable — cleanup then falls back to the run's recorded names.
+      currentBranch: async () => null,
       branchDelete: async (_cwd: string, branch: string) => { calls.branchDelete.push(branch); return true; },
     },
     rmrf: async (p: string) => { calls.rmrf.push(p); },

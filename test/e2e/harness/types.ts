@@ -48,6 +48,10 @@ export interface AgentBehaviour {
   replayStalePass?: boolean;
   /** Skip writing @@HANDOFF_OUT@@ (the next step then sees no handoff). */
   noHandoff?: boolean;
+  /** Rename the run onto this branch with the prompt's rendered `set-branch` command (substituting
+   *  its `<new-branch-name>` placeholder) — the repo-branch-convention path. Runs after the commits
+   *  and before `run`, so a later push/PR uses the new name. */
+  setBranch?: string;
   /** Extra shell commands run in the worktree before signalling (escape hatch). */
   run?: string[];
   /** Run the `gh pr create` the pr step's prompt asks for (default: true on a step that produces a

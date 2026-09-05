@@ -40,6 +40,19 @@ interface FakeState {
   tabPane: string | null; // what tabPaneByLabel resolves for the CONFIGURED label ("agent") — null ⇒ no match
   tabPaneByName: Record<string, string>; // what tabPaneByLabel resolves for a NON-configured label (the drain-window dispatch name `${step}:${key}`)
   headSha: string;
+  /** What `git rev-parse --abbrev-ref HEAD` reports for the run's WORKTREE — the branch tracking
+   *  reads it every pass. `undefined` ⇒ the worktree is on whatever the run's branch already says
+   *  (no rename); a string simulates an agent renaming the branch; null ⇒ detached HEAD. */
+  worktreeBranch?: string | null;
+  /** Same, for the MAIN checkout (the protected-branch set). */
+  mainBranch: string | null;
+  /** Branch names `branchExists` should report as present (a rename collision). */
+  existingBranches: Set<string>;
+  /** Branches with a remote-tracking ref (the "you already pushed this" warning). */
+  pushedBranches: Set<string>;
+  /** Does `git branch -m` succeed? */
+  renameOk: boolean;
+  renamed: string[]; // every branchRename target, in order
   sessionId: string | null;
   workspaceExists: boolean; // does the workspace still exist after a worktree remove?
   focusedPane: FocusedPane | null; // the pane the user is currently looking at
@@ -108,7 +121,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, itemLabels: {}, promptStalls: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, itemLabels: {}, promptStalls: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -251,7 +264,16 @@ function build(opts: { multi?: boolean } = {}) {
     currentLogin: async () => "test-user",
   };
   const git: GitApi = {
-    branchExists: async () => false,
+    branchExists: async (_cwd, b) => state.existingBranches.has(b),
+    // The worktree answers with the simulated rename (state.worktreeBranch), the main checkout with
+    // its own branch — that split is what the protected-branch guard keys on.
+    currentBranch: async (cwd) => (cwd === "/main-checkout" ? state.mainBranch : (state.worktreeBranch === undefined ? null : state.worktreeBranch)),
+    remoteBranchExists: async (_cwd, b) => state.pushedBranches.has(b),
+    branchRename: async (_cwd, to) => {
+      state.renamed.push(to);
+      if (state.renameOk) state.worktreeBranch = to;
+      return state.renameOk;
+    },
     branchDelete: async (_cwd, b) => { calls.branchDelete.push(b); return true; },
     worktreePrune: async () => {},
     originUrl: async () => "git@github.com:o/n.git",
@@ -337,6 +359,151 @@ function seed(
 // The shared run-scoped signal effect (core/signals.ts) that BOTH the HTTP handler and the CLI
 // in-process fallback call. These lock the seam: run resolution, the fire-and-forget vs waiting lock
 // choice, and the result shapes — the engine functions beneath (bounceStep, …) are covered above.
+// ── Branch tracking ────────────────────────────────────────────────────────────────────────────
+// A run's identity is its WORKTREE (`worktree_name` + workspace id + checkout path). The branch is
+// tracked state: the factory can only name it from what the source knows at claim time, so an agent
+// may move the worktree onto the name the repo's branching/CI convention requires, and the engine
+// follows it for prompts, PR discovery, and branch cleanup.
+describe("branch tracking — the branch follows the worktree; identity does not", () => {
+  it("follows a rename made in the worktree and records it (identity keeps the worktree name)", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-BR1", "running", "review");
+    state.worktreeBranch = "fix/RWR-18500-toast"; // the agent renamed the branch to the repo's shape
+    await reconcileRun(deps, store.getRun(run.id)!);
+    const got = store.getRun(run.id)!;
+    expect(got.branch).toBe("fix/RWR-18500-toast");
+    expect(got.worktreeName).toBe("fix/K-BR1-s"); // frozen — this is what the worktree is called
+    const ev = store.timeline("demo", "K-BR1").find((e) => e.type === "branch_changed");
+    expect(ev).toBeTruthy();
+    expect(JSON.parse(ev!.detail ?? "{}")).toMatchObject({ from: "fix/K-BR1-s", to: "fix/RWR-18500-toast", via: "observed" });
+  });
+
+  it("a DETACHED head changes nothing (mid-rebase is not a rename)", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-BR2", "running", "review");
+    state.worktreeBranch = null;
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.branch).toBe("fix/K-BR2-s");
+    expect(store.timeline("demo", "K-BR2").some((e) => e.type === "branch_changed")).toBe(false);
+  });
+
+  it("never tracks onto a PROTECTED branch (a worktree left on the base ref is a mistake)", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-BR3", "running", "review");
+    state.worktreeBranch = "master"; // == the main checkout's branch / the base ref's tail
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.branch).toBe("fix/K-BR3-s");
+    expect(store.timeline("demo", "K-BR3").some((e) => e.type === "branch_changed")).toBe(false);
+  });
+
+  it("PR discovery tries the renamed branch AND the name the worktree was created under", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-BR4", "running", "pr");
+    state.worktreeBranch = "fix/RWR-1-x"; // renamed AFTER the push, so the PR head is the old name
+    const asked: string[] = [];
+    deps.github = {
+      ...deps.github,
+      prForBranch: async (_repo, branch) => {
+        asked.push(branch);
+        return branch === "fix/K-BR4-s" ? { number: 41, state: "OPEN", url: "u", isDraft: false } : null;
+      },
+    };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(asked).toEqual(["fix/RWR-1-x", "fix/K-BR4-s"]); // current branch first, then the worktree name
+    expect(store.getRun(run.id)!.prNumber).toBe(41);
+  });
+
+  it("does NOT adopt a PR that predates the run (a previous attempt's PR on a reused branch name)", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-BR5", "running", "pr");
+    // A convention-shaped rename drops the per-claim uid, so `--head` can resolve last month's PR.
+    state.pr = { number: 7, state: "MERGED", url: "u", createdAt: store.getRun(run.id)!.createdAt - 86_400 };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    const got = store.getRun(run.id)!;
+    expect(got.prNumber).toBeNull();
+    expect(got.phase).toBe("running"); // NOT torn down on someone else's merge
+  });
+
+  it("teardown deletes every name the run may have left behind, and never a protected one", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-BR6", "reviewing", null, {});
+    store.updateRun(run.id, { branch: "fix/RWR-2-y" }); // renamed mid-run
+    state.worktreeBranch = "fix/RWR-2-y";
+    state.pr = { number: 9, state: "MERGED", url: "u" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.outcome).toBe("merged");
+    expect(calls.branchDelete).toEqual(expect.arrayContaining(["fix/RWR-2-y", "fix/K-BR6-s"]));
+    expect(calls.branchDelete).not.toContain("master");
+  });
+});
+
+describe("set-branch — the agent's front door onto the repo's branch convention", () => {
+  it("renames the worktree's branch, tracks it, and records the change", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-SB1", "running", "fix");
+    state.worktreeBranch = "fix/K-SB1-s";
+    const res = await applySignal(deps, "set-branch", { key: "K-SB1", branch: "fix/RWR-18500-toast" });
+    expect(res.ok).toBe(true);
+    expect(state.renamed).toEqual(["fix/RWR-18500-toast"]);
+    expect(store.getRun(run.id)!.branch).toBe("fix/RWR-18500-toast");
+    expect(store.timeline("demo", "K-SB1").some((e) => e.type === "branch_changed")).toBe(true);
+  });
+
+  it("warns when the OLD branch was already pushed (the remote head is now orphaned)", async () => {
+    const { deps, store, state, worktree } = build();
+    seed(store, worktree, "K-SB2", "running", "fix");
+    state.worktreeBranch = "fix/K-SB2-s";
+    state.pushedBranches.add("fix/K-SB2-s");
+    const res = await applySignal(deps, "set-branch", { key: "K-SB2", branch: "fix/RWR-3-z" });
+    expect(res.ok).toBe(true);
+    expect(res.message).toContain("push origin --delete fix/K-SB2-s");
+  });
+
+  it("refuses once the PR is open — renaming then would strand it", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-SB3", "running", "pr");
+    state.worktreeBranch = "fix/K-SB3-s";
+    store.updateRun(run.id, { prNumber: 12 });
+    const res = await applySignal(deps, "set-branch", { key: "K-SB3", branch: "fix/RWR-4-a" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain("#12");
+    expect(state.renamed).toEqual([]);
+    expect(store.getRun(run.id)!.branch).toBe("fix/K-SB3-s");
+  });
+
+  it("refuses an invalid ref name, a protected branch, and a name that already exists", async () => {
+    const { deps, store, state, worktree } = build();
+    seed(store, worktree, "K-SB4", "running", "fix");
+    state.worktreeBranch = "fix/K-SB4-s";
+    state.existingBranches.add("fix/taken");
+    expect((await applySignal(deps, "set-branch", { key: "K-SB4", branch: "fix/bad name" })).message).toContain("not a valid branch name");
+    expect((await applySignal(deps, "set-branch", { key: "K-SB4", branch: "master" })).message).toContain("protected");
+    expect((await applySignal(deps, "set-branch", { key: "K-SB4", branch: "fix/taken" })).message).toContain("already exists");
+    expect(state.renamed).toEqual([]);
+  });
+
+  it("is idempotent when the worktree is already on the branch (a replayed command)", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-SB5", "running", "fix");
+    state.worktreeBranch = "fix/RWR-5-b"; // renamed by hand; the run row hasn't caught up yet
+    expect((await applySignal(deps, "set-branch", { key: "K-SB5", branch: "fix/RWR-5-b" })).ok).toBe(true);
+    expect(store.getRun(run.id)!.branch).toBe("fix/RWR-5-b");
+    const again = await applySignal(deps, "set-branch", { key: "K-SB5", branch: "fix/RWR-5-b" });
+    expect(again.ok).toBe(true);
+    expect(again.message).toContain("already on");
+    expect(state.renamed).toEqual([]); // nothing to rename either time
+  });
+
+  it("refuses a rename while HEAD is detached", async () => {
+    const { deps, store, state, worktree } = build();
+    seed(store, worktree, "K-SB6", "running", "fix");
+    state.worktreeBranch = null;
+    const res = await applySignal(deps, "set-branch", { key: "K-SB6", branch: "fix/RWR-6-c" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain("detached");
+  });
+});
+
 describe("applySignal — shared run-scoped agent signal effect", () => {
   it("step-done: marks the step done, records the event, and advances the belt (fire-and-forget lock)", async () => {
     const { deps, store, worktree } = build();

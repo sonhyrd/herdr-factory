@@ -311,6 +311,13 @@ export interface GitHubApi {
 
 export interface GitApi {
   branchExists(repoCwd: string, branch: string): Promise<boolean>;
+  /** The branch a checkout is currently ON (null ⇒ detached/unresolvable) — the run's branch is
+   *  tracked from this, never assumed to still be the name minted at claim time. */
+  currentBranch(repoCwd: string): Promise<string | null>;
+  /** Is there a remote-tracking ref for `branch` (was it pushed)? Local-only, no network. */
+  remoteBranchExists(repoCwd: string, branch: string): Promise<boolean>;
+  /** `git branch -m` the checkout's current branch to `to`; false ⇒ git refused. */
+  branchRename(repoCwd: string, to: string): Promise<boolean>;
   /** Delete a local branch; resolves to whether it's gone afterward (false ⇒ still present even
    *  after force-removing any worktree still on it — the caller should surface that). */
   branchDelete(repoCwd: string, branch: string): Promise<boolean>;

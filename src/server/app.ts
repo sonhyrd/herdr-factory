@@ -42,6 +42,7 @@ import {
   resumeRoute,
   retryNowRoute,
   runsRoute,
+  setBranchRoute,
   shutdownRoute,
   statusRoute,
   stepDoneRoute,
@@ -252,6 +253,7 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
       workSource: r.workSource,
       belt: r.belt,
       issueType: r.issueType,
+      worktreeName: r.worktreeName,
       branch: r.branch,
       phase: r.phase as string,
       step: r.step,
@@ -441,6 +443,12 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     const rt = ctx.getRepo(c.req.valid("param").repo);
     if (!rt) return c.json({ error: notConfigured(c.req.valid("param").repo) }, 404);
     return c.json(await applySignal(rt.deps, "capture-attempt", c.req.valid("json")), 200);
+  });
+
+  app.openapi(setBranchRoute, async (c) => {
+    const rt = ctx.getRepo(c.req.valid("param").repo);
+    if (!rt) return c.json({ error: notConfigured(c.req.valid("param").repo) }, 404);
+    return c.json(await applySignal(rt.deps, "set-branch", c.req.valid("json")), 200);
   });
 
   app.openapi(claimRoute, async (c) => {

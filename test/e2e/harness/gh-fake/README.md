@@ -100,8 +100,8 @@ timeout still shows up in the log (carrying the exit code it *would* have return
 | argv | answer |
 |---|---|
 | `gh api user --jq .login` | the bare login on stdout (no `--jq` ⇒ `{"login":…,"id":…,"type":"User"}`) |
-| `gh pr list --repo O/N --head B --state all --json number,state,url,isDraft --limit 1` | JSON **array**, newest-first (highest number), filtered by `--head`/`--base`/`--state`, truncated to `--limit`, projected to the requested `--json` fields. Unknown branch ⇒ `[]`, exit 0 |
-| `gh pr view N --repo O/N --json number,state,url,isDraft` | JSON **object**. Unknown N ⇒ exit 1 + `GraphQL: Could not resolve to a PullRequest with the number of N. (repository.pullRequest)` |
+| `gh pr list --repo O/N --head B --state all --json number,state,url,isDraft,createdAt --limit 1` | JSON **array**, newest-first (highest number), filtered by `--head`/`--base`/`--state`, truncated to `--limit`, projected to the requested `--json` fields. Unknown branch ⇒ `[]`, exit 0 |
+| `gh pr view N --repo O/N --json number,state,url,isDraft[,createdAt]` | JSON **object**. Unknown N ⇒ exit 1 + `GraphQL: Could not resolve to a PullRequest with the number of N. (repository.pullRequest)` |
 | `gh pr view N --repo O/N --json statusCheckRollup` | `{"statusCheckRollup":[…]}` — a flat array of `CheckRun` (`name`,`status`,`conclusion`) / `StatusContext` (`context`,`state`) nodes |
 | `gh api graphql -f query=<batch> -F owner=O -F name=N` | the batched snapshot. The aliases are parsed out of the query text (`/pr(\d+): pullRequest\(number: (\d+)\)/g`) and answered as `{"data":{"repository":{"pr<N>":{…}}}}` for exactly the ones asked for |
 | `gh api graphql -f query=<signature> -F owner=O -F name=N -F n=P` | `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[…]}}}}}` |

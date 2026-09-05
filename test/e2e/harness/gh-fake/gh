@@ -177,6 +177,9 @@ function prJson(pr, fields) {
     number: pr.number,
     state: pr.state,
     url: pr.url,
+    // Passed through as-is: a PR record with no timestamp projects an ABSENT field ("unknown age",
+    // which the engine accepts) rather than a 1970 one it would refuse as older than the run.
+    createdAt: pr.createdAt,
     isDraft: !!pr.isDraft,
     title: pr.title ?? "",
     body: pr.body ?? "",
@@ -489,6 +492,9 @@ function prCreate(fs, argv, statePath) {
       number,
       state: "OPEN",
       url: prUrl,
+      // The engine refuses to adopt a PR older than the run (a previous attempt's PR on a reused
+      // head-branch name), so a PR the agent opens during a scenario must carry a real timestamp.
+      createdAt: new Date().toISOString(),
       isDraft: draft,
       headRefName: head,
       title,

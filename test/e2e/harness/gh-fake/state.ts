@@ -31,6 +31,10 @@ export interface GhPr {
   url: string;
   /** A draft PR is adopted but keeps the step-done gate — it never hands off to the review watch. */
   isDraft: boolean;
+  /** ISO-8601, stamped when the fake creates the PR. First-sighting adoption refuses a PR OLDER than
+   *  the run (a previous attempt's PR on a reused head-branch name), so a seeded PR that omits this
+   *  reads as "unknown age" and is accepted, while one the run opens is genuinely newer. */
+  createdAt?: string;
   headRefName: string;
   title: string;
   body: string;

@@ -48,6 +48,31 @@ export class GitClient {
     return r.stdout.trim();
   }
 
+  /** The branch a checkout currently has checked out, or null when HEAD is DETACHED (rev-parse
+   *  prints the literal "HEAD" then) or git can't resolve it. This is how a run's branch is
+   *  TRACKED rather than fixed: the name is the factory's only at claim time, and an agent may
+   *  rename it to the repo's own convention mid-run (see core/run-branch.ts). */
+  async currentBranch(repoCwd: string): Promise<string | null> {
+    const r = await run("git", ["-C", repoCwd, "rev-parse", "--abbrev-ref", "HEAD"], { allowFail: true });
+    const name = r.stdout.trim();
+    return r.code === 0 && name && name !== "HEAD" ? name : null;
+  }
+
+  /** Does a remote-tracking ref for `branch` exist in this checkout (i.e. was it ever pushed with
+   *  `-u`/fetched)? Local-only — no network. Used to warn that a rename leaves a stale remote head. */
+  async remoteBranchExists(repoCwd: string, branch: string): Promise<boolean> {
+    const r = await run("git", ["-C", repoCwd, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`], {
+      allowFail: true,
+    });
+    return r.code === 0;
+  }
+
+  /** Rename the checkout's CURRENT branch to `to` (`git branch -m`). Returns whether git accepted it. */
+  async branchRename(repoCwd: string, to: string): Promise<boolean> {
+    const r = await run("git", ["-C", repoCwd, "branch", "-m", to], { allowFail: true });
+    return r.code === 0;
+  }
+
   /** Current HEAD commit of a worktree, or null if git can't resolve it. Used as the
    *  worker's progress heartbeat — a moving HEAD means real work happened. */
   async headSha(repoCwd: string): Promise<string | null> {

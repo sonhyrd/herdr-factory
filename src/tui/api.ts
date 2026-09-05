@@ -37,6 +37,9 @@ export interface ActiveRun {
   workSource: string | null;
   belt: string | null;
   issueType: string | null;
+  /** The name the run's worktree was created under; `branch` is where it is NOW (they differ once
+   *  an agent renames the branch to the repo's convention). */
+  worktreeName: string | null;
   branch: string | null;
   phase: string;
   step: string | null;

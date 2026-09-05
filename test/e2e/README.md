@@ -61,6 +61,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | Scenario | Covers |
 |---|---|
 | `w2pr-happy` | brief → work → review → pr → PR opened → merged → teardown; transition order, branch + worktree reaped |
+| `branch-rename` | the repo's branch convention wins: the work agent `set-branch`es onto a ticket-key name, and the push, the PR, the merge watch and teardown all follow it while the worktree keeps its own name |
 | `custom-belt` | a `custom` pipeline, config-folder prompt files, token rendering, `completed`, no PR machinery |
 | `layouts` | plugin hook, `layout.apply` per tab, blocking setup, splits, step→pane dispatch, pane display metadata, hand-created worktrees |
 | `layout-setup-on-agent-pane` | regression: an agent pane that also runs the layout's setup still gets its agent |

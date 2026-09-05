@@ -151,6 +151,9 @@ describe("SignalDescriptor contract", () => {
     expect(signalDescriptorFor("bounce")!.lockDiscipline).toBe("waiting");
     expect(signalDescriptorFor("ask-human")!.lockDiscipline).toBe("waiting");
     expect(signalDescriptorFor("capture-attempt")!.lockDiscipline).toBe("waiting");
+    // set-branch mutates git AND the run row together — a concurrent pass must not read or write
+    // half of it (the prompt render, PR discovery and cleanup all key on runs.branch).
+    expect(signalDescriptorFor("set-branch")!.lockDiscipline).toBe("waiting");
     expect(signalDescriptorFor("step-done")!.lockDiscipline).toBe("fire-and-forget");
   });
 });
