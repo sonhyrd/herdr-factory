@@ -29,8 +29,8 @@ scenario(
     expectParked(w, key, "step_budget");
 
     // A park is a workflow, not a dead end — it has to reach a human three ways.
-    const note = await w.waitForNote(key, /budget|resume/i); // the note is posted just after the phase flips
-    expect(note, "with a ready-made resume command").toContain(`resume ${key}`);
+    const report = await w.waitForPaneReport(key, /budget|resume/i); // submitted just after the phase flips
+    expect(report, "with a ready-made resume command").toContain(`resume ${key}`);
     expect(w.herdr.notifications().length, "a desktop notification fired").toBeGreaterThan(0);
     const flagged = w.herdr.paneMetadata().filter((m) => m.argv.join(" ").includes("hf_state=attention"));
     expect(flagged.length, "the pane is flagged ⚠ ATTENTION").toBeGreaterThan(0);
@@ -42,9 +42,19 @@ scenario(
 
     // ── resume ────────────────────────────────────────────────────────────────────────────────
     // The agent that stalled is still sitting there idle. Give it something to do this time.
+    // Let the work agent finish the turn the PARK's own pane report just handed it. `resume`
+    // deliberately does not interrupt a `working` pane, so a resume fired microseconds after that
+    // report flips the phase and nudges nobody (`resumed {nudged:false}`) — and the step's clock,
+    // re-based by the resume, simply expires again. An operator arriving minutes later never sees it.
+    const workPane = w.db.step(run.id, "work")!.pane_id!;
+    await w.waitFor(() => w.herdr.agents().find((a) => a.pane_id === workPane)?.agent_status !== "working", {
+      label: "the work agent finishes its turn before the operator resumes",
+    });
     w.setAgentScript({ steps: { work: { signal: "step-done" }, review: { commit: false } } });
-    const r = w.resume(key);
-    expect(r.code, `resume should succeed: ${r.stderr}`).toBe(0);
+    // Even then the first resume can read the pane as `working` (the engine's agent list is ~5s
+    // memoized), and a resume that nudges nobody lets this step's 5s budget expire again — so
+    // resume the way an operator would, until one lands.
+    await w.resumeUntilNudged(key);
 
     await w.waitForEnd(key, "completed", { label: "the resumed step finishes and the belt completes", timeoutMs: 120_000 });
     expectTimeline(w, key, ["claimed", "step_spawned", "attention", "resumed", "step_done", "step_spawned", "step_done", "torn_down"]);

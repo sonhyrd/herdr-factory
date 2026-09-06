@@ -17,6 +17,45 @@ export interface HerdrCall {
   argv: string[];
 }
 
+/** The frame `core/pane-display.ts` wraps every operator report in before submitting it to a pane.
+ *  Kept in lock-step with reportToPane — it is how a report is told apart from a step's prompt. */
+export const PANE_REPORT_FRAME = "[herdr-factory report";
+
+/** Operator reports pulled out of a recorded argv log — shared by both lanes so they can't drift.
+ *
+ *  The wrapper logs `printf '%s\n' "$@" | jq -R .`, which is LINE-based, so a multi-line argument
+ *  arrives as several array entries: a park report's `resume <KEY>` tail lands in argv[4]/argv[5],
+ *  not argv[3]. Rejoin them (stopping at the first flag, since `agent prompt --wait …` puts real
+ *  flags after the text) or every assertion on anything below a report's first line silently fails. */
+/** The value of a `--flag <value>` argument, rejoined across the lines the wrapper split it into
+ *  (see {@link paneReportsFrom}) — a multi-line notification body would otherwise read as its first
+ *  line only. Empty string when the flag is absent. */
+export function flagValueFrom(argv: string[], flag: string): string {
+  const i = argv.indexOf(flag);
+  if (i < 0) return "";
+  const lines: string[] = [];
+  for (const part of argv.slice(i + 1)) {
+    if (part.startsWith("--")) break;
+    lines.push(part);
+  }
+  return lines.join("\n");
+}
+
+export function paneReportsFrom(calls: HerdrCall[]): { paneId: string; text: string }[] {
+  const out: { paneId: string; text: string }[] = [];
+  for (const c of calls) {
+    if (c.argv[0] !== "agent" || c.argv[1] !== "prompt") continue;
+    const lines: string[] = [];
+    for (const part of c.argv.slice(3)) {
+      if (part.startsWith("--")) break;
+      lines.push(part);
+    }
+    const text = lines.join("\n");
+    if (text.includes(PANE_REPORT_FRAME)) out.push({ paneId: c.argv[2] ?? "", text });
+  }
+  return out;
+}
+
 export interface Pane {
   pane_id: string;
   tab_id: string;
@@ -243,10 +282,17 @@ export class HerdrServer {
   notifications(): { title: string; body: string }[] {
     return this.calls()
       .filter((c) => c.argv[0] === "notification" && c.argv[1] === "show")
-      .map((c) => {
-        const i = c.argv.indexOf("--body");
-        return { title: c.argv[2] ?? "", body: i >= 0 ? (c.argv[i + 1] ?? "") : "" };
-      });
+      .map((c) => ({ title: c.argv[2] ?? "", body: flagValueFrom(c.argv, "--body") }));
+  }
+
+  /** Operator-facing reports the engine submitted INTO a run's pane (`core/pane-display.ts`
+   *  reportToPane → `herdr agent prompt <pane> <text>`). This is where a park's explanation goes for
+   *  a mechanical failure (a budget, a stall, a suspended job) and for any park on a source whose
+   *  reply channel is a FILE (`local_markdown`) — a note in a hidden folder is where nobody looks.
+   *  Only a comments source (jira/github_issues/sentry) gets a note on the item instead
+   *  (`World.waitForNote`). Matched on the frame reportToPane wraps every report in. */
+  paneReports(): { paneId: string; text: string }[] {
+    return paneReportsFrom(this.calls());
   }
 
   /** Display metadata the engine published on panes (the ⚠ ATTENTION title, hf_* tokens). */

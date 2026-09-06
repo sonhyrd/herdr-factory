@@ -24,11 +24,20 @@ scenario(
 
     const run = w.db.run(key)!;
     expect(w.git(["log", "--oneline", run.branch!]), "nothing was committed — that is the point").not.toMatch(/chore\(work\)/);
-    await w.waitForNote(key); // the operator is told what stalled
+    await w.waitForPaneReport(key); // the operator is told what stalled
+
+    // Let the work agent finish the turn the PARK's own pane report just handed it. `resume`
+    // deliberately does not interrupt a `working` pane, so a resume fired microseconds after that
+    // report flips the phase and nudges nobody (`resumed {nudged:false}`) — and the step's clock,
+    // re-based by the resume, simply expires again. An operator arriving minutes later never sees it.
+    const workPane = w.db.step(run.id, "work")!.pane_id!;
+    await w.waitFor(() => w.herdr.agents().find((a) => a.pane_id === workPane)?.agent_status !== "working", {
+      label: "the work agent finishes its turn before the operator resumes",
+    });
 
     // Resuming re-bases the heartbeat clock, so an agent that starts committing again recovers.
     w.setAgentScript({ steps: { work: { commit: true, signal: "step-done" } } });
-    expect(w.resume(key).code).toBe(0);
+    await w.resumeUntilNudged(key);
     await w.waitForEnd(key, "completed", { label: "the resumed step commits and finishes", timeoutMs: 120_000 });
     expect(w.db.eventTypes(key)).toContain("resumed");
   },

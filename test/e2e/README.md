@@ -42,13 +42,19 @@ scenario({ name: "...", briefs: {...}, config: (p) => ({...}), agent: {...} }, a
   `limits`, `agent: claude`). Time is compressed with config, never a fake clock — `core/layout.ts`
   mixes `deps.now()*1000` with `Date.now()`, so an injected clock is unsafe on the layout path.
 - **`agent`** is the behaviour script: `commit`, `hangMs`, `signal` (`step-done`/`bounce`/
-  `ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`, `openPr`, `run`. Resolution
+  `ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`, `openPr`, `setBranch`
+  (rename onto the repo's branch convention via the prompt's `set-branch` command), `run`. Resolution
   is `passes["<step>:<pass>"]` ▸ `steps[step]` ▸ `default` ▸ built-in. `w.setAgentScript()` swaps it
   mid-scenario (the agent re-reads it every turn).
 - **Assertions** rank: `w.db.run()/events()/steps()/intents()` → `expectTimeline` /
   `expectParked` / `expectNoPendingIntents` → `w.factory.repoApi("GET", "obligations?key=…")` →
   filesystem (`w.branchExists`, `w.humanInbox`, `w.factory.evidence`) → argv traces
-  (`w.herdr.notifications()`, `w.gh.calls()`).
+  (`w.herdr.notifications()`, `w.herdr.paneReports()`, `w.gh.calls()`).
+- **Where a park's explanation lands decides which helper you wait on.** `w.waitForNote(key, …)` is
+  for a COMMENTS-channel source (jira/github_issues/sentry) only; everything else —  every mechanical
+  park, and a work error on a file-channel source such as `local_markdown` — is submitted into the
+  run's own pane, so wait on `w.waitForPaneReport(key, …)` instead. Getting this backwards is silent:
+  the run parks correctly and the assertion just times out.
 - **Every failure** carries `w.diagnose()`: run state, timeline, engine log, agent transcript, herdr
   agents, and every pane's `process-info` + screen.
 
@@ -214,6 +220,19 @@ agent never signalled" 120 seconds later — so each now has a guard that fires 
   so `calls()` silently degraded and `notifications()` always answered "none fired", making every
   notification assertion vacuously true. The timestamp now falls back to whole seconds, and `calls()`
   THROWS on a malformed line (only a torn final line, which a live append can produce, is skipped).
+- **The argv log is LINE-based, so a multi-line argument arrives split.** The wrapper records
+  `printf '%s\n' "$@" | jq -R .`, which makes one array entry per LINE — a park's pane report puts its
+  `Resume with: … resume <KEY>` tail in `argv[4]`/`argv[5]`, and a multi-line `--body` loses everything
+  after its first line. Anything reading a recorded argument now rejoins those entries
+  (`paneReportsFrom`, `flagValueFrom`, stopping at the next `--flag`), because the failure is silent:
+  the assertion just never matches and times out 90 s later against a run that did exactly the right
+  thing.
+- **One submission is one turn — even when it spans lines.** The scripted agent reads stdin line by
+  line, so a multi-line `agent prompt` (a park's operator report, with its `Resume with: …` tail)
+  fired a full turn PER LINE. Each turn holds `working` for 1.5 s, so a 3-line report pinned the pane
+  `working` for ~4.5 s of every 5 s park cycle — and `resume`, which never interrupts a working pane,
+  could not nudge the agent while the run kept re-parking. Lines are now buffered and taken as a
+  single turn once stdin goes quiet (`SUBMIT_QUIET_MS`).
 - **Injection knobs must be file-backed, not env.** A resident `serve` never sees an env change, so
   `GhFake.inject()` / `FakeHerdr`'s knobs write to their state file, which the shims re-read per call.
   `HerdrServer.unreachable` is the same idea: a flag file the wrapper checks.

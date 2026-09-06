@@ -25,7 +25,7 @@ scenario(
     expectParked(w, key, "pr_closed");
 
     // Not a watchdog park: there is nothing for a step-done to rescue, so it waits for a person.
-    await w.waitForNote(key, /clos/i);
+    await w.waitForPaneReport(key, /clos/i);
     expect(w.db.run(key)!.ended_at, "the run is parked, not ended").toBeNull();
     expect(w.git(["worktree", "list"]), "and its worktree is kept for salvage").toContain(run.branch!);
   },

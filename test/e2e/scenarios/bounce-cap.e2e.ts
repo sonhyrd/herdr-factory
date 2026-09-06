@@ -34,7 +34,7 @@ scenario(
     // later render can't resurrect already-handled feedback.
     const mem = `${run.worktree_path}/.memory/herdr-factory`;
     expect(w.git(["status"], run.worktree_path!), "the worktree is still there to inspect").toBeTruthy();
-    await w.waitForNote(key, /bounce/i); // the operator is told the loop was capped
+    await w.waitForPaneReport(key, /bounce/i); // the operator is told the loop was capped, in the run's own pane
     expect(mem).toContain(".memory");
 
     // ── resume: a human judged the loop worth continuing ──────────────────────────────────────
@@ -47,7 +47,9 @@ scenario(
       label: "the review agent finishes its turn before the operator resumes",
     });
     w.setAgentScript({ steps: { review: { commit: false, signal: "step-done" } } });
-    expect(w.resume(key).code).toBe(0);
+    // …and even an idle pane can read as `working` to the engine for a few seconds (its agent list
+    // is memoized), so resume until one actually nudges — see World.resumeUntilNudged.
+    await w.resumeUntilNudged(key);
     expect(w.db.guardCounter(run.id, "work", "bounce_cap"), "resume refunds the bounce budget belt-wide").toBe(0);
 
     await w.waitForEnd(key, "completed", { label: "the run finishes once the gate is satisfied", timeoutMs: 120_000 });

@@ -362,9 +362,21 @@ if (initial && promptRelFor(initial)) {
   process.stdout.write("\n> ");
 }
 
-const rl = readline.createInterface({ input: process.stdin, terminal: false });
-rl.on("line", (line) => {
-  const text = line.trim();
+// ONE submission is ONE turn, even when it spans lines. herdr's `agent prompt` delivers a whole
+// text and a real harness reads it as a single prompt, but stdin arrives here line by line — so a
+// MULTI-LINE submission (an operator report from a park: the ⚠ line plus its `Resume with: …` /
+// `Or let your agent diagnose it: …` tail) used to fire one full turn PER LINE. Each turn holds
+// `working` for 1.5s, so a 3-line report pinned the pane `working` for ~4.5s of every park cycle,
+// and `resume` — which never interrupts a working pane — could not nudge the agent for as long as
+// the run kept re-parking. Buffer the lines and take a single turn once the input goes quiet.
+const SUBMIT_QUIET_MS = 250;
+const pending = [];
+let submitTimer = null;
+
+function takeTurn() {
+  submitTimer = null;
+  const text = pending.join("\n").trim();
+  pending.length = 0;
   if (!text) return;
   log(`STDIN ${JSON.stringify(text.slice(0, 200))}`);
   try {
@@ -374,8 +386,19 @@ rl.on("line", (line) => {
     setState("idle");
   }
   process.stdout.write("\n> ");
+}
+
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+rl.on("line", (line) => {
+  pending.push(line);
+  if (submitTimer) clearTimeout(submitTimer);
+  submitTimer = setTimeout(takeTurn, SUBMIT_QUIET_MS);
 });
 rl.on("close", () => {
+  if (submitTimer) {
+    clearTimeout(submitTimer);
+    takeTurn(); // don't drop a submission that arrived just before the pane closed
+  }
   log("stdin closed — exiting");
   process.exit(0);
 });

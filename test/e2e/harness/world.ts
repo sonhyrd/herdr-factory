@@ -660,9 +660,45 @@ export class World {
     return existsSync(p) ? readFileSync(p, "utf8") : null;
   }
 
+  /** Resume a parked run until the resume actually NUDGES its agent.
+   *
+   *  `resume` deliberately never interrupts a `working` pane (it could be mid-answer to another
+   *  agent, or human-driven), and a park hands its pane a turn of its own — the operator report. So
+   *  a resume can land while that turn runs, or while the engine's ~5s-memoized agent list still
+   *  says it does: the phase flips, `resumed {nudged:false}` is recorded, nobody is prompted, and a
+   *  step whose clock the resume just re-based expires again. A real operator simply resumes again;
+   *  so does this, until the timeline proves one landed. Also pins resume as idempotent. */
+  async resumeUntilNudged(key: string, opts: WaitOpts = {}): Promise<void> {
+    await this.waitFor(
+      () => {
+        if (this.db.event(key, "resumed")?.data.nudged === true) return true;
+        const r = this.resume(key);
+        if (r.code !== 0) throw new Error(`resume ${key} failed (exit ${r.code}): ${r.stderr}`);
+        return false;
+      },
+      { label: `a resume that nudges ${key}'s agent`, pollMs: 3000, ...opts },
+    );
+  }
+
+  /** Wait for the operator-facing report a park submits INTO the run's pane.
+   *
+   *  Where a park's explanation lands is decided by what broke and by the source's reply channel
+   *  (`escalateAttention`): a MECHANICAL failure (budget, stall, a suspended job) always reports to
+   *  the pane, and so does a WORK error on a source whose channel is a file (`local_markdown`) —
+   *  only a comments source (jira/github_issues/sentry) gets a note on the item itself
+   *  ({@link World.waitForNote}). Every report carries the run's key in its `resume <key>` tail, so
+   *  `key` is enough to attribute one. Like the note, it is written just AFTER the phase flips. */
+  async waitForPaneReport(key: string, match?: RegExp): Promise<string> {
+    const mine = () => this.herdr.paneReports().filter((r) => r.text.includes(key));
+    await this.waitFor(() => mine().some((r) => match === undefined || match.test(r.text)), {
+      label: `an operator pane report for ${key}${match ? ` matching ${match}` : ""}`,
+    });
+    return mine().find((r) => match === undefined || match.test(r.text))!.text;
+  }
+
   /** Wait for the operator-facing note a park posts to the work source. `escalateAttention` flips the
    *  phase BEFORE it posts, so a scenario that asserts the note the instant it sees `attention` races
-   *  the write. */
+   *  the write. Only for a COMMENTS-channel source — see {@link World.waitForPaneReport}. */
   async waitForNote(key: string, match?: RegExp): Promise<string> {
     await this.waitFor(() => {
       const note = this.humanInbox(`${key}-notes.md`);

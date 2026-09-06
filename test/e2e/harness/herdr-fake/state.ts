@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { flagValueFrom, paneReportsFrom } from "../herdr.ts";
 import type { Agent, HerdrCall, Pane, Tab, Workspace } from "../herdr.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -267,10 +268,14 @@ export class FakeHerdr {
   notifications(): { title: string; body: string }[] {
     return this.calls()
       .filter((c) => c.argv[0] === "notification" && c.argv[1] === "show")
-      .map((c) => {
-        const i = c.argv.indexOf("--body");
-        return { title: c.argv[2] ?? "", body: i >= 0 ? (c.argv[i + 1] ?? "") : "" };
-      });
+      .map((c) => ({ title: c.argv[2] ?? "", body: flagValueFrom(c.argv, "--body") }));
+  }
+
+  /** Operator-facing reports the engine submitted INTO a run's pane (reportToPane → `agent prompt`)
+   *  — where a park's explanation goes for a mechanical failure, and for any park on a file-channel
+   *  source. Mirrors the real lane's accessor so a scenario reads the same in both. */
+  paneReports(): { paneId: string; text: string }[] {
+    return paneReportsFrom(this.calls());
   }
 
   /** Display metadata the engine published on panes (the ⚠ ATTENTION title, hf_* tokens). */
