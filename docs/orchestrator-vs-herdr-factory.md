@@ -155,12 +155,12 @@ Consequences:
 Order matters: each phase assumes the ones before it. Everything uses factory defaults unless an issue says otherwise.
 
 ### Phase 0: machines
-- [ ] **Herdr on every machine:** the same build on mac, contabo and cursor-5 (done 2026-09-17: master `3f78f17` from `sonhyrd/herdr` run `35119220296`; reports `0.9.0`). Switch back to an official release once one ships `--machine`.
+- [x] **Herdr on every machine:** the same build on mac, contabo and cursor-5 (done 2026-09-17: master `3f78f17` from `sonhyrd/herdr` run `35119220296`; reports `0.9.0`). Switch back to an official release once one ships `--machine`.
 - [ ] **ssh on cursor-5** (operator), then `herdr machine add <target> --label cursor-5` from mac (contabo added 2026-09-17).
-- [ ] **Agent integrations:** `herdr integration install claude` on every machine (+ `codex`, `cursor` where used); verify with `herdr integration status`.
-- [ ] **Agent CLIs + auth:** `claude` on every machine; `cursor` on cursor-5 (install + model; drop setup-cursor-worker's Orca smoke test); `gh auth login`; `git`.
-- [ ] **Sidebar rows** on mac's Herdr config: `[["state_icon","machine","agent","state_text"],["$hf_key","$hf_step","$hf_state"]]`.
-- [ ] **Ghostty:** unbind Cmd+T / Cmd+D / Cmd+1..9 so they reach Herdr.
+- [x] **Agent integrations:** `herdr integration install claude` on every machine (+ `codex`, `cursor` where used); verify with `herdr integration status`. Done 2026-09-17: claude v10, codex v8, cursor v1 current on mac, contabo and cursor-5. On cursor-5 the codex hook landed in Orca's `CODEX_HOME`; codex isn't installed there.
+- [x] **Agent CLIs + auth** (checked 2026-09-17: claude, cursor-agent, gh logged in as sonhyrd and git on all three; codex on mac and contabo only; cursor model setup still to confirm): `claude` on every machine; `cursor` on cursor-5 (install + model; drop setup-cursor-worker's Orca smoke test); `gh auth login`; `git`.
+- [x] **Sidebar rows** on mac's Herdr config: default rows plus `$hf_key $hf_step $hf_state` on the agent line (applied with `herdr server reload-config`).
+- [x] **Ghostty:** the suraj.io keymap is applied (Ghostty unbinds + Kitty sequences, Herdr `[keys]` with `cmd+` aliases); backups saved as `*.bak-2026-09-17`. Takes effect after a Ghostty config reload.
 
 ### Phase 1: one factory, one repo, one machine (contabo)
 - [ ] **Install from this fork:** `install.sh` with the fork's clone URL; `herdr-factory doctor --deep` green.
