@@ -82,6 +82,7 @@ curl -s 127.0.0.1:8765/health | jq '.repos'
 |---|---|---|---|
 | 1 | **The server isn't ticking this repo** | repo absent from `/health .repos[]`, or `tickStale: true` | §2.12 / §2.11 |
 | 2 | **Repo at its workspace cap** | `at capacity (3/3 working, 1 idle/parked)` — Phase B returns immediately | Raise `limits.max_active_workspaces` (default **3**), or tear down/finish a run. Parked and `waiting_for_human` runs, and an idle PR watch, hold **no** slot (see Q1b) |
+| 2b | **Machine gate** (`machine.yml`) | `machine at capacity (n/N)` / `low memory: <free> MB < <min> MB — not claiming` (logged once when it engages, in whichever repo's log noticed) / `machine claim lock held (another repo is claiming) — claiming next tick`; `status` prints the `machine:` line | Host-wide, across every repo: raise `max_active_workspaces` / lower `min_free_memory_mb` in `<configDir>/machine.yml`, then `herdr-factory reload`; or finish/tear down a run in **any** repo. `doctor` shows the limits in effect. A held lock clears within a tick |
 | 3 | **Per-tick admission cap** | claims stop at 10 in one pass | `limits.max_claims_per_tick` (default **10**); the rest come next tick. Rarely the real cause |
 | 4 | **Belt inactive** | `belt <name>: inactive — skipping (no new claims; in-flight runs continue)` | Set `active: true` on the belt (checked *before* polling) |
 | 5 | **Belt's source not configured** | `belt <name>: source "<s>" not configured — skipping` | Fix `belt.source` to a configured source `name` |
@@ -507,6 +508,7 @@ Condensed; `⚠` (amber) never fails the exit code, `✗` sets exit 1.
 | `auto-update` ✗ | exec error on `@{u}` | `git branch --set-upstream-to=origin/main main` in the app checkout |
 | `supervisor service` ✗ | `not loaded — run \`herdr-factory install\`` | `herdr-factory install`; verify `launchctl list \| grep herdr-factory` / `systemctl --user status herdr-factory.timer` |
 | `server` ✗ | `not running (run \`herdr-factory start\`)` / `registered but not responding` | `herdr-factory start` (`serve` for foreground debugging) / `herdr-factory restart`; check `<state>/server.json` pid+port, `lsof -i :8765`, `HERDR_FACTORY_PORT`; delete a stale `server.json` if the pid is gone |
+| `machine limits (machine.yml)` ✗ | `invalid machine config (<path>):\n  <key>: <msg>` | Fix or delete `<configDir>/machine.yml` (only `max_active_workspaces`, `min_free_memory_mb`; non-negative integers). ✓ shows the limits in effect, or `none — per-repo caps only` |
 | `database` ✗ | `not initialized yet (created on the first serve)` | Any `--repo` command creates + migrates it (including `doctor --repo`, so a second run shows ✓ with no other action) |
 | `git`/`gh`/`claude` ✗ | opaque `command -v` failure | Install the tool, then **re-run `herdr-factory install`** — the checks resolve against the **service** PATH, frozen at install time |
 | `herdr` ✗ | `not on PATH (or \`herdr --version\` gave no version)` / `v<x> is too old — the factory needs >= 0.7.5 (run \`herdr update\`)` | Install herdr, or `herdr update`. 0.7.5 is a hard floor: the factory's `agent start --pane`/`agent prompt`/`pane process-info`/`layout.apply` calls don't exist below it. The floor is read from `herdr-plugin.toml` |
@@ -847,13 +849,14 @@ Prefer the supported surfaces — they take the right locks and record events. A
 
 ### Locks
 
-All three live in one `locks` table (`name`, `owner`, `acquired_at`, `expires_at`, epoch seconds).
+All of them live in one `locks` table (`name`, `owner`, `acquired_at`, `expires_at`, epoch seconds).
 `acquireLock` **steals an expired holder unconditionally**; `releaseLock`/`extendLock` are
 **owner-scoped** (a release with the wrong owner is a silent no-op).
 
 | Lock | Owner | TTL | Symptom when stuck | Safe fix |
 |---|---|---|---|---|
 | `tick:<repo>` | `pid:<pid>:<seq>` | `max(tick_interval × 2, 300)` s | repo stops reconciling; `another tick already running — skipping` every pass | Nothing — an expired lock is stolen on the next acquire. If `expires_at` is in the future but the pid is dead, wait out the TTL or `herdr-factory restart` (which stops the holder's heartbeat). Delete the row only with the server stopped |
+| `machine:claim` | `pid:<pid>:<seq>` | `max(tick_interval × 2, 300)` s | only with `machine.yml` `max_active_workspaces`: repos log `machine claim lock held (another repo is claiming) — claiming next tick`; a manual `claim` fails `another repo is claiming right now` | Held for one repo's claim section; expires with its holder like `tick:` |
 | `run:<id>` | `pid:<pid>:<seq>` | 300 s | one run never advances while others do; `<KEY>: busy (nudge in flight) — skipped this pass` every tick; nudges answer `run busy — retry … in a moment` | Expires within 300 s of the holder dying |
 | `capture` | the run's **ticket key** | 1200 s | an evidence agent hangs at `capture-lock acquire` (it polls every 5 s for up to **1 h**), blocking every other evidence step on the machine | `herdr-factory capture-lock release capture <that exact owner>` — the release is owner-scoped, so pass the owner from Q5. A manual acquire with no owner argument is the literal `worker`, which the engine's ticket-key-scoped backstop release will never clear. Self-heals after 20 min |
 

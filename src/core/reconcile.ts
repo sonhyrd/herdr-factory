@@ -491,7 +491,7 @@ async function reconcileRepoImpl(deps: Deps): Promise<void> {
     ),
   );
 
-  // Phase B — claim new work, behind the host-local machine.yml gate (INV-15). Absent machine.yml
+  // Phase B — claim new work, behind the host-local machine.yml gate (ARCHITECTURE §7 Phase B). Absent machine.yml
   // ⇒ straight to claimNewWork, exactly as before.
   const machine = deps.machine ?? {};
   const lowMemory = memoryGate(machine, deps.availableMemoryMb ?? availableMemoryMb);

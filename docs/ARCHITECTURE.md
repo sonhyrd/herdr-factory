@@ -907,6 +907,23 @@ GitHub GraphQL query** fetches state + review signature for every watched PR
 fallback (nudge callers, batch failure). Run resolution is unchanged: each run's
 `work_source`/`belt` resolve once at the top of `reconcileRun` (a run whose source/belt was
 removed escalates to `attention`; a `tearing_down` run still finishes local cleanup).
+**Machine gate (before Phase B).** `<configDir>/machine.yml` (`src/machine.ts`; host-local, loaded into
+`deps.machine` by every `buildDeps`, so `reload` re-reads it) adds two host-wide admission checks, both
+skipped entirely when the file/key is absent. `min_free_memory_mb`: if available memory (Linux
+`MemAvailable`; macOS `vm_stat` free+inactive+speculative — `os.freemem()` there counts only free pages
+and would gate forever; `os.freemem()` elsewhere) is below the floor, the pass `touchTick`s and returns
+before claiming. `max_active_workspaces`: the machine count (`countOccupyingAll` — `countOccupying`
+without the repo filter, over the one shared DB) and the whole claim section run under the
+**`machine:claim`** heartbeat lock. That closes the cross-repo race: repos tick on separate timers and
+Phase B awaits the network (`listEligible`, `claimImpl`) between counting and `createRun`, so two
+repos could each read `1/2` and both claim. A repo that finds the lock held logs `machine claim lock
+held (another repo is claiming) — claiming next tick` and skips its claims this pass. Under the lock,
+`occupying >= cap` ⇒ `touchTick` + return; otherwise the remaining headroom caps `slots` alongside
+the repo cap and `max_claims_per_tick`. The manual `claimTicket` takes the same lock and throws
+`machine at capacity (n/N)` rather than overshoot (server up or down — it's a DB lock). Gate
+transitions log once per process (`machine at capacity (n/N)` / `low memory: <free> MB < <min> MB — not
+claiming` / `machine admission resumed — claiming again`). Admission only: Phase A has already run and
+nothing in flight is touched.
 **Phase B** walks belts in **priority order** and claims eligible work up to the cap — a belt marked
 `active: false` is skipped *before* its source is polled (no poll, no poll-window stamp, no claims),
 so an inactive belt is a zero-cost pause: it takes on no new work while its already-claimed runs keep
@@ -1484,6 +1501,11 @@ about to revert. It's driven two ways:
   `GITHUB_TOKEN` (optional, `github_issues` — falls back to the gh CLI's token). Secrets are
   strictly per-repo; there is no shared/global secrets file. *Where* work is polled from (the
   Atlassian site `base_url`, the GitHub `repo`) is per-repo config, not a secret.
+- **Host-local** — `~/.config/herdr-factory/machine.yml` (optional, `MachineConfigSchema` strict zod;
+  `machine.schema.json` is written next to `config.schema.json`): `max_active_workspaces` (machine-wide
+  cap on occupying runs across all repos) and `min_free_memory_mb` (claim floor). Deliberately outside
+  `repos/` so a config dir shared by git across hosts can gitignore it. Read by `buildDeps`; a hot
+  reload validates it first and refuses the whole reload when invalid (§7 *Machine gate*).
 - **Per-repo** — `~/.config/herdr-factory/repos/<name>/`:
   - `config.yml` — parsed with `yaml`, validated with `zod` → typed `Config`:
     - `repo` — `path` / `base_ref` / `github` (repo-global). `path` (and any source path) supports
@@ -2023,6 +2045,10 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   every nudge (step-done / bounce / ask-human / resume). `ask-human` in particular is a
   non-monotonic phase flip; unserialized it can be overwritten by a stale-snapshot reconcile,
   orphaning the question forever (the bug that motivated the lock).
+- **The machine cap's count and claims are one critical section** (`machine:claim` lock) whenever
+  `machine.yml` sets `max_active_workspaces` — for Phase B and the manual `claim` alike. The machine
+  gates only admit or refuse NEW claims; they never park, kill, or tear down running work. Absent
+  `machine.yml` takes no lock and runs no extra query.
 - **INV-10: one factory per source backend, unless the source's claim guard is enabled.** The local
   store is the claim arbiter; labels and statuses are projections, not locks. Several factories with
   separate DBs may share a backend only through `claim_guard` (§7 Phase B, *Claim ledger*): the

@@ -2192,7 +2192,7 @@ describe("belt routing (match predicates, first match wins)", () => {
   });
 });
 
-// machine.yml (INV-15): a host-local cap across EVERY repo in the shared DB + a free-memory gate.
+// machine.yml: a host-local cap across EVERY repo in the shared DB + a free-memory gate.
 describe("machine gate (Phase B)", () => {
   /** Two repos ("demo" + "other") ticking against ONE store, as one serve does. */
   function twoRepos() {
