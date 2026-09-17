@@ -1,3 +1,4 @@
+import { arbitrateClaim, releaseClaim } from "./claim-guard.ts";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
@@ -662,6 +663,19 @@ async function claimImpl(deps: Deps, belt: BeltRuntime, src: SourceRuntime, tick
       return;
     }
     throw e;
+  }
+  // Cross-host arbitration (INV-10), before anything references the row. Losing is not a failure: the
+  // item IS claimed, by another factory.
+  const winner = await arbitrateClaim(deps, src, run);
+  if (winner) {
+    deps.log("info", `${belt.name}/${ticket.key}: claimed elsewhere by ${winner.host} (run ${winner.runId}) — skipping`);
+    // Recorded once per distinct winner, not once per tick: a stale claim is re-seen every pass.
+    const last = deps.store.lastEventForKey(repo, ticket.key);
+    const detail = { host: winner.host, runId: winner.runId, source: src.name, belt: belt.name };
+    if (last?.type !== "claimed_elsewhere" || last.detail !== JSON.stringify(detail)) {
+      deps.store.recordEvent({ repo, ticketKey: ticket.key, type: "claimed_elsewhere", detail });
+    }
+    return;
   }
   deps.store.recordEvent({ runId: run.id, repo, ticketKey: ticket.key, type: "claimed", detail: { branch: worktreeName, worktreeName, source: src.name, belt: belt.name } });
   deps.log("info", `${belt.name}/${ticket.key}: claimed -> ${worktreeName}`);
@@ -2317,6 +2331,8 @@ async function teardownImpl(deps: Deps, run: Run, outcome: Outcome, src: SourceR
   }
 
   await removeRunWorktree(deps, run);
+  // Free the item for every factory sharing the source (no-op unless its claim guard is on).
+  if (src) await releaseClaim(deps, src, run);
 
   // Still-pending evidence publishes die with the worktree (their bytes lived in the evidence dir
   // just removed). The generic abandon below is what actually drops them — evidence_publish is not

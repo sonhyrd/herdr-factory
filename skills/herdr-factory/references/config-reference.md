@@ -98,6 +98,7 @@ limits                    { max_active_workspaces=3 , attention_renotify_seconds
                             tick_interval_seconds=60 , reconcile_concurrency=8 , max_claims_per_tick=10 ,
                             source_poll_interval_seconds=<unset> , layout_wait_seconds=600 }
 work_sources![]           { type! , name=<type> , poll_interval_seconds , max_active_workspaces=2 ,
+                            claim_guard { enabled=false , host=<hostname> , settle_ms=2000 } ,  # jira + github_issues only
                             <type>!: { … } }      # one wrapper block per type
 belt![]                   { name! , source! , steps![] , priority=100 , active=true , label ,
                             workspace_name , match , max_bounces , default_layout , layout_matching=[] ,
@@ -183,6 +184,7 @@ Present on every source type:
 | `name` | string trimmed min1 | no | **= `type`**; must be unique per repo |
 | `poll_interval_seconds` | int positive | no | `limits.source_poll_interval_seconds` → `limits.tick_interval_seconds` |
 | `max_active_workspaces` | int positive | no | **2** — per-source cap, summed across belts, under the repo ceiling |
+| `claim_guard` | object, strict | no | unset (off). **`jira` and `github_issues` only** — rejected on `local_markdown`/`sentry`. `enabled` bool **false**; `host` matching `^[A-Za-z0-9._-]+$` (error: ``claim_guard.host` may only contain letters, digits, '.', '_' and '-'``), default = the machine hostname with other chars folded to `-`; `settle_ms` int ≥ 0, **2000**. Lets several factories with separate DBs share the source — see [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard) |
 
 Plus exactly one required wrapper block naming the type. Full key tables, credentials, eligibility and
 write-backs are in [work-sources.md](./work-sources.md); the schema shape in one line each:

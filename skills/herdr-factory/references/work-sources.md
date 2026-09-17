@@ -52,6 +52,7 @@ work_sources:
 - **Missing list.** No `work_sources` ⇒ ``add a `work_sources` list — at least one source to pull work from (jira, github_issues, local_markdown, or sentry)``.
 - **Strictness asymmetry.** The inner blocks of `jira`, `github_issues` and `sentry` are strict — an unknown key is a load error. **`local_markdown`'s inner block is not strict**: unknown keys there are silently dropped. The *outer* source object is strict for all four.
 - **Polling vs the tick.** A source is polled every tick when `poll_interval_seconds <= limits.tick_interval_seconds`. When the interval is *larger*, the poll (and therefore every claim from that source) is skipped until the interval elapses, with a tolerance of `min(tick/2, 5)` seconds so a "5 min" cadence doesn't slip a whole tick on jitter. Between polls the source contributes zero eligible items — so its backlog drains at most `limits.max_claims_per_tick` (default 10) per **poll window**. The poll timestamp is stamped on the *attempt*, so a failing or paused source also backs off to its interval.
+- **`claim_guard`** (`jira`, `github_issues` only) — see [Several factories on one source](#several-factories-on-one-source-claim_guard). Off by default.
 - **`max_active_workspaces`** caps occupying runs for this source across all belts. A belt whose source is at its cap is skipped *before* polling: `belt <b>: source "<s>" at its concurrency cap (<n>) — skipping`.
 - **Env file** is strictly per-repo: `<configDir>/repos/<name>/env`, written chmod 600, where `<configDir>` is `$HERDR_FACTORY_CONFIG_DIR` or `~/.config/herdr-factory`. Format is `KEY=value` per line; `#` comments and blank lines are skipped; both sides are trimmed. There is **no quote stripping and no escapes** — `TOKEN="abc"` yields the value `"abc"` *with* the quotes. There is no global/shared secrets file.
 - **Missing or rejected credentials pause the source; they are never a startup error.** Descriptors read env vars unconditionally, so config load and startup always succeed. The first call then throws, and the reconciler:
@@ -497,3 +498,33 @@ work_sources:
     name: briefs
     local_markdown: { folder: ~/dev/work-items }
 ```
+
+## Several factories on one source (`claim_guard`)
+
+Without it, a source backend must be polled by **one** factory (INV-10): claims are arbitrated by the
+factory's local DB, so two factories on different machines watching one board both claim a new item —
+two worktrees, two agents, two PRs. Enable the guard on the source in **every** factory that shares it:
+
+```yaml
+work_sources:
+  - type: github_issues          # or jira; local_markdown / sentry reject the key
+    claim_guard:
+      enabled: true              # default false
+      host: contabo              # default: the hostname (chars outside [A-Za-z0-9._-] become '-'); unique per factory
+      settle_ms: 2000            # default 2000; wait between posting the claim and re-reading
+    github_issues: {}
+```
+
+The protocol, run right after the run row is inserted and before any worktree, agent, or
+status write: read the item's comments — if another factory's claim is already open, skip the item
+without posting anything; otherwise post `[herdr-factory claim id=<run> host=<host>]`, wait
+`settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
+the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
+posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
+(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release. A dead
+host's claim is **never** cleared automatically: free the item by posting its release comment by hand.
+
+- **Stuck item, log says `claimed elsewhere by <host> (run <id>) — skipping` every tick**, and that host is gone or never finished: post a comment `[herdr-factory release id=<id> host=<host>]` on the item. Nothing reaps it for you.
+- **A release failed to post** logs `could not post claim release (post "[herdr-factory release …]" by hand to free the item)` — do exactly that.
+- **Costs:** ~`settle_ms` per claim; claim + release comments on every item (two more per lost race). Jira has no compare-and-set, so the guard relies on monotonic comment ids; only the newest 100 Jira comments are read.
+- The markers carry the herdr marker, so ask-human reply polling never mistakes them for a human answer.

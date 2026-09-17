@@ -163,9 +163,10 @@ export class JiraClient {
     return this.postJson<JiraComment>(`/rest/api/3/issue/${key}/comment`, { body: adfDoc(text) });
   }
 
-  async listComments(key: string): Promise<JiraComment[]> {
+  /** The first 100 comments, oldest first — or the NEWEST 100 with `newestFirst` (the claim ledger). */
+  async listComments(key: string, newestFirst = false): Promise<JiraComment[]> {
     const data = await this.getJson<{ comments?: JiraComment[] }>(
-      `/rest/api/3/issue/${key}/comment?orderBy=created&maxResults=100`,
+      `/rest/api/3/issue/${key}/comment?orderBy=${newestFirst ? "-created" : "created"}&maxResults=100`,
     );
     return data.comments ?? [];
   }

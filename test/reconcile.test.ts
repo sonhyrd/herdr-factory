@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db/index.ts";
 import { Store } from "../src/db/store.ts";
-import { applyPendingFocus, bounceStep, claimTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
+import { applyPendingFocus, bounceStep, claimTicket, teardownTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
 import { applySignal } from "../src/core/signals.ts";
 import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type GitApi, type GitHubApi, type HerdrApi, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
@@ -3340,5 +3340,26 @@ describe("plugin watches — registerWatchEvaluator", () => {
     } finally {
       un();
     }
+  });
+});
+
+// The claim ledger's teardown half (core/claim-guard.ts has the protocol tests): a guarded source's
+// run posts its release when torn down, so another factory can claim the item later.
+describe("claim ledger — release at teardown", () => {
+  it("an aborted run posts its release marker; an unguarded source posts nothing", async () => {
+    const { deps, store, worktree, sources } = build();
+    const posted: [string, string][] = [];
+    sources[0]!.client.postClaimComment = async (key, body) => { posted.push([key, body]); };
+    sources[0]!.client.listClaimComments = async () => [];
+    const plain = seed(store, worktree, "K-CG0", "running", "fix");
+    await teardownTicket(deps, "K-CG0");
+    expect(posted).toEqual([]);
+
+    sources[0]!.claimGuard = { host: "mac", settleMs: 0 };
+    const run = seed(store, worktree, "K-CG1", "running", "fix");
+    await teardownTicket(deps, "K-CG1");
+    expect(store.getRun(run.id)!.phase).toBe("done");
+    expect(store.getRun(plain.id)!.phase).toBe("done");
+    expect(posted).toEqual([["K-CG1", `[herdr-factory release id=${run.id} host=mac]`]]);
   });
 });

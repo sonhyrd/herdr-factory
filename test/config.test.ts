@@ -341,6 +341,23 @@ describe("loadConfig — work sources + belts", () => {
       expect(config.sources.find((s) => s.type === "local_markdown")!.maxActiveWorkspaces).toBe(2);
     });
 
+    it("claim_guard: off by default; enabled resolves host (default hostname) + settle_ms; other source types reject it", () => {
+      setup(cfg(`${JIRA_SRC}${LM_SRC}`, SHIP_BELT));
+      expect(loadConfig("demo").config.sources.map((s) => s.claimGuard)).toEqual([undefined, undefined]);
+      const guarded = `  - type: jira
+    claim_guard: { enabled: true, host: contabo }
+    jira: { base_url: https://x.atlassian.net, project: RWR, board: 254 }
+`;
+      setup(cfg(`${guarded}${LM_SRC}`, SHIP_BELT));
+      expect(loadConfig("demo").config.sources[0]!.claimGuard).toEqual({ host: "contabo", settleMs: 2000 });
+      setup(cfg(guarded.replace("host: contabo", "settle_ms: 500"), SHIP_BELT));
+      expect(loadConfig("demo").config.sources[0]!.claimGuard).toMatchObject({ settleMs: 500, host: expect.stringMatching(/^[A-Za-z0-9._-]+$/) });
+      setup(cfg(guarded.replace("host: contabo", "host: 'bad host]'"), SHIP_BELT));
+      expect(() => loadConfig("demo")).toThrow(/claim_guard/);
+      setup(cfg(`${JIRA_SRC}${LM_SRC.replace("type: local_markdown", "type: local_markdown\n    claim_guard: { enabled: true }")}`, SHIP_BELT));
+      expect(() => loadConfig("demo")).toThrow();
+    });
+
     it("rejects a non-positive max_active_workspaces", () => {
       const bad = `  - type: jira
     max_active_workspaces: 0

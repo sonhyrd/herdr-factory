@@ -2,7 +2,7 @@ import { z } from "zod";
 import { JiraSource, type JiraSourceCfg } from "../../clients/jira-source.ts";
 import { JiraApiTokenAuth } from "../../auth/jira-provider.ts";
 import type { SourceDescriptor } from "../registry.ts";
-import { commonSourceFields } from "../common.ts";
+import { claimGuardField, commonSourceFields } from "../common.ts";
 
 // The Jira source's where-to-poll block. Pickup is by the Agile BOARD (the board's own saved filter),
 // narrowed by status + the belt's label. Auth is API-TOKEN ONLY — email + token from the per-repo env
@@ -63,7 +63,7 @@ function jiraStatusExtra(status: Record<string, unknown>): Record<string, string
 export const jiraDescriptor: SourceDescriptor<JiraSourceCfg> = {
   type: "jira",
   pickupLabel: { noun: "label" },
-  configSchema: z.object({ type: z.literal("jira"), ...commonSourceFields, jira: JiraBlockSchema }).strict(),
+  configSchema: z.object({ type: z.literal("jira"), ...commonSourceFields, ...claimGuardField, jira: JiraBlockSchema }).strict(),
   resolveConfig(parsed) {
     const s = (parsed as unknown as JiraParsed).jira;
     return {

@@ -76,6 +76,7 @@ export function effectRank(target: { to: WorkState; status?: string }): number {
 
 export type EventType =
   | "claimed"
+  | "claimed_elsewhere" // the claim guard found another factory's open claim first (no run row kept)
   | "transition"
   | "worktree_created"
   | "layout_applied" // the factory built a belt's herdr layout into a fresh worktree

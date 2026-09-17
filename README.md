@@ -573,7 +573,9 @@ overrides `limits.source_poll_interval_seconds` — handy for a rate-limited boa
 the tick), an optional `max_active_workspaces` (default **2** — the most **worked** workspaces this
 source may hold in flight at once, summed across every belt that pulls from it; belts are walked in
 priority order and claiming stops once a source hits its cap, so `limits.max_active_workspaces` still
-caps the repo total but no single source can monopolize it), and a type block:
+caps the repo total but no single source can monopolize it), an optional `claim_guard` (`jira` and
+`github_issues` only — see [Several factories on one source](#several-factories-on-one-source-claim_guard)),
+and a type block:
 
 - **`jira`** — `base_url`, `project`, a required `board` (the Agile board id, e.g. `254`), and a
   `status` map: `todo` (default `To Do`), `in_development` (default `In Progress`), `review` (default
@@ -643,6 +645,40 @@ caps the repo total but no single source can monopolize it), and a type block:
   leaves Sentry untouched. `materialize` writes the error's metadata + the latest event's
   stacktrace/breadcrumbs/request as `task.md` (raw payload in `issue.json`). Because Sentry rate-limits
   API polling, pair a `sentry` source with a higher `poll_interval_seconds`.
+
+#### Several factories on one source (`claim_guard`)
+
+By default a source must be polled by **one** factory: claiming is arbitrated by the factory's local
+database, so two factories (say one per machine) watching the same Jira board or GitHub repo would both
+claim a new item. Enable `claim_guard` on the source in **every** factory that shares it, and they
+arbitrate on the item's own comment thread instead — work flows to whichever host has free capacity,
+and adding a host means installing a factory with the same config:
+
+```yaml
+work_sources:
+  - type: jira
+    claim_guard: { enabled: true, host: contabo, settle_ms: 2000 }   # host defaults to the hostname
+    jira: { base_url: https://acme.atlassian.net, project: PROJ, board: 254 }
+```
+
+| key | default | |
+|---|---|---|
+| `enabled` | `false` | off ⇒ no comments, no delay — single-factory behaviour |
+| `host` | the machine hostname (unsafe chars → `-`) | letters, digits, `.`, `_`, `-`; must differ per factory |
+| `settle_ms` | `2000` | wait between posting a claim and re-reading the thread |
+
+The protocol, run right after the run row is inserted and before any worktree, agent, or
+status write: read the item's comments — if another factory's claim is already open, skip the item
+without posting anything; otherwise post `[herdr-factory claim id=<run> host=<host>]`, wait
+`settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
+the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
+posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
+(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release. A dead
+host's claim is **never** cleared automatically: free the item by posting its release comment by hand.
+
+Costs: a claim adds ~`settle_ms` and two visible comments per item (claim + release), plus two more per
+lost race. Jira has no compare-and-set, so the guard relies on comment ids being monotonic. Only the
+newest 100 Jira comments are read. `local_markdown` and `sentry` do not accept `claim_guard`.
 
 ### `belt` (≥ 1)
 

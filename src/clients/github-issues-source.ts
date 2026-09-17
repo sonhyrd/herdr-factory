@@ -434,6 +434,15 @@ export class GithubIssuesSource implements WorkSource {
     }
   }
 
+  // Claim ledger hooks (INV-10). Raw bodies: the marker IS the whole comment.
+  async postClaimComment(key: string, body: string): Promise<void> {
+    await this.gh.createComment(Number(key), body);
+  }
+
+  async listClaimComments(key: string): Promise<{ id: string; body: string }[]> {
+    return (await this.gh.listComments(Number(key))).map((c) => ({ id: String(c.id), body: c.body ?? "" }));
+  }
+
   async health(pickupLabels: string[] = []): Promise<void> {
     let repo: { has_issues?: boolean; permissions?: { push?: boolean } };
     try {

@@ -15,6 +15,7 @@ import { LocalMarkdownSource } from "../src/clients/local-markdown-source.ts";
 import { SentryClient } from "../src/clients/sentry.ts";
 import { SentrySource, type SentrySourceCfg } from "../src/clients/sentry-source.ts";
 import { bearsHerdrMarker, HERDR_MARKER, type WorkSource } from "../src/core/deps.ts";
+import { claimMarker, claimWinner, releaseMarker } from "../src/core/claim-guard.ts";
 import { instrumentObject } from "../src/telemetry/index.ts";
 import { descriptorFor } from "../src/sources/registry.ts";
 import type { SourceType, WorkState } from "../src/types.ts";
@@ -91,7 +92,7 @@ function jiraHarness(): ContractCtx {
     if (m[3] === "comment") {
       if (method === "POST") {
         const text = (JSON.parse(String(init?.body)) as { body: { content: { content: { text: string }[] }[] } }).body;
-        const id = `c${++commentSeq}`;
+        const id = `${10000 + ++commentSeq}`; // real Jira comment ids are numeric strings (the claim ledger sorts on them)
         const created = `2026-06-28T00:0${commentSeq}:00.000+0000`;
         issue.comments.push({ id, created, body: text });
         return json({ id, created }, 201);
@@ -122,7 +123,7 @@ function jiraHarness(): ContractCtx {
     backendCalls: () => calls,
     postExternalComment: (key, body) => {
       const issue = issues.get(key)!;
-      const id = `c${++commentSeq}`;
+      const id = `${10000 + ++commentSeq}`; // real Jira comment ids are numeric strings (the claim ledger sorts on them)
       issue.comments.push({ id, created: `2026-06-28T00:0${commentSeq}:00.000+0000`, author: { displayName: "Pat" }, body: adf(body) });
     },
     memDir: () => {
@@ -481,6 +482,21 @@ describe.each(HARNESSES.filter((h) => h.make().src.spec.replyChannel === "commen
       const reply = await ctx.src.pollHumanReply({ key, questionId: 3, externalId: q.externalId, externalCreatedAt: q.externalCreatedAt });
       expect(reply).not.toBeNull();
       expect(reply!.body).toContain("Go with option B.");
+    });
+
+    it("INV-10: claim ledger hooks (when implemented) round-trip markers with numeric server ids, invisible to reply polling", async () => {
+      const ctx = make();
+      if (!ctx.src.postClaimComment || !ctx.src.listClaimComments) return; // hooks are optional
+      const key = ctx.seedEligible();
+      const q = await ask(ctx.src, key);
+      await ctx.src.postClaimComment(key, claimMarker({ runId: 5, host: "a" }));
+      await ctx.src.postClaimComment(key, claimMarker({ runId: 9, host: "b" }));
+      const ledger = await ctx.src.listClaimComments(key);
+      expect(ledger.every((c) => /^\d+$/.test(c.id))).toBe(true);
+      expect(claimWinner(ledger)).toMatchObject({ runId: 5, host: "a" });
+      await ctx.src.postClaimComment(key, releaseMarker({ runId: 5, host: "a" }));
+      expect(claimWinner(await ctx.src.listClaimComments(key))).toMatchObject({ runId: 9, host: "b" });
+      expect(await ctx.src.pollHumanReply({ key, questionId: 3, externalId: q.externalId, externalCreatedAt: q.externalCreatedAt })).toBeNull();
     });
   },
 );

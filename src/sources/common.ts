@@ -22,3 +22,18 @@ export const commonSourceFields = {
   poll_interval_seconds: z.coerce.number().int().positive().optional(),
   max_active_workspaces: z.coerce.number().int().positive().default(2),
 };
+
+/** `claim_guard` — the cross-host claim ledger (INV-10, core/claim-guard.ts). Spread ONLY into the
+ *  descriptors of comment-bearing sources that implement the ledger hooks (jira, github_issues), so a
+ *  `claim_guard` on any other source type is rejected by its `.strict()` schema. Off by default. */
+export const claimGuardField = {
+  claim_guard: z
+    .object({
+      enabled: z.boolean().default(false),
+      // Embedded in the marker comment and re-parsed — token-safe charset only. Default: os.hostname().
+      host: z.string().trim().regex(/^[A-Za-z0-9._-]+$/, "`claim_guard.host` may only contain letters, digits, '.', '_' and '-'").optional(),
+      settle_ms: z.coerce.number().int().nonnegative().default(2000),
+    })
+    .strict()
+    .optional(),
+};

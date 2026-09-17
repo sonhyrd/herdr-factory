@@ -921,6 +921,20 @@ the try, like the global slot, so a claim failure still counts). Claiming stops 
 moment it hits its cap (checked *before* the source is polled, so an exhausted source isn't polled
 needlessly), so a busy high-priority source can't monopolize the repo-wide cap and starve the
 others — the global `limits.max_active_workspaces` stays the ceiling on total worked workspaces.
+**Claim ledger (INV-10, `core/claim-guard.ts`).** A source with `claim_guard.enabled` (jira,
+github_issues — the sources implementing the optional `postClaimComment`/`listClaimComments` hooks)
+arbitrates each claim ACROSS factories with separate DBs, inside `claimImpl` right after `createRun`
+and before the `claimed` event, the worktree, the agent, or any status write — so losing costs
+nothing. It reads the item's comments; an open claim by someone else ⇒ skip WITHOUT posting (a dead
+winner's claim is re-seen every tick, and re-posting would bury the ticket). Otherwise it posts
+`[herdr-factory claim id=<run> host=<host>]`, sleeps `settle_ms`, re-reads, and the open claim (no
+matching `[herdr-factory release id=<run> host=<host>]`) with the LOWEST server comment id wins. The
+loser posts its release, deletes its still-pristine `claiming` row (`deleteClaimingRun`), logs
+`claimed elsewhere by <host>`, and records a run-less `claimed_elsewhere` event (once per distinct
+winner); it is not a claim failure. A backend error releases (if it posted) and deletes the row, then
+throws — the next pass retries. `teardownImpl` posts the release (best-effort, loud on failure). A dead
+winner is FENCED, never reaped: only a human-posted release frees the item. Both markers carry
+`HERDR_MARKER`, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
 Each source's
 `listEligible` poll is **rate-gated by its `pollIntervalSeconds`** (the resolved per-source
 `poll_interval_seconds` ?? `limits.source_poll_interval_seconds` ?? `tick_interval_seconds`): the
@@ -2007,6 +2021,11 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   every nudge (step-done / bounce / ask-human / resume). `ask-human` in particular is a
   non-monotonic phase flip; unserialized it can be overwritten by a stale-snapshot reconcile,
   orphaning the question forever (the bug that motivated the lock).
+- **INV-10: one factory per source backend, unless the source's claim guard is enabled.** The local
+  store is the claim arbiter; labels and statuses are projections, not locks. Several factories with
+  separate DBs may share a backend only through `claim_guard` (§7 Phase B, *Claim ledger*): the
+  guard runs before any side effect of the claim, the lowest open claim comment id wins, and a dead
+  winner's claim is never cleared automatically (fence, never reap).
 - **At most one ACTIVE run per (repo, source, key) — enforced by the DB, not just checked.** Both
   claim paths are check-then-create with a network call between the dedup check and the insert
   (Phase B's `listEligible`, the manual claim's `describe()`), and the manual `claim` holds no
