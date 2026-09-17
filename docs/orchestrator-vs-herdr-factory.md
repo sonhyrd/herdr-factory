@@ -189,7 +189,7 @@ Order matters: each phase assumes the ones before it. Everything uses factory de
 6. **Non-login shells miss `~/.local/bin`:** Herdr servers started via `machine add` give panes a PATH without it, so the `rtk` hook failed. Fixed in `~/.bashrc` on contabo and cursor-5.
 
 ### Phase 3: several machines (issues on sonhyrd/herdr-factory)
-- [ ] **#3:** config repo for `repos/` with per-machine overlays; install and update from the fork (until then, self-update tracks upstream `main` and resets fork patches).
+- [ ] **#3 (rescoped 2026-09-17):** code already syncs natively — install from the fork, auto-update follows the clone's `origin` (the earlier note that self-update tracks upstream was wrong). Config: a private git clone at `~/.config/herdr-factory` on every host, `git pull --ff-only && herdr-factory reload`; per-repo `env` copied per host. Remaining: a docs recipe (in the #8 PR).
 - [ ] **#1:** claim ledger on the tracker, so several factories share one source.
 - [ ] **#2:** machine-wide worked-workspace cap + free-memory admission gate; slower poll on mac makes it the last resort.
 - [ ] **Install the factory on cursor-5 and mac** with the same config repo; caps local 4 / cursor 3 / mac 2 via #2.
