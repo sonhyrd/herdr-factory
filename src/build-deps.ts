@@ -68,6 +68,7 @@ export async function buildDeps(repoName: string): Promise<Deps> {
         client: instrumentObject(client, "source", sourceAttrs),
         pollIntervalSeconds: s.pollIntervalSeconds,
         maxActiveWorkspaces: s.maxActiveWorkspaces,
+        claimGuard: s.claimGuard,
         lastPolledAt: new Map<string, number>(),
       };
     });

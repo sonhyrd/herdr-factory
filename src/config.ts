@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, sep } from "node:path";
+import { hostname } from "node:os";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
@@ -1046,6 +1047,12 @@ export const RepoConfigSchema = z
     });
   });
 
+function resolveClaimGuard(g: { enabled: boolean; host?: string; settle_ms: number } | undefined): WorkSourceConfig["claimGuard"] {
+  if (!g?.enabled) return undefined;
+  // A hostname can carry characters the marker can't (rare); fold them to '-'.
+  return { host: g.host ?? hostname().replace(/[^A-Za-z0-9._-]/g, "-"), settleMs: g.settle_ms };
+}
+
 export type BeltType = "work_to_pull_request" | "custom";
 
 /** One configured work source: identity + its resolved type-specific block. `cfg` is opaque to
@@ -1060,6 +1067,8 @@ export interface WorkSourceConfig {
    *  summed across every belt that pulls from it. Phase B stops claiming from the source once it hits
    *  this; the repo-wide `limits.maxActiveWorkspaces` still caps the total. Defaults to 2. */
   maxActiveWorkspaces: number;
+  /** The cross-host claim ledger (INV-10); undefined ⇒ disabled. Only jira/github_issues accept it. */
+  claimGuard?: { host: string; settleMs: number };
   cfg: unknown;
 }
 
@@ -1465,6 +1474,7 @@ export function loadConfig(repoName: string): Loaded {
     type: s.type,
     pollIntervalSeconds: (s.poll_interval_seconds as number | undefined) ?? defaultPollInterval,
     maxActiveWorkspaces: (s.max_active_workspaces as number | undefined) ?? 2,
+    claimGuard: resolveClaimGuard((s as { claim_guard?: { enabled: boolean; host?: string; settle_ms: number } }).claim_guard),
     cfg: descriptorFor(s.type).resolveConfig(s),
   }));
   const sourceTypeByName = new Map(sources.map((s) => [s.name, s.type]));

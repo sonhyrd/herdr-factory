@@ -473,6 +473,12 @@ export class Store {
     });
   }
 
+  /** Undo a claim that lost the cross-host claim ledger (core/claim-guard.ts). Only a pristine
+   *  `claiming` row is deletable — the guard runs before any event, step, or intent references it. */
+  deleteClaimingRun(id: number): void {
+    this.db.prepare("DELETE FROM runs WHERE id = ? AND phase = 'claiming'").run(id);
+  }
+
   createRun(input: {
     repo: string;
     workSource: string;
@@ -683,6 +689,14 @@ export class Store {
   }
 
   /** Events for a ticket's most recent run (the timeline). */
+  /** The newest event for a key regardless of run (incl. run-less events like `claimed_elsewhere`).
+   *  ponytail: unindexed on ticket_key (reverse PK scan); add an events(repo, ticket_key) index if it shows in a profile. */
+  lastEventForKey(repo: string, ticketKey: string): { type: string; detail: string | null } | undefined {
+    return this.db.prepare("SELECT type, detail FROM events WHERE repo = ? AND ticket_key = ? ORDER BY id DESC LIMIT 1").get(repo, ticketKey) as
+      | { type: string; detail: string | null }
+      | undefined;
+  }
+
   timeline(repo: string, ticketKey: string): { ts: number; type: string; detail: string | null }[] {
     const r = this.db
       .prepare("SELECT id FROM runs WHERE repo = ? AND ticket_key = ? ORDER BY id DESC LIMIT 1")

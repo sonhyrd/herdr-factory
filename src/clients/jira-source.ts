@@ -282,6 +282,15 @@ export class JiraSource implements WorkSource {
     return null;
   }
 
+  // Claim ledger hooks (INV-10). Raw bodies: the marker IS the whole comment.
+  async postClaimComment(key: string, body: string): Promise<void> {
+    await this.jira.addComment(key, body);
+  }
+
+  async listClaimComments(key: string): Promise<{ id: string; body: string }[]> {
+    return (await this.jira.listComments(key, true)).map((c) => ({ id: c.id, body: commentText(c) }));
+  }
+
   async health(pickupLabels: string[] = []): Promise<void> {
     // Probe the pickup query for each belt's label (auth + project + JQL reachability); with none, a
     // label-less probe still exercises the connection. Jira belts always carry a label in practice.

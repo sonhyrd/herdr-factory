@@ -194,10 +194,12 @@ export function bearsHerdrMarker(body: string): boolean {
  * INV-9  The configured source NAME (name ?? type, unique per repo) is the durable FK on
  *        runs/intents/questions. Renames strand in-flight runs — treat names as append-only. The
  *        default jira source keeps the name "jira" (db/migrate.ts v6 backfill invariant).
- * INV-10 SINGLE FACTORY PER SOURCE BACKEND: claiming is arbitrated by the local store under the
- *        tick lock; source-side markers (labels, statuses) are PROJECTIONS of the claim, not
- *        locks. Two factories with separate DBs on one backend can double-claim — a documented
- *        deployment constraint, not something implementations can fix.
+ * INV-10 SINGLE FACTORY PER SOURCE BACKEND unless the source's claim guard is enabled: claiming is
+ *        arbitrated by the local store under the tick lock; source-side markers (labels, statuses)
+ *        are PROJECTIONS of the claim, not locks. Two factories with separate DBs on one backend
+ *        double-claim — UNLESS the source implements postClaimComment/listClaimComments and the
+ *        config enables `claim_guard`, in which case core/claim-guard.ts arbitrates on the item's
+ *        comment ledger (lowest open claim comment id wins; a dead winner is fenced, never reaped).
  * INV-11 describe MAY accept alternate identifiers but MUST return the canonical key — the engine
  *        re-checks active-run dedup against the RETURNED key before claiming.
  * INV-13 CUSTOM STATUSES map at the SOURCE LAYER. A belt effect may target a source-native status
@@ -270,6 +272,12 @@ export interface WorkSource {
    *  of every belt feeding this source (deduped by the caller); a label-driven source checks each
    *  one is usable, a source with no label concept ignores them. */
   health(pickupLabels?: string[]): Promise<void>;
+  /** OPTIONAL claim-ledger hooks (INV-10), implemented only by comment-bearing sources. Post a raw
+   *  marker comment (the body already carries HERDR_MARKER, so reply polling ignores it — INV-6). */
+  postClaimComment?(key: string, body: string): Promise<void>;
+  /** The item's recent comments with their SERVER-ASSIGNED numeric ids (the ledger's tie-break).
+   *  Must include the newest comments; ordering is irrelevant. */
+  listClaimComments?(key: string): Promise<{ id: string; body: string }[]>;
 }
 
 /** A configured source's identity + its live client. Resolved from `run.workSource` (or a belt's
@@ -289,6 +297,8 @@ export interface SourceRuntime {
    *  a fresh process (one-shot `tick`) starts empty and polls immediately (harmless). Read/written
    *  by the reconciler's Phase B poll gate. */
   lastPolledAt: Map<string, number>;
+  /** The resolved claim guard (INV-10); undefined ⇒ disabled, claiming is local-store only. */
+  claimGuard?: { host: string; settleMs: number };
 }
 
 /** A configured belt's resolved config + its loaded `match` predicate (undefined = accept all from
