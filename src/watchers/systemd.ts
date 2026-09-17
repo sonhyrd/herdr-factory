@@ -65,7 +65,9 @@ function envLines(): string {
   return lines.join("\n");
 }
 
-function serviceUnit(): string {
+/** KillMode=process: ensure-up spawns a detached `serve` that is still in this oneshot's cgroup, so
+ *  the default KillMode=control-group kills it the moment ensure-up exits (issue #8). */
+export function serviceUnit(): string {
   const node = resolvedNodePath(process.execPath);
   const env = envLines();
   return `[Unit]
@@ -75,6 +77,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+KillMode=process
 WorkingDirectory=${PKG_ROOT}
 ${envAssign("PATH", process.env.PATH ?? "")}
 ${envAssign("HOME", homedir())}
