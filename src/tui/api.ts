@@ -58,6 +58,8 @@ export interface ActiveRun {
 export interface RepoStatus {
   repo: string;
   limits: { maxActiveWorkspaces: number };
+  /** Host-local machine.yml summary (cap occupancy, memory, active gate); absent when unset. */
+  machine?: string;
   /** Per-source auth light (same vocab as evidenceSso): "down" = the source can't authenticate (its
    *  claims + write-backs are paused, auto-resuming on re-auth); "na" = the source needs no auth. */
   sources: { name: string; type: string; auth?: { state: "ok" | "down" | "na"; detail?: string; account?: string } }[];

@@ -7,6 +7,7 @@ import { serve as nodeServe } from "@hono/node-server";
 import * as Effect from "effect/Effect";
 import { listConfiguredRepos, serverInfoPath, serverLogsDir, serverPort, writeConfigSchema } from "../config.ts";
 import { buildDeps } from "../build-deps.ts";
+import { loadMachineConfig } from "../machine.ts";
 import { isTickStale, pingHealth, readServerInfo } from "./client.ts";
 import { createApp, type HealthInfo, type RepoRuntime, type ServerContext } from "./app.ts";
 import { reconcileRepo, withTickLock } from "../core/reconcile.ts";
@@ -44,6 +45,18 @@ async function loadRepos(): Promise<{ name: string; error: string }[]> {
       Effect.tryPromise({
         try: async () => {
           const failures: { name: string; error: string }[] = [];
+          // machine.yml is shared by every repo, so an invalid edit would fail ALL of them. On a hot
+          // reload refuse it whole and keep the running runtimes (their timers are cleared here and
+          // restarted by the caller's startLoops); on a cold start let each buildDeps fail loudly.
+          if (repos.size > 0) {
+            try {
+              loadMachineConfig();
+            } catch (e) {
+              slog("warn", `reload refused — ${msg(e)}`);
+              for (const rt of repos.values()) if (rt.timer) clearInterval(rt.timer);
+              return [{ name: "machine.yml", error: `not reloaded: ${msg(e)}` }];
+            }
+          }
           // Snapshot the currently-running runtimes BEFORE clearing, so a hot reload can diff each
           // repo's belt set (old → new) and apply the belt-removal guard/cleanup. On a COLD start
           // `prev` is empty ⇒ no diff ⇒ lenient (a belt dropped by a hand-edit before boot just

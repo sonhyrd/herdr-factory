@@ -434,7 +434,7 @@ export function createDashboard(
       const problems = st?.problems ?? [];
       specs.push({
         kind: "text",
-        content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}`,
+        content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}${st?.machine ? `   ${st.machine}` : ""}`,
         fg: theme.accent,
         target: {
           repo: name,

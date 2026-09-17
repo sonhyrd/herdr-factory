@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { availableMemoryMb, loadMachineConfig, machineConfigPath, machineGate } from "../src/machine.ts";
+import { availableMemoryMb, describeMachine, loadMachineConfig, machineConfigPath, machineGate } from "../src/machine.ts";
 
 const dirs: string[] = [];
 const saved = process.env.HERDR_FACTORY_CONFIG_DIR;
@@ -50,6 +50,8 @@ describe("machine.yml", () => {
     expect(machineGate(m, 2, () => 900)).toEqual({ kind: "capacity", message: "machine at capacity (2/2)" });
     expect(machineGate(m, 1, () => 900)).toBeNull();
     expect(machineGate({}, 99, () => 0)).toBeNull();
+    expect(describeMachine({}, 3, () => 0)).toBeNull();
+    expect(describeMachine(m, 2, () => 900)?.line).toBe("machine: cap 2/2 working across all repos · memory 900 MB available (floor 500 MB) — machine at capacity (2/2)");
   });
 
   it("reads a positive available-memory figure on this host", () => {

@@ -11,6 +11,7 @@ import { run } from "./clients/exec.ts";
 import { assertMainCheckout, globalDbPath, isManagedNode } from "./config.ts";
 import { descriptorFor } from "./sources/registry.ts";
 import { buildDeps } from "./build-deps.ts";
+import { availableMemoryMb, loadMachineConfig, machineConfigPath } from "./machine.ts";
 import type { Deps } from "./core/deps.ts";
 import { pingHealth, readServerInfo } from "./server/client.ts";
 import * as service from "./watchers/service.ts";
@@ -147,6 +148,14 @@ export async function baseGroups(deep = false): Promise<DoctorGroup[]> {
     attempt("server", async () => {
       if (!running) throw new Error(info ? "registered but not responding" : "not running (run `herdr-factory start`)");
       return `running on :${info!.port} (v${info!.version})`;
+    }),
+    attempt("machine limits (machine.yml)", async () => {
+      const m = loadMachineConfig(); // throws the readable validation error ⇒ ✗
+      const parts = [
+        m.maxActiveWorkspaces !== undefined && `cap ${m.maxActiveWorkspaces} working across all repos`,
+        m.minFreeMemoryMb !== undefined && `claims pause below ${m.minFreeMemoryMb} MB available (now ${availableMemoryMb()} MB)`,
+      ].filter(Boolean);
+      return parts.length ? parts.join(" · ") : `none — per-repo caps only (${machineConfigPath()} absent or empty)`;
     }),
     attempt("database", async () => {
       const p = globalDbPath();

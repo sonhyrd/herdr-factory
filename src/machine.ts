@@ -84,6 +84,18 @@ export function machineGate(machine: MachineConfig, occupying: number, readMb: (
   return memoryGate(machine, readMb) ?? capacityGate(machine, occupying);
 }
 
+/** One-line machine summary for status / doctor / the TUI, or null when machine.yml sets nothing.
+ *  `occupying` undefined ⇒ occupancy unknown (doctor without a DB). */
+export function describeMachine(machine: MachineConfig, occupying: number | undefined, readMb: () => number): { line: string; gate: MachineGate | null } | null {
+  if (machine.maxActiveWorkspaces === undefined && machine.minFreeMemoryMb === undefined) return null;
+  const free = machine.minFreeMemoryMb === undefined ? undefined : readMb();
+  const parts: string[] = [];
+  if (machine.maxActiveWorkspaces !== undefined) parts.push(`cap ${occupying ?? "?"}/${machine.maxActiveWorkspaces} working across all repos`);
+  if (free !== undefined) parts.push(`memory ${free} MB available (floor ${machine.minFreeMemoryMb} MB)`);
+  const gate = machineGate(machine, occupying ?? 0, () => free ?? Infinity);
+  return { line: `machine: ${parts.join(" · ")}${gate ? ` — ${gate.message}` : ""}`, gate };
+}
+
 // Log once per state change, process-wide (several repos' ticks share one serve process).
 let lastGateKind: MachineGate["kind"] | null = null;
 
