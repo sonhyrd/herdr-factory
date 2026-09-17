@@ -565,6 +565,29 @@ is pure data (`herdr-factory reload` picks it up without a restart).
 | `max_claims_per_tick`        | 10      | new-claim admission per tick (cold-start smoothing)             |
 | `layout_wait_seconds`        | 600     | wait window for a configured pane; an expired window auto-retries ×3, then attention |
 
+### Machine limits — `machine.yml` (host-local, optional)
+
+Every `limits` key above is **per repo**. To bound a whole host, create `~/.config/herdr-factory/machine.yml`
+(next to `repos/`, not inside one). It is **host-local**: when the config dir is a git repo shared by several
+hosts, add `machine.yml` to that repo's `.gitignore` so each host keeps its own.
+
+```yaml
+# yaml-language-server: $schema=./machine.schema.json
+max_active_workspaces: 2   # worked runs across ALL repos on this host (same count as the per-repo cap)
+min_free_memory_mb: 4096   # don't claim while available memory is below this
+```
+
+| Key | Default | Meaning |
+| --- | ------- | ------- |
+| `max_active_workspaces` | unset (no machine cap) | ceiling on **worked** runs across every repo this host serves; parked + idle PR-watch runs hold no slot. Checked before each repo's claims under a machine-wide lock; a manual `claim` honours it too |
+| `min_free_memory_mb` | unset (no memory gate) | skip claiming while available memory is below it — Linux `MemAvailable`, macOS `vm_stat` free + inactive + speculative pages, `os.freemem()` elsewhere |
+
+Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
+`machine at capacity (n/N)` / `low memory: <free> MB < <min> MB — not claiming` once when a gate engages
+(and `machine admission resumed — claiming again` when it clears); `status`, `doctor`, and the dashboard's
+repo row show the limits in effect. Unknown keys or bad values are rejected; `herdr-factory reload` re-reads
+the file (an invalid edit is refused and the running limits stay). Absent file = unchanged behaviour.
+
 ### `work_sources` (≥ 1)
 
 Each entry: a `type`, an optional `name` (default = the type; must be unique per repo — belts

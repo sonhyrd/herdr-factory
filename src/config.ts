@@ -24,6 +24,7 @@ import { HEARTBEAT_GUARD, READ_ONLY_GUARD, STEP_DESCRIPTORS, stepDescriptorFor, 
 import { productCapabilityFor } from "./products/registry.ts";
 import { SOURCE_PRODUCTS, productActiveFor, validatePromptBody } from "./prompts/contract.ts";
 import { CONFIG_PACK_SUBDIR, SHIPPED_PROMPTS_DIR, resolvePromptFile } from "./prompt-packs.ts";
+import { machineJsonSchema } from "./machine.ts";
 import { configDir, listConfiguredRepos, repoConfigDir, serverInfoPath, stateRoot } from "./config-paths.ts";
 
 // SOURCE_PRODUCTS + the dataflow-gating helpers live in the leaf prompt-contract module (so the
@@ -1421,6 +1422,8 @@ export function writeConfigSchema(): string {
   const path = configSchemaPath();
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(configJsonSchema(), null, 2)}\n`);
+  // Its host-local sibling: machine.yml's modeline is `# yaml-language-server: $schema=./machine.schema.json`.
+  writeFileSync(join(dirname(path), "machine.schema.json"), `${JSON.stringify(machineJsonSchema(), null, 2)}\n`);
   return path;
 }
 

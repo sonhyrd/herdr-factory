@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, type Config } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { Store } from "./db/store.ts";
+import { availableMemoryMb, loadMachineConfig } from "./machine.ts";
 import { systemClock } from "./types.ts";
 import type { BeltMatch } from "./types.ts";
 import { HerdrClient } from "./clients/herdr.ts";
@@ -95,6 +96,8 @@ export async function buildDeps(repoName: string): Promise<Deps> {
       uid: () => randomBytes(3).toString("hex"), // 6 hex chars — unique per claim, ample for branch suffixes
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       rmrf: (p) => rm(p, { recursive: true, force: true }),
+      machine: loadMachineConfig(),
+      availableMemoryMb,
     };
   });
 }

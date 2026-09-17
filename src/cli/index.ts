@@ -15,6 +15,7 @@ import { initRepo } from "../init.ts";
 import { afterDoctorHint, afterInstallHint, afterStartHint } from "../onboarding.ts";
 import { systemClock, type Run, type SourceType } from "../types.ts";
 import type { Deps } from "../core/deps.ts";
+import { availableMemoryMb, describeMachine } from "../machine.ts";
 import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/kinds/evidence-publish.ts";
 import { RETRY_INTERVAL_SECONDS } from "../schedule.ts";
@@ -311,6 +312,8 @@ program
         `Belts (priority order): ${c.belts.map((b) => `${b.name}(${b.beltType}, src:${b.source}, p${b.priority}${b.active ? "" : ", INACTIVE"})`).join(" · ")}`,
       );
       console.log(`Runs: ${active.length} running (cap ${c.limits.maxActiveWorkspaces}) · ${finished.length} finished`);
+      const machine = describeMachine(deps.machine ?? {}, deps.store.countOccupyingAll(), availableMemoryMb);
+      if (machine) console.log(machine.line);
       console.log("");
       console.log(`  ACTIVE (${active.length})`);
       if (active.length === 0) console.log("    (none in flight)");
@@ -733,6 +736,8 @@ program
         const last = deps.store.latestRunForTicket(repo, key);
         if (!last) {
           console.log(`${key}: no run recorded — \`eligible\` lists what is claimable, \`claim ${key}\` starts one`);
+          const gate = describeMachine(deps.machine ?? {}, deps.store.countOccupyingAll(), availableMemoryMb)?.gate;
+          if (gate) console.log(`note: this host is not claiming new work right now — ${gate.message} (machine.yml)`);
         } else {
           const when = last.endedAt ? `ended ${fmtDur(deps.now() - last.endedAt)} ago (${last.outcome ?? last.phase})` : `is in phase ${last.phase}`;
           console.log(`${key}: no active run — the newest run #${last.id} ${when}.`);
@@ -966,7 +971,7 @@ program
 
 program
   .command("reload")
-  .description("hot-reload config: the running server re-reads every repo's config + re-discovers repos (no restart)")
+  .description("hot-reload config: the running server re-reads machine.yml + every repo's config + re-discovers repos (no restart)")
   .action(cliAction("reload", async () => {
     try {
       const data = await serverFetch("POST", "/reload") as { repos?: string[]; failures?: { name: string; error: string }[] };

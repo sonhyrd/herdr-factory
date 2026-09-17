@@ -10,6 +10,7 @@ import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type GitApi, type GitHubApi, type HerdrApi, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import { SourceUnauthenticatedError } from "../src/auth/errors.ts";
 import { getAuthFailure, resetAuthGate } from "../src/auth/gate.ts";
+import { resetMachineGateLog } from "../src/machine.ts";
 import type { Config, StepConfig } from "../src/config.ts";
 import { BUDGET_GUARD, HEARTBEAT_GUARD, LAYOUT_WAIT_GUARD, READ_ONLY_GUARD } from "../src/steps/guards.ts";
 import { applyWatchRebase, registerWatchEvaluator } from "../src/core/watches.ts";
@@ -22,6 +23,7 @@ afterEach(() => {
   for (const t of tmps) rmSync(t, { recursive: true, force: true });
   tmps.length = 0;
   resetAuthGate(); // the gate Map is process-global (keyed by repo "demo") — don't leak across tests
+  resetMachineGateLog(); // same for the machine gate's log-once state
 });
 
 // PR template for the fakes: `isDraft` is optional here (most tests don't care) and normalized to
@@ -2187,6 +2189,112 @@ describe("belt routing (match predicates, first match wins)", () => {
     await reconcileRepo(deps);
     expect(store.activeRunForTicket("demo", "jira", "K-1")).toBeUndefined();
     expect(store.countActive("demo")).toBe(0);
+  });
+});
+
+// machine.yml: a host-local cap across EVERY repo in the shared DB + a free-memory gate.
+describe("machine gate (Phase B)", () => {
+  /** Two repos ("demo" + "other") ticking against ONE store, as one serve does. */
+  function twoRepos() {
+    const a = build();
+    const b = build();
+    b.deps.store = a.store;
+    b.deps.config = { ...b.deps.config, repoName: "other" };
+    return { a, b, store: a.store };
+  }
+  const logsOf = (deps: Deps): string[] => {
+    const lines: string[] = [];
+    deps.log = (_lvl, m) => void lines.push(m);
+    return lines;
+  };
+
+  it("absent machine.yml is the old path: no machine count, no memory read", async () => {
+    const { deps, store, state } = build();
+    let reads = 0;
+    deps.availableMemoryMb = () => (reads++, 0);
+    state.eligible = [ticket("K-1"), ticket("K-2")];
+    await reconcileRepo(deps);
+    expect(store.countActive("demo")).toBe(2);
+    expect(reads).toBe(0);
+    expect(store.acquireLock("machine:claim", "probe", 60)).toBe(true); // never taken/left behind
+  });
+
+  it("caps occupying runs across repos, logging the capacity state once", async () => {
+    const { a, b, store } = twoRepos();
+    a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 2 };
+    a.state.eligible = [ticket("A-1"), ticket("A-2"), ticket("A-3")];
+    b.state.eligible = [ticket("B-1")];
+    const logs = logsOf(b.deps);
+    await reconcileRepo(a.deps);
+    expect(store.countActive("demo")).toBe(2); // repo cap 3, machine headroom 2
+    await reconcileRepo(b.deps);
+    await reconcileRepo(b.deps);
+    expect(store.countActive("other")).toBe(0);
+    expect(logs.filter((l) => l === "machine at capacity (2/2)")).toHaveLength(1);
+  });
+
+  it("parked runs hold no machine slot", async () => {
+    const { a, b, store } = twoRepos();
+    a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 1 };
+    seed(store, a.worktree, "A-1", "attention", "fix");
+    seed(store, a.worktree, "A-2", "waiting_for_human", "fix");
+    b.state.eligible = [ticket("B-1")];
+    await reconcileRepo(b.deps);
+    expect(store.countActive("other")).toBe(1);
+  });
+
+  it("overlapping ticks of two repos never exceed the machine cap (the count+claim race)", async () => {
+    const { a, b, store } = twoRepos();
+    a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 1 };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // Both repos stall INSIDE Phase B (between the machine count and createRun) — the window where,
+    // unserialized, each would read 0/1 and claim.
+    for (const { sources } of [a, b]) {
+      const client = sources[0]!.client;
+      const list = client.listEligible.bind(client);
+      sources[0]!.client = { ...client, listEligible: async (l) => { await gate; return list(l); } };
+    }
+    a.state.eligible = [ticket("A-1")];
+    b.state.eligible = [ticket("B-1")];
+    const ticks = [reconcileRepo(a.deps), reconcileRepo(b.deps)];
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    await Promise.all(ticks);
+    expect(store.countOccupyingAll()).toBe(1);
+    await Promise.all([reconcileRepo(a.deps), reconcileRepo(b.deps)]); // and still 1 on the next ticks
+    expect(store.countOccupyingAll()).toBe(1);
+  });
+
+  it("low memory skips claims but leaves running work alone; claims resume above the floor", async () => {
+    const { deps, store, state, worktree } = build();
+    let free = 100;
+    deps.machine = { minFreeMemoryMb: 500 };
+    deps.availableMemoryMb = () => free;
+    const logs = logsOf(deps);
+    const running = seed(store, worktree, "K-0", "running", "fix");
+    state.eligible = [ticket("K-1")];
+    await reconcileRepo(deps);
+    await reconcileRepo(deps);
+    expect(store.activeRunForTicket("demo", "jira", "K-1")).toBeUndefined();
+    expect(store.getRun(running.id)!.endedAt).toBeNull();
+    expect(store.getRun(running.id)!.phase).toBe("running");
+    expect(logs.filter((l) => l === "low memory: 100 MB < 500 MB — not claiming")).toHaveLength(1);
+    free = 1000;
+    await reconcileRepo(deps);
+    expect(store.activeRunForTicket("demo", "jira", "K-1")).toBeTruthy();
+    expect(logs).toContain("machine admission resumed — claiming again");
+  });
+
+  it("a manual claim respects the machine cap", async () => {
+    const { a, b, store } = twoRepos();
+    a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 1 };
+    seed(store, a.worktree, "A-1", "running", "fix");
+    await expect(claimTicket(b.deps, "ship", "B-1")).rejects.toThrow(/machine at capacity \(1\/1\)/);
+    expect(store.countActive("other")).toBe(0);
+    b.deps.machine = { maxActiveWorkspaces: 2 };
+    await claimTicket(b.deps, "ship", "B-1");
+    expect(store.countActive("other")).toBe(1);
   });
 });
 

@@ -30,7 +30,8 @@ tokens → [prompts.md](./prompts.md).
 | prompt pack | `<repoDir>/prompts/<slug>.md` or `<repoDir>/prompts/<sourceType>/<slug>.md` — overrides the shipped base prompt for that step primitive |
 | a step's `prompt_file` (`prompt_file_source: config`) | resolved relative to `<repoDir>`, or absolute |
 | a belt's `match` predicate | a `.ts` file relative to `<repoDir>` (or absolute), `export default (ctx) => boolean` |
-| editor JSON Schema | `<configRoot>/config.schema.json` (two levels up from the config.yml) |
+| editor JSON Schema | `<configRoot>/config.schema.json` (two levels up from the config.yml); `<configRoot>/machine.schema.json` for machine.yml |
+| host-local machine limits | `<configRoot>/machine.yml` — optional, **not** per repo; gitignore it when the config dir is shared by git across hosts. See §3.14 |
 | state (not config) | `$HERDR_FACTORY_STATE_ROOT` else `~/.local/state/herdr-factory`; one global db at `<state>/herdr-factory.db`, per-repo logs at `<state>/<repoName>/logs` |
 
 **Repo name = folder name.** `herdr-factory --repo <name>` and every belt/run in the db key off the
@@ -398,6 +399,23 @@ own process detection only).
 
 This resolution drives the panes the factory **spawns**. A LAYOUT pane names its own agent (`agent:`
 kind + `agent_args`), so the layout owns the harness for the panes it builds.
+
+---
+
+### 3.14 `machine.yml` (host-local, optional — `src/machine.ts`)
+
+A separate file at `<configRoot>/machine.yml`, strict (unknown keys rejected). Absent file, empty file,
+or absent key = no machine gate (byte-identical to not having the feature).
+
+| key | constraint | default | meaning |
+|---|---|---|---|
+| `max_active_workspaces` | int ≥ 0 | unset | Ceiling on **occupying** runs across ALL repos in the shared DB (same posture as the repo cap: parked / `waiting_for_human` / idle PR-watch hold no slot). `0` ⇒ this host claims nothing new. Also enforced on manual `claim` |
+| `min_free_memory_mb` | int ≥ 0 | unset | Skip Phase B claims while available memory is below it. Linux `MemAvailable`; macOS `vm_stat` free + inactive + speculative; else `os.freemem()` |
+
+Errors: `invalid machine config (<path>):\n  <key>: <zod message>` — from `doctor` (row `machine limits
+(machine.yml)` ✗), every `--repo` command, and `serve` cold start (every repo fails to load). A hot
+`reload` with an invalid file is refused whole (`⚠ machine.yml: not reloaded: …`) and the running limits
+stay. `reload` otherwise picks up edits.
 
 ---
 

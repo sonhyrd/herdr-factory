@@ -14,6 +14,7 @@ import { VERSION } from "../version.ts";
 import { withExtractedTelemetryContext } from "../telemetry/index.ts";
 import { annotateCurrentSpan, recordHttpServerDurationEffect, withHttpServerSpan } from "../telemetry/effect.ts";
 import { runEffect } from "../runtime/effect.ts";
+import { availableMemoryMb, describeMachine } from "../machine.ts";
 import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLock, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { runObligations } from "../core/obligations.ts";
 import { intentKindFor } from "../intents/registry.ts";
@@ -227,6 +228,11 @@ function repoProblems(rt: RepoRuntime, active: readonly { phase: string; ticketK
 /** The structured status payload exposed for API clients. Quick mode omits auth/AWS probes and live
  *  pane inspection for latency-sensitive dashboard refreshes — `problems` is recorded state, read,
  *  never re-checked. */
+function machineLine(rt: RepoRuntime): string | undefined {
+  if (!rt.deps.machine) return undefined; // absent machine.yml: no extra query on the 3 s poll
+  return describeMachine(rt.deps.machine, rt.deps.store.countOccupyingAll(), rt.deps.availableMemoryMb ?? availableMemoryMb)?.line;
+}
+
 async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics = false) {
   const cfg = rt.deps.config;
   const active = rt.deps.store.activeRuns(cfg.repoName);
@@ -301,6 +307,8 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
     belts: await belts,
     active: await activeRuns,
     problems: repoProblems(rt, active),
+    // The host-local machine.yml summary (absent when unset) — the dashboard appends it to the repo row.
+    machine: machineLine(rt),
     finished: finished.map((r) => ({
       id: r.id,
       ticketKey: r.ticketKey,

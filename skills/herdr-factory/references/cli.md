@@ -79,10 +79,10 @@ this command needs a repo: herdr-factory --repo <name> <command>
 
 | command | R | route | prints |
 |---|---|---|---|
-| `status` | yes | in-process DB + one `/health` ping | header, ACTIVE table, FINISHED table, server + supervisor lines (§6 anatomy) |
+| `status` | yes | in-process DB + one `/health` ping | header, ACTIVE table, FINISHED table, server + supervisor lines (§6 anatomy); with a `machine.yml`, a `machine: cap n/N working across all repos · memory <free> MB available (floor <min> MB)[ — <active gate>]` line after `Runs:` |
 | `runs [--all]` | yes | in-process DB | one line per run, no header. `--all` = last 100 by `created_at DESC`; default = active only (`ended_at IS NULL`) |
 | `timeline <key>` | yes | in-process DB | events of the ticket's **most recent run only**, `<ISO ts>  <type>  <detail JSON>` |
-| `explain <key> [--source <n>]` | yes | in-process DB + one `/health` ping | the plain-language rendering of the obligations view (§6 anatomy): the run's phase story or park reason, every pending retry with its next attempt time, armed clocks, bounce counters, and ready-made next commands |
+| `explain <key> [--source <n>]` | yes | in-process DB + one `/health` ping | the plain-language rendering of the obligations view (§6 anatomy): the run's phase story or park reason, every pending retry with its next attempt time, armed clocks, bounce counters, and ready-made next commands. A key with no run recorded also prints `note: this host is not claiming new work right now — <gate> (machine.yml)` while a machine gate is engaged |
 | `triage <key> [--source <n>] [--print]` | yes | in-process DB, then an **interactive launch** | writes a briefing (the `explain` narrative + recent events + locations + playbook paths + ground rules) into the run's `.memory/herdr-factory/` (state dir when no worktree), then launches the repo `agent:` **command** (flags dropped — a human is present) in your terminal, cwd = the worktree. `--print` prints the briefing instead. No active run → a one-line pointer, exit 0; a missing harness binary → exit 1 naming it and suggesting `--print` |
 | `eligible` | yes | in-process (hits every source) | `JSON.stringify(out, null, 2)` of `{source, key, summary, type}`; `[]` when nothing is eligible |
 | `logs [n]` | yes | in-process (file) | last `Number(n) || 50` lines of `<stateRoot>/<repo>/logs/<UTC-date>.log`. `logs 0` and `logs abc` both mean 50. Missing file → `no log for today at <path>`, exit 0 |
@@ -106,6 +106,8 @@ Notes:
 | `resume <key> [--source <name>]` | yes | server-first | `<key>: resumed -> <phase>`, or `<key>: no active run` / `<key>: run busy — retry the resume` via the server — the in-process fallback appends ` in a moment` (exit 0 either way) |
 | `retry-now [key] [--source <name>]` | yes | server-first | `<repo\|key>: N stuck jobs made due now (M suspensions cleared) and flushed` · `… (a tick is mid-pass — it will deliver them)` when the tick lock was held · `<repo\|key>: no suspended or waiting retries` (nothing was stuck — the delay is elsewhere) · `<key>: no active run` |
 | `watch` | yes | in-process, resident | `[legacy/dev]` single-repo loop; all output goes to the **logger** (stderr + the log file), nothing to stdout. The server replaces it |
+
+With `machine.yml` `max_active_workspaces` set, `claim` exits 1 with `<key>: not claimed — machine at capacity (n/N); raise max_active_workspaces in machine.yml or wait for a run to finish` (or `… another repo is claiming right now (machine claim lock held); retry in a moment`), server up or down.
 
 **Trap:** `claim` prints `<key>: claimed` and `teardown` prints `<key>: torn down` **even when nothing happened** — an already-active run or a missing run only logs a WARN to stderr and still exits 0. Never treat their stdout as confirmation; check `status`/`timeline`.
 
@@ -155,7 +157,7 @@ Deferred (`auth`/`transient`): `evidence-upload: publish deferred — <reason>. 
 |---|---|---|
 | `init [--source <type>] [--path <dir>] [--force]` | optional (names the config folder; else the checkout's basename) | `scaffolded repo "<name>" (<source>[, origin <o/n>]) at:` + config/schema/secrets paths + per-source `next steps:` |
 | `prompts eject [--step <name>] [--force]` | yes | `Ejected <N> prompts into <dir>:` + file list + paste-ready step lines; or `Skipped <N> already-present files (pass --force to overwrite):` |
-| `schema [--stdout]` | no | `wrote <configDir>/config.schema.json` + the `# yaml-language-server: $schema=../../config.schema.json` modeline. `--stdout` prints the JSON Schema and writes nothing |
+| `schema [--stdout]` | no | `wrote <configDir>/config.schema.json` (and writes `machine.schema.json` beside it) + the `# yaml-language-server: $schema=../../config.schema.json` modeline. `--stdout` prints the JSON Schema and writes nothing |
 | `skill install [--into <dir>] [--copy] [--symlink] [--force]` | no | `Installed the herdr-factory skill at <dest> (<symlink → src>\|<N> files copied from <src>)`, or `Skill already installed at <dest> → <source>` |
 | `telemetry-smoke` | no | `telemetry smoke trace emitted (service: herdr-factory, trace root: cli.command)`, or `telemetry disabled — set HERDR_FACTORY_TELEMETRY=1 and OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
 
@@ -175,7 +177,7 @@ None of these take `--repo` — the server serves every configured repo.
 | `ensure-up [--restart]` | `ensure-up: noop\|started\|restarted` plus `[<level>] <msg>` decision lines |
 | `restart` | `restart: noop\|started\|restarted` (= `ensureUp({force:true})`; does **not** skip auto-update) |
 | `update` | `no update: <reason>` or `updated <from12> → <to12>; restarting server` + `restart: <action>` |
-| `reload` | `reloaded — serving: a, b, c` (or `(no repos)`), plus `  ⚠ <repo>: <error>` per failing repo |
+| `reload` | `reloaded — serving: a, b, c` (or `(no repos)`), plus `  ⚠ <repo>: <error>` per failing repo (`  ⚠ machine.yml: not reloaded: invalid machine config …` when machine.yml is invalid — nothing reloads) |
 | `install` | `installed + loaded <label> — scheduled ensure-up keeps the server serving all configured repos` + the schema path + a `Next: configure your first repo…` pointer (suppressed when `HERDR_FROM_INSTALLER` is set) |
 | `uninstall` | `uninstalled <label>` (in-flight workers untouched) |
 | `start` | `started <label>` + `Next: watch it work — run \`herdr-factory\` for the TUI dashboard, or \`herdr-factory --repo <name> status\`.` |

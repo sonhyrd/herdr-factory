@@ -217,6 +217,7 @@ Dispatch never spawns its own pane when a `tab`/`pane` is configured — a fresh
 
 Phase B, in order:
 
+0. **Machine gate** (only when `<configDir>/machine.yml` sets it): available memory below `min_free_memory_mb` ⇒ log `low memory: <free> MB < <min> MB — not claiming` (once per state change), `touchTick`, **return**. With `max_active_workspaces` set, everything below runs under the `machine:claim` lock (held ⇒ `machine claim lock held (another repo is claiming) — claiming next tick`, return); `countOccupyingAll() >= cap` ⇒ `machine at capacity (n/N)` (once), return; else the machine headroom also caps `slots` in step 2. Running work is never touched.
 1. `occupying = countOccupying(repo)`; `slots = limits.max_active_workspaces - occupying`. `<= 0` ⇒ log `at capacity (X/Y working, Z idle/parked)`, `touchTick`, **return**.
 2. Cap `slots` at `limits.max_claims_per_tick` (10).
 3. Per-source remaining = that source's `max_active_workspaces` (default **2**) minus its current occupancy, memoized for the pass and decremented as claims land.

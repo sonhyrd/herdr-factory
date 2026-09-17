@@ -9,6 +9,7 @@ import type { StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
+import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
@@ -342,6 +343,11 @@ async function withHeartbeatLock(deps: Deps, key: string, ttlSec: number, fn: ()
   return true;
 }
 
+const tickLockTtl = (deps: Deps): number => Math.max(deps.config.limits.tickIntervalSeconds * 2, 300);
+
+/** Machine-wide: serializes every repo's machine-count + claim section when machine.yml sets a cap. */
+export const MACHINE_CLAIM_LOCK = "machine:claim";
+
 /**
  * Run `fn` under the per-repo single-instance tick lock (heartbeat-extended; see
  * withHeartbeatLock); returns true if it ran, false if a tick is already mid-flight.
@@ -349,7 +355,7 @@ async function withHeartbeatLock(deps: Deps, key: string, ttlSec: number, fn: ()
  */
 export async function withTickLock(deps: Deps, fn: () => Promise<void>): Promise<boolean> {
   return telemetrySpan("tick.lock", { repo: deps.config.repoName }, async (span) => {
-    const ttl = Math.max(deps.config.limits.tickIntervalSeconds * 2, 300);
+    const ttl = tickLockTtl(deps);
     const startedAt = Date.now();
     const ran = await withHeartbeatLock(deps, `tick:${deps.config.repoName}`, ttl, fn);
     span.setAttribute("lock.acquired", ran);
@@ -485,11 +491,49 @@ async function reconcileRepoImpl(deps: Deps): Promise<void> {
     ),
   );
 
-  // Phase B — claim new work up to the cap, walking BELTS in priority order. The cap is global
-  // across all belts; a higher-priority belt drains its eligible work first, and the FIRST belt
-  // whose `match` predicate accepts an item claims it (first match wins). Capacity counts only
-  // WORKING runs — parked runs (attention / waiting_for_human) keep their worktree but no agent
-  // is consuming machine resources, and a pile of them must not starve the belt.
+  // Phase B — claim new work, behind the host-local machine.yml gate (ARCHITECTURE §7 Phase B). Absent machine.yml
+  // ⇒ straight to claimNewWork, exactly as before.
+  const machine = deps.machine ?? {};
+  const lowMemory = memoryGate(machine, deps.availableMemoryMb ?? availableMemoryMb);
+  if (lowMemory) {
+    // Admission only: running work is untouched — Phase A above already advanced it.
+    noteMachineGate(deps.log, lowMemory);
+    deps.store.touchTick(repo);
+    return;
+  }
+  if (machine.maxActiveWorkspaces === undefined) {
+    noteMachineGate(deps.log, null);
+    return claimNewWork(deps);
+  }
+  // The machine count and the claims must be one critical section: repos tick on separate timers
+  // and Phase B awaits the network between its count and its createRun, so two repos could each
+  // read "1/2" and both claim (3/2). The machine claim lock (a DB lock — it also covers a CLI
+  // `tick`/`claim` in another process) serializes them; a repo that finds it held skips claiming
+  // this tick and retries next tick.
+  const ran = await withHeartbeatLock(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), async () => {
+    const occupying = deps.store.countOccupyingAll();
+    const atCapacity = capacityGate(machine, occupying);
+    noteMachineGate(deps.log, atCapacity);
+    if (atCapacity) {
+      deps.store.touchTick(repo);
+      return;
+    }
+    await claimNewWork(deps, machine.maxActiveWorkspaces! - occupying);
+  });
+  if (!ran) {
+    deps.log("info", "machine claim lock held (another repo is claiming) — claiming next tick");
+    deps.store.touchTick(repo);
+  }
+}
+
+/** Phase B proper: claim new work up to the cap, walking BELTS in priority order. The cap is global
+ *  across all belts; a higher-priority belt drains its eligible work first, and the FIRST belt whose
+ *  `match` predicate accepts an item claims it (first match wins). Capacity counts only WORKING runs
+ *  — parked runs (attention / waiting_for_human) keep their worktree but no agent is consuming
+ *  machine resources, and a pile of them must not starve the belt. `machineSlots` is the remaining
+ *  machine.yml headroom (the caller holds the machine claim lock). */
+async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> {
+  const repo = deps.config.repoName;
   const occupying = deps.store.countOccupying(repo);
   // Active-but-not-occupying: the parks (attention, waiting_for_human) plus idle PR-watches
   // (reviewing with no active resolver). None hold a slot; all still own a worktree on disk.
@@ -504,6 +548,7 @@ async function reconcileRepoImpl(deps: Deps): Promise<void> {
   // materialize, status transition ≈ 5+ source calls). Capping claims per pass smooths a cold
   // start with a big backlog into successive ticks instead of one source-hammering mega-tick.
   if (slots > deps.config.limits.maxClaimsPerTick) slots = deps.config.limits.maxClaimsPerTick;
+  if (slots > machineSlots) slots = machineSlots;
 
   // Per-source concurrency: each source contributes at most its own max_active_workspaces occupying
   // runs, summed across every belt that pulls from it. Remaining source slots are computed once from
@@ -2374,7 +2419,16 @@ export async function claimTicket(deps: Deps, beltName: string, ticketKey: strin
     deps.log("warn", `${ticketKey}: already has an active run in source "${src.name}" (as ${ticket.key})`);
     return;
   }
-  await claim(deps, belt, src, ticket);
+  const cap = deps.machine?.maxActiveWorkspaces;
+  if (cap === undefined) return claim(deps, belt, src, ticket);
+  // The manual path honours the machine cap too, under the same lock Phase B takes — so it holds
+  // whether it runs inside the server or directly against the DB with the server down.
+  const ran = await withHeartbeatLock(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), async () => {
+    const full = capacityGate(deps.machine!, deps.store.countOccupyingAll());
+    if (full) throw new Error(`${ticketKey}: not claimed — ${full.message}; raise max_active_workspaces in machine.yml or wait for a run to finish`);
+    await claim(deps, belt, src, ticket);
+  });
+  if (!ran) throw new Error(`${ticketKey}: not claimed — another repo is claiming right now (machine claim lock held); retry in a moment`);
 }
 
 /** Manually tear down an item's active run (the `teardown` command). With no `sourceName`,

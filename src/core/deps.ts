@@ -1,5 +1,6 @@
 import type { BeltConfig, Config } from "../config.ts";
 import type { Store } from "../db/store.ts";
+import type { MachineConfig } from "../machine.ts";
 import type {
   Agent,
   BeltMatch,
@@ -357,6 +358,10 @@ export interface Deps {
   uid: () => string; // short unique suffix for a run's branch (distinct per claim; see branchName)
   sleep: (ms: number) => Promise<void>;
   rmrf: (path: string) => Promise<void>; // recursive force delete (teardown's defensive dir cleanup)
+  /** Host-local machine.yml limits (absent ⇒ no machine gate). Re-read by every buildDeps, so `reload` picks up edits. */
+  machine?: MachineConfig;
+  /** Available-memory reader (MB) for the machine memory gate; tests inject it. Absent ⇒ availableMemoryMb(). */
+  availableMemoryMb?: () => number;
 }
 
 export type { Agent };

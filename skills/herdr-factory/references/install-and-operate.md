@@ -330,6 +330,20 @@ One fork of the factory and one config, run on every host:
    config, or both hosts claim the same item — see
    [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard). `local_markdown`
    and `sentry` have no claim ledger: serve those repos from one host only.
+6. **Per-host capacity goes in `machine.yml`, not the shared config.** `repos/*/config.yml` is identical on
+   every host, so its `limits` can't differ per machine. Create `~/.config/herdr-factory/machine.yml` on
+   each host and add `machine.yml` to the config repo's `.gitignore`:
+
+   ```yaml
+   max_active_workspaces: 3   # worked runs across all repos on THIS host
+   min_free_memory_mb: 4096   # stop claiming below this much available memory
+   ```
+
+   Then `herdr-factory reload`. Neither gate touches running work. `poll_interval_seconds` is shared
+   config too, so it can't make one host slower than the others. To make a host (say a laptop) the
+   **last resort**, give it a lower cap and a higher memory floor — e.g. `max_active_workspaces: 1`,
+   `min_free_memory_mb: 12288` — or `max_active_workspaces: 0` to stop it claiming at all. See
+   [config-reference.md](./config-reference.md#314-machineyml-host-local-optional--srcmachinets).
 
 ---
 

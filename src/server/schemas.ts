@@ -155,6 +155,8 @@ const StatusResponse = z
     // cached session-probe verdicts (expired AWS SSO / source creds; refreshed in the background,
     // never awaited). Quick mode carries them too.
     problems: z.array(z.object({ kind: z.string(), detail: z.string() })),
+    // Host-local machine.yml summary line (cap occupancy, memory, any active gate); absent when unset.
+    machine: z.string().optional(),
     finished: z.array(
       z.object({
         id: z.number(),

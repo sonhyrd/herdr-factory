@@ -329,6 +329,20 @@ export class Store {
     return row.n;
   }
 
+  /** countOccupying across EVERY repo in this (machine-shared) DB — the machine.yml cap's count. */
+  countOccupyingAll(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM runs r
+         LEFT JOIN run_products rp ON rp.run_id = r.id AND rp.product = 'pull_request'
+         WHERE r.ended_at IS NULL
+           AND r.phase NOT IN ('attention', 'waiting_for_human')
+           AND NOT (r.phase = 'reviewing' AND COALESCE(rp.active, 0) = 0)`,
+      )
+      .get() as { n: number };
+    return row.n;
+  }
+
   /** Occupying-run counts (same posture as countOccupying) grouped by `work_source` — the per-source
    *  concurrency accounting Phase B checks against each source's `max_active_workspaces`. Sources with
    *  zero occupying runs are simply absent from the map (callers default a miss to 0). */
