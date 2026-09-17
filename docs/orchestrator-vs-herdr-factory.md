@@ -155,7 +155,7 @@ Consequences:
 Order matters: each phase assumes the ones before it. Everything uses factory defaults unless an issue says otherwise.
 
 ### Phase 0: machines
-- [x] **Herdr on every machine:** the same build on mac, contabo and cursor-5 (done 2026-09-17: master `3f78f17` from `sonhyrd/herdr` run `35119220296`; reports `0.9.0`). Switch back to an official release once one ships `--machine`.
+- [x] **Herdr on every machine:** official **v0.9.1** (first release with `--machine`) on mac, contabo and cursor-5, installed 2026-09-17 from the release assets, checksums verified; all three servers restarted onto it. The earlier master build is kept as `herdr-master-3f78f17`.
 - [x] **ssh on cursor-5**, then `herdr machine add` from mac. Done 2026-09-17: contabo and cursor-5 saved; cursor-5 is key-only sshd over Tailscale, host key checked. **cursor-5 is a container (PID 1 tini): sshd must be restarted by hand (`sudo /usr/sbin/sshd`) after the container is recreated.** `--machine cursor-5 workspace list` ~37s.
 - [x] **Agent integrations:** `herdr integration install claude` on every machine (+ `codex`, `cursor` where used); verify with `herdr integration status`. Done 2026-09-17: claude v10, codex v8, cursor v1 current on mac, contabo and cursor-5. On cursor-5 the codex hook landed in Orca's `CODEX_HOME`; codex isn't installed there.
 - [x] **Agent CLIs + auth** (checked 2026-09-17: claude, cursor-agent, gh logged in as sonhyrd and git on all three; codex on mac and contabo only; cursor model setup still to confirm): `claude` on every machine; `cursor` on cursor-5 (install + model; drop setup-cursor-worker's Orca smoke test); `gh auth login`; `git`.
@@ -163,29 +163,30 @@ Order matters: each phase assumes the ones before it. Everything uses factory de
 - [x] **Ghostty:** the suraj.io keymap is applied (Ghostty unbinds + Kitty sequences, Herdr `[keys]` with `cmd+` aliases); backups saved as `*.bak-2026-09-17`. Takes effect after a Ghostty config reload.
 
 ### Phase 1: one factory, one repo, one machine (contabo)
-- [ ] **Install from this fork:** `install.sh` with the fork's clone URL; `herdr-factory doctor --deep` green.
-- [ ] **`herdr-factory init` in one repo checkout** (start with the least risky: agent-kit or hyrd-widget), with a GitHub issues or Jira source and `env` credentials.
-- [ ] **Belts** (topic 10, 21, 22):
-  - [ ] `plan` (label `hf-plan`): custom `grill` → `spec` → `tickets`; the tickets step files children with `hf-ship`.
-  - [ ] `ship` (label `hf-ship`): `work` → `evidence` → `review` → `pr`.
-  - [ ] `quick` (label `hf-quick`): `work` → `pr`.
-  - [ ] `draft` (label `hf-draft`): `work` → `pr` with `pr: { draft: true }`.
-  - [ ] `review` (label `hf-review`): custom `checkout` (`gh pr checkout`) → `review` (pr-review, commits allowed) → `prove` (pw-prove) → `report`.
-- [ ] **Prompts:**
-  - [ ] `prompts/grill.md`, `spec.md`, `tickets.md`, invoking `grill-with-docs`, `to-spec`, `to-tickets`.
-  - [ ] `prompt_file` additions for `work` (tdd/implement) and `review` (pr-review read-only tracks, bounce with findings).
-  - [ ] Review-belt prompts: `checkout.md`, `review.md`, `prove.md`, `report.md`.
-- [ ] **`guidelines-prompt.md`:** the house rules that survive, plus host traps (e.g. no `timeout` on mac).
-- [ ] **Layout with an evidence pane** (evidence only runs when the layout provides its pane); `evidence:` publisher (`local` to start).
-- [ ] **Match for two-app tickets:** a MAMAS ticket must match exactly one repo config, or be a review ticket listing one PR per repo.
-- [ ] **Agent block:** leave the default (`claude --dangerously-skip-permissions`); override per step only where earned.
+- [x] **Install from this fork:** `HERDR_REPO_URL=<fork> install.sh`; systemd `--user` supervisor active (linger on). Self-update tracks the **fork's** `main`, not upstream. `doctor --deep` can only go green *after* `init` (the database check waits for a configured repo).
+- [x] **`herdr-factory init` for hyrd-widget** (`~/work/hyrd-widget`, `origin/main`). Jira MAMAS source, board 6; `JIRA_*` derived from agent-kit's `ATLASSIAN_AUTH` in `~/.teamai/env`. `nuxt-hyrd-chrysus` was added later from another session.
+- [x] **Belts:** `ship` (`hf-ship`), `quick` (`hf-quick`), `review` (`hf-review`, all custom: checkout → review (commits) → prove → report), `plan` (`hf-plan`: grill → spec → tickets). No `draft` belt yet.
+- [x] **Prompts:** plan and review custom-step prompts (~15 lines each); `work`/`evidence`/`review`/`pr` use the shipped base prompts unchanged.
+- [x] **`guidelines-prompt.md`:** repo CLAUDE.md wins; one item one PR, never merge; dev-server port probing; `gh pr edit --body` workaround; vault credentials; **no glob `rm`** (added after Phase 2's first run).
+- [x] **Layout with an evidence pane** (`widget-dev`: work / evidence + dev server / review / pr). Evidence publisher is **`command` → R2** (bucket `herdr-factory-evidence`, Pauls Job account, public r2.dev URL) via `repos/hyrd-widget/publish-r2.sh`, which uses contabo's wrangler OAuth login. The `local` publisher was dropped: its `127.0.0.1` URLs don't render in PRs.
+- [x] **Match:** `match-widget.ts` requires a bracketed `[…Widget…]` marker (or a widget PR URL) in the summary; most MAMAS widget tickets lack one, so add it when labelling.
+- [x] **Status map:** MAMAS has no "In Review" — `status.review: Code Review`; `status.done` unset (Jira's GitHub integration closes).
+- [x] **Agent block:** default.
 
 ### Phase 2: prove it
-- [ ] **One real `hf-ship` issue end to end** on contabo: claim → work → evidence → review (and a bounce) → pr → resolver on a review comment → human merge → teardown.
+- [~] **One real `hf-ship` issue end to end:** MAMAS-5681 → PR hyrdrocks/hyrd-widget#1501 (2026-09-17). Claim → work → evidence → review → pr → watching. **Pending:** human merge + teardown; no review comment yet, so the resolver is unexercised. `build-gated-tests` fails from `main`, not the PR (proven by the pr step with an empty probe PR; filed as hyrd-widget#1503).
 - [ ] **One `hf-plan` issue** producing child `hf-ship` issues that are claimed on their own.
-- [ ] **One `hf-review` ticket** against an existing PR.
+- [~] **One `hf-review` ticket:** MAMAS-9868 → PR nuxt-hyrd-chrysus#3927, run from another session; still running at 2026-09-17.
 - [ ] **One ask-human round trip** answered on the ticket.
 - [ ] **Compare with a recent Orca run:** tokens, wall time, human interventions. Write the numbers here.
+
+**Lessons from the first `hf-ship` run (MAMAS-5681):**
+1. **Claude Code's `rm` guard stalls steps.** `rm -f dir/*` raised a Yes/No prompt despite `--dangerously-skip-permissions`; the evidence step ran over budget and parked until a human answered. Guarded by a `guidelines-prompt.md` rule in both repos.
+2. **Evidence must be published somewhere public.** The `local` publisher's URLs are host-local; switched to R2 (see Phase 1).
+3. **The evidence step's film is better than pw-prove's clips:** before/after PNG per criterion + one continuous video at ~1920×1080, graded per criterion. Follow-up: sonhyrd/agent-kit#208 (split pw-prove; deferred until all phases are done).
+4. **The pr step handles a red check from `main` correctly:** proves the diff is byte-neutral, probes `main`, files an issue, doesn't raise the ceiling.
+5. **`runs` lags `explain`:** `runs` showed `claiming` while `explain` already reported the work step. Watch `explain`.
+6. **Non-login shells miss `~/.local/bin`:** Herdr servers started via `machine add` give panes a PATH without it, so the `rtk` hook failed. Fixed in `~/.bashrc` on contabo and cursor-5.
 
 ### Phase 3: several machines (issues on sonhyrd/herdr-factory)
 - [ ] **#3:** config repo for `repos/` with per-machine overlays; install and update from the fork (until then, self-update tracks upstream `main` and resets fork patches).
