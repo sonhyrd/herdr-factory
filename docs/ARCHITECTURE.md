@@ -1787,7 +1787,8 @@ on Linux (`watchers/service.ts` dispatches by platform; the installer runs
 `ensure-up` is a **one-shot**: optionally
 self-update (see *Updates* below), then read `/health`; if healthy **and** the version matches
 **and no repo's tick loop is stale** → no-op; else kill any stale/wedged pid and spawn a detached
-`serve`. The kill is graceful-first with a grace period sized to the server's own drain: `POST
+`serve`. The detached `serve` leaves the process group but not the service cgroup, so the systemd
+unit sets `KillMode=process` — otherwise systemd kills `serve` when the oneshot exits. The kill is graceful-first with a grace period sized to the server's own drain: `POST
 /shutdown` + `SIGTERM` (idempotent — same handler), then **SIGKILL only after 18s** — outlasting
 the 15s in-flight-tick drain — so a routine update/restart almost never hard-kills a mid-tick
 pass (whose heartbeat-extended locks would otherwise sit until TTL expiry, ~5min of skipped

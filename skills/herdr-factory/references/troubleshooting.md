@@ -60,6 +60,7 @@ runs stale config or isn't serving the repo at all (cross-check with `/health`).
 | One repo works, another is ignored | [2.12 a repo silently isn't served](#212-a-repo-silently-isnt-being-served) |
 | A source used to pick up work, now doesn't | [2.13 a source stopped picking up work](#213-a-source-stopped-picking-up-work) |
 | Everything is slow / throttled | [2.14 slow or rate limited](#214-everything-is-slow--rate-limited) |
+| Linux: `ensure-up: started serve` every tick, `doctor` says server not running | [2.15 systemd kills the server](#215-linux-the-supervisor-starts-serve-every-tick-but-it-never-stays-up) |
 | I want to abandon a run but keep its work | [9.1 stopping a run without losing its work](#91-stopping-a-run-without-losing-its-work) |
 
 ---
@@ -426,6 +427,25 @@ spend the same budget) — primary exhaustion shows up as fast failures into the
 
 If a whole repo feels slow, check the tick isn't being skipped (§2.11) and that no single step is
 holding all the workspace slots (Q1b).
+
+### 2.15 Linux: the supervisor starts `serve` every tick but it never stays up
+
+**Means**: `journalctl --user -u herdr-factory.service` logs `started serve` roughly every minute, yet
+`doctor` keeps reporting `server — not running`; `herdr-factory serve` in a foreground shell works.
+
+**Cause**: a `herdr-factory.service` unit written before the fix lacks `KillMode=process`. The unit is
+`Type=oneshot`, and `ensure-up` spawns `serve` detached — but still inside the service's cgroup, so the
+default `KillMode=control-group` kills `serve` the moment `ensure-up` exits. A first install looks fine
+because `install.sh` starts `serve` from your interactive shell, outside that cgroup; the first restart
+the supervisor does itself (self-update, stale tick, version change) takes the server down for good.
+
+```sh
+grep -E '^(Type|KillMode)=' ~/.config/systemd/user/herdr-factory.service   # want Type=oneshot + KillMode=process
+herdr-factory install     # rewrites both units, daemon-reloads, re-enables the timer, runs ensure-up
+```
+
+A self-update does **not** rewrite the unit — only `install` (or re-running `install.sh`) does, so an
+existing host needs that one re-install after updating. launchd (macOS) is not affected.
 
 ---
 

@@ -1455,6 +1455,10 @@ unchanged.
   verifies the vendored Node starts and names the missing system package if not.
 - **Windows** — not yet; the service seam is one scheduled `ensure-up` command.
 
+Running one fork and one config on several machines (fork install, config dir as a private git
+clone, `HERDR_SKIP_SERVICE=1` hosts, `claim_guard`): see
+[`skills/herdr-factory/references/install-and-operate.md`](skills/herdr-factory/references/install-and-operate.md#several-machines).
+
 ## Development
 
 ```sh
