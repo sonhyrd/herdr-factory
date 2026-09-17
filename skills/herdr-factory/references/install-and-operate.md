@@ -14,6 +14,7 @@ that drives it.
 - How does auto-update actually work, why did exporting `HERDR_CHANNEL` change nothing, and where is the last attempt recorded?
 - `herdr-factory uninstall` didn't uninstall much — what is the *real* uninstall, and what survives it?
 - Where is the launchd job / systemd unit, how do I inspect it, and why can't the service find a tool my shell finds?
+- How do I run the factory on several machines from one fork and one config?
 - How do I drive the TUI, and how do I rename a belt that has live runs?
 
 ---
@@ -256,7 +257,7 @@ process, which is why a wedged daemon can be restarted from outside. Platform di
 | Identity (`service.label()`) | `com.herdr-factory.server` | `herdr-factory.timer` |
 | Files | `~/Library/LaunchAgents/com.herdr-factory.server.plist` | `~/.config/systemd/user/herdr-factory.service` **and** `herdr-factory.timer` |
 | Cadence | `StartInterval 60` + `RunAtLoad`, `ProcessType Background` | `OnBootSec=30`, `OnUnitActiveSec=60`, `AccuracySec=15`, `Persistent=true` |
-| Command | `<baked node> <APP_DIR>/src/cli/index.ts ensure-up` | same, via `ExecStart=`, `Type=oneshot` |
+| Command | `<baked node> <APP_DIR>/src/cli/index.ts ensure-up` | same, via `ExecStart=`, `Type=oneshot`, `KillMode=process` (so the detached `serve` survives the oneshot exiting — [troubleshooting.md §2.15](./troubleshooting.md#215-linux-the-supervisor-starts-serve-every-tick-but-it-never-stays-up)) |
 | Supervisor logs | `StandardOutPath`/`StandardErrorPath` → `<stateRoot>/logs/supervisor.{out,err}.log` | **the journal** — the unit declares no `StandardOutput=`: `journalctl --user -u herdr-factory.service`. (`<stateRoot>/logs/` is still created at install, but nothing writes `supervisor.*.log` there on Linux) |
 | Inspect by hand | `launchctl list \| grep com.herdr-factory.server` (pid, last exit, label) | `systemctl --user status herdr-factory.timer` · `systemctl --user list-timers herdr-factory.timer` |
 | `isLoaded` (what `doctor` reads) | label appears in `launchctl list` | `systemctl --user is-enabled herdr-factory.timer` == `enabled` |
@@ -294,6 +295,41 @@ plutil -extract EnvironmentVariables.PATH raw ~/Library/LaunchAgents/com.herdr-f
 # Linux
 grep '^Environment="PATH=' ~/.config/systemd/user/herdr-factory.service
 ```
+
+### Several machines
+
+One fork of the factory and one config, run on every host:
+
+1. **Install from your fork on each host.** Keep `HERDR_CHANNEL` unset (`main`): the supervised
+   updater hard-resets to the checkout's upstream, which is your fork's `origin` — a merge to your fork
+   reaches every host within a tick.
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/<you>/herdr-factory/main/install.sh \
+     | HERDR_REPO_URL=https://github.com/<you>/herdr-factory.git sh
+   ```
+
+2. **Keep the config dir in a private git repo**, cloned to `~/.config/herdr-factory` on each host.
+   Update a host with:
+
+   ```sh
+   git -C ~/.config/herdr-factory pull --ff-only && herdr-factory reload
+   ```
+
+3. **Never commit the per-repo `env` files** (credentials). Add `repos/*/env` to that repo's
+   `.gitignore` and copy each `env` to each host by hand (`chmod 600`). Repo `path:`s must exist on
+   every host.
+4. **Hosts without systemd/launchd** (containers, some VPSes): install with `HERDR_SKIP_SERVICE=1`,
+   then keep a supervisor loop running in a long-lived herdr pane:
+
+   ```sh
+   while :; do herdr-factory ensure-up; sleep 60; done
+   ```
+
+5. **Before a second host polls a tracker source, enable `claim_guard`** on that source in the shared
+   config, or both hosts claim the same item — see
+   [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard). `local_markdown`
+   and `sentry` have no claim ledger: serve those repos from one host only.
 
 ---
 
