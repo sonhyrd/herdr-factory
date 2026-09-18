@@ -214,6 +214,13 @@ export class HerdrServer {
     return r.code === 0 ? r.stdout : `(pane read failed: ${r.stderr.trim() || r.stdout.trim()})`;
   }
 
+  /** Type at a pane: real key presses into a real PTY, which is the only way to drive the TUI the
+   *  way an operator does (its keymap lives in opentui's key handler, not in any API). */
+  sendKeys(paneId: string, ...keys: string[]): void {
+    const r = this.cli(["pane", "send-keys", paneId, ...keys]);
+    if (r.code !== 0) throw new Error(`pane send-keys ${keys.join(" ")} failed: ${r.stderr.trim() || r.stdout.trim()}`);
+  }
+
   /** What herdr sees running in a pane — `agent start` refuses a pane whose shell isn't idle, so this
    *  is the first question to ask when an agent never comes up. */
   processInfo(paneId: string): string {

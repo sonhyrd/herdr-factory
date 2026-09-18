@@ -1,8 +1,9 @@
 // The factory HTTP API's response shapes, as a zero-import leaf.
 //
-// They used to live in `src/tui/api.ts`, which was the only client. There are now two (the TUI's
-// own reader and the fleet's `MachineClient`), and both must agree byte-for-byte on what a server
-// answers — so the shapes moved here and `tui/api.ts` re-exports them for its existing callers.
+// They used to live in `src/tui/api.ts`, back when the TUI had a client of its own; it now reads
+// through `MachineClient` like everything else, and these shapes are what the two sides of the API
+// agree on. `tui/api.ts` re-exports them, so the TUI's views keep importing from where they always
+// did.
 // Nothing in this file imports the engine: a UI or a CLI reader can depend on it without dragging
 // in reconcile.
 import type { RunObligations } from "../core/obligations-shape.ts";

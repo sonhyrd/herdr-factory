@@ -108,6 +108,7 @@ export class World {
     herdrLog: string;
     herdrDown: string;
     fleetEndpoints: string;
+    herdrMachines: string;
   };
   /** The other MACHINES of the fleet: one extra `serve` each (see `ScenarioSpec.fleetMachines`). */
   private readonly fleet = new Map<string, { factory: Factory; paths: WorldPaths; spec: FleetMachineSpec }>();
@@ -152,6 +153,7 @@ export class World {
       herdrLog: join(this.paths.art, "herdr-calls.jsonl"),
       herdrDown: join(home, "herdr-down"),
       fleetEndpoints: join(home, "fleet-endpoints.json"),
+      herdrMachines: join(home, "herdr-machines.json"),
     };
     this.env = {
       ...(process.env as Record<string, string>),
@@ -177,6 +179,7 @@ export class World {
       HF_HERDR_REAL: realHerdr,
       HF_HERDR_LOG: this.files.herdrLog,
       HF_HERDR_DOWN: this.files.herdrDown,
+      HF_HERDR_MACHINES: this.files.herdrMachines,
       HF_AGENT_SCRIPT: this.files.agentScript,
       HF_AGENT_LOG_DIR: this.files.agentLogDir,
       HF_AGENT_STATE_DIR: this.files.agentStateDir,
@@ -215,7 +218,6 @@ export class World {
     // other world's main port.
     let i = 0;
     for (const [name, spec] of Object.entries(this.spec.fleetMachines ?? {})) {
-      if (this.lane !== "fake") throw new Error(`scenario "${this.spec.name}" declares fleetMachines on the real lane — a real herdr's saved machines are the operator's`);
       const paths: WorldPaths = {
         ...this.paths,
         configDir: join(home, ".config", `hf-${name}`),
@@ -239,6 +241,17 @@ export class World {
       });
       this.fleet.set(name, { factory, paths, spec });
     }
+  }
+
+  /** The saved SSH machines the factory's fleet discovery reads (`herdr machine list --json`).
+   *
+   *  Written as a FILE the world's herdr shim answers from, on both lanes, rather than saved into a
+   *  herdr: on the real lane those profiles would be the operator's, and a scenario must not add to
+   *  them. The SSH target is cosmetic — `HERDR_FACTORY_FLEET_ENDPOINTS` is what is actually dialled,
+   *  since a container has no second host to forward to. */
+  private writeMachineList(): void {
+    const machines = [...this.fleet.keys()].map((label) => ({ label, target: `harness@${label}`, enabled: true }));
+    writeFileSync(this.files.herdrMachines, JSON.stringify(machines));
   }
 
   /** Another machine's factory (`ScenarioSpec.fleetMachines`) — its CLI, its API, and `stop()` for
@@ -393,6 +406,13 @@ export class World {
         '  case "$ms" in *[!0-9]*|"") ms="$(date +%s)000";; esac',
         '  printf \'{"ts":%s,"argv":%s}\\n\' "$ms" "$(printf \'%s\\n\' "$@" | jq -R . | jq -s -c .)" >> "$HF_HERDR_LOG" 2>/dev/null || true',
         "fi",
+        "# The fleet's machine list. A scenario's fleet machines are the harness's, never the",
+        "# operator's: the real herdr is left alone and this wrapper answers the one query the",
+        "# factory's discovery makes. Absent file = no saved machines, i.e. a fleet of one.",
+        'if [ "${1:-}" = "machine" ] && [ "${2:-}" = "list" ] && [ -f "${HF_HERDR_MACHINES:-}" ]; then',
+        '  cat "$HF_HERDR_MACHINES"',
+        "  exit 0",
+        "fi",
         "# Injected outage (HerdrServer.unreachable): refuse the way a herdr with no server does. The",
         "# call is logged FIRST, so what the engine attempted during the outage stays observable.",
         'if [ -n "${HF_HERDR_DOWN:-}" ] && [ -e "$HF_HERDR_DOWN" ]; then',
@@ -498,12 +518,14 @@ export class World {
       if (this.fleet.size) {
         (this.herdr as FakeHerdr).setMachines([...this.fleet.keys()].map((label) => ({ label, target: `harness@${label}`, enabled: true })));
       }
+      this.writeMachineList();
     } else {
       // Link before boot so the one-shot [[startup]] hook is registered too; if linking needs the
       // socket, retry once the server is up (a fresh world has no stale claims for the startup hook
       // to reap, so post-boot linking is equivalent for our purposes).
       const linkedEarly = this.herdr.linkPlugin(REPO_ROOT);
       await this.herdr.start();
+      this.writeMachineList();
       if (!linkedEarly && !this.herdr.linkPlugin(REPO_ROOT)) {
         throw new Error(`herdr plugin link failed:\n${this.herdr.cli(["plugin", "link", REPO_ROOT]).stderr}`);
       }

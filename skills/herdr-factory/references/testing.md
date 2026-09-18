@@ -25,9 +25,11 @@ scripts/e2e --lane fake                       # only the no-herdr lane (failure 
 Two extras worth knowing. `--tier ds4` runs the **model** scenarios and only those: a local model
 (opencode against a DeepSeek V4 endpoint on `:8000`) following the *shipped* prompts, which is the only
 check that the prompts themselves are followable. It runs on the host, needs that server up, and never
-gates a build. And `tui-boot` launches the real TUI in a real herdr pane, so an opentui FFI or pinned-
-Node regression fails there rather than on a user's terminal; `tui-theme` boots it the same way
-against a real herdr `config.toml` to prove the TUI follows herdr's theme.
+gates a build. And three scenarios launch the real TUI in a real herdr pane, so an opentui FFI or
+pinned-Node regression fails there rather than on a user's terminal: `tui-boot` (it boots inside its
+budget with no stack trace on screen), `tui-theme` (it follows a real herdr `config.toml`'s theme),
+and `tui-fleet` (two factory servers, both machines on screen, and a keypress routed to the machine
+that owns the run).
 
 Needs Docker. Artifacts land in `artifacts/e2e/<timestamp>/` (`…/latest` symlink): `summary.md`,
 `results.json`, `junit.xml`, and per scenario the DB, the engine log, the herdr server log, the agent
@@ -61,11 +63,17 @@ scenario({
 
 A scenario can also declare **`fleetMachines`** — extra `serve` processes in the same world, each its
 own config dir, state root, port and DB, standing in for another machine of the fleet. The world
-points the fleet's transport seam (`HERDR_FACTORY_FLEET_ENDPOINTS`) at them and seeds the fake
-herdr's `machine list`, so `herdr-factory fleet` reaches them without SSH — the one part of the
-transport a container cannot have. Fake lane only: a real herdr's saved machines are the operator's.
-Reached from a scenario as `w.machine(name)` (its CLI, its API, and `stop()` for the "a machine goes
-away" half). That is `fleet-cli`.
+points the fleet's transport seam (`HERDR_FACTORY_FLEET_ENDPOINTS`) at them and answers `herdr
+machine list` from a file of its own (`HF_HERDR_MACHINES`, served by the world's `herdr` wrapper), so
+the fleet reaches them without SSH — the one part of the transport a container cannot have — and
+without ever writing to a real herdr's saved machines, which are the operator's. Works on **both**
+lanes. Reached from a scenario as `w.machine(name)` (its CLI, its API, and `stop()` for the "a machine
+goes away" half).
+
+Two scenarios use it: `fleet-cli` merges both machines into one `fleet --json` at the CLI, and
+`tui-fleet` does it through the real TUI in a real pane — typing at it with
+`w.herdr.sendKeys(pane, …)` (real lane only; the fake lane has no terminal and throws) to prove a
+keypress on one machine's run reaches that machine and no other.
 
 Agent behaviours available per step (and per pass): `commit`, `hangMs`, `signal`
 (`step-done`/`bounce`/`ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`,

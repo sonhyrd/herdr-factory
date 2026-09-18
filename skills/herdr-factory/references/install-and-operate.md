@@ -369,7 +369,7 @@ imported on first activation — you may see ` loading...` or ` failed to load: 
 
 | Tab | For | Notes |
 |---|---|---|
-| **Dashboard** | watch and drive live work: per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; the tab bar's top-right status text reads `● server up · v<version> · uptime <d>`, plus ` · ⚠ <update warning>` in amber when the last auto-update wants attention (only the Dashboard tab polls health, so this text holds its last value while another tab is active). A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. Server down ⇒ the status text reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
+| **Dashboard** | watch and drive live work: per machine → per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; on a one-machine install the tab bar's top-right status text reads `● server up · v<version> · uptime <d>`, and with a [fleet](#the-dashboard-with-a-fleet) it reads `● fleet <reachable>/<total> machines · v<version> here`. Either form takes a ` · ⚠ <note>` tail in amber: the last auto-update wanting attention, plus (with a fleet) every remote that is `unverifiable (last seen <d>)` and every remote whose server is on **another version** than this machine's — a box the updater has not reached is otherwise invisible from here (`fleetStatusLine`, `src/tui/fleet-view.ts`). Only the Dashboard tab polls, so this text holds its last value while another tab is active. A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. Server down ⇒ the status text reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
 | **Config** | the five-section config editor over `~/.config/herdr-factory/repos/<name>/config.yml` + its `env` file, with a `+ new repo…` wizard | edits a YAML `Document`, so comments and formatting survive |
 | **Doctor** | the machine-wide health checks | see the caveat at the end of this section |
 
@@ -429,9 +429,14 @@ a confirm modal, and the result lands on the bottom action line:
 | `c` | claim the item — picks the belt automatically when the source has exactly one, otherwise asks | `ready` cards |
 | `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk clear-and-retry** (`Clear "<scope>"'s suspended background jobs and retry them now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now (M suspensions cleared) — flushed`, or `— a tick is mid-pass`, or `"<scope>": no suspended or waiting jobs`). A run card scopes to that run; a repo row is repo-wide and clears every suspension the repo row flags in red | run, repo, ready |
 | `x` | tear the run down — `Tear down "<key>" (removes its worktree)?` | run cards |
+| `m` | filter the board to one machine, or back to all of them — a chooser over `all machines` + every machine in the [fleet](#the-dashboard-with-a-fleet). On a one-machine install it answers `this is the only machine in the fleet` and changes nothing | anywhere |
 | `r` | refresh now | anywhere |
 
-Config editor (`src/tui/config-editor.ts`). Sections: `[1] Repos` (a left-hand list) and an accordion of
+With a fleet, every confirmation above also names the machine it would land on (`Tear down "<key>" on
+<machine> …?`), and so does its result — see [below](#the-dashboard-with-a-fleet).
+
+Config editor (`src/tui/config-editor.ts`). Sections: `[1] Repos (this machine)` (a left-hand list —
+config lives on each host, so this tab is always about the machine you are on) and an accordion of
 `[2] Config` · `[3] Work sources` · `[4] Layouts` · `[5] Belts`, of which exactly one is expanded.
 
 | key | action |
@@ -444,6 +449,48 @@ Config editor (`src/tui/config-editor.ts`). Sections: `[1] Repos` (a left-hand l
 | `[` / `]`, or `Shift+↑` / `Shift+↓` | **reorder** the highlighted group within its array (a source, layout, belt, tab, pane or step) |
 | while editing a text field | `↑`/`↓` hop to the previous/next field, `↵` moves to the next field, `Esc` pops to the tab bar |
 | `^S` | save |
+
+#### The Dashboard with a fleet
+
+The Dashboard reads the same fleet `herdr-factory fleet` does — this machine plus every **enabled**
+entry of `herdr machine list` (see [cli.md](./cli.md)) — and its keys act on the machine that owns the
+run. There is nothing to configure, and **nothing changes on a one-machine install**: with a single
+machine the board renders exactly as it always has, headers and badges and all of the below absent
+(`fleetMode()` in `src/tui/dashboard.ts` gates every bit of it on there being more than one machine).
+
+Once there IS another machine:
+
+- **A header per machine**, above its repos: `✓ <machine> (<ssh target | this machine>) — v<version> ·
+  N running`, then `    N repos · read <d> ago`, then the host-local `machine.yml` gate (cap occupancy
+  across all repos, free memory) on its own line when the host sets one. The lines are deliberately
+  short — a herdr pane is routinely ~50 columns, and a fact that falls off the right edge is not
+  reported.
+- **A `@<machine>` badge** on every repo row (`<repo>  @<machine>   active N/M`), so a row still says
+  where it is once you have scrolled past its header.
+- **`m` filters** the board to one machine or back to all. A filter naming a machine that has left the
+  fleet falls back to all — an empty board would read as "no work".
+- **A machine that stops answering is `unverifiable`, not empty.** Its header becomes
+  `✗ <machine> (<target>) — unverifiable` / `    last seen <d> ago · NOT known to be gone` /
+  `    <why>`, and it **keeps the rows of its last successful read** — as plain
+  `<KEY>   <belt>/<step>   unverifiable` lines rather than cards, because a card carries a live state
+  icon and a ticking age that this read cannot vouch for. Blanking them would say the runs are gone
+  when they are merely unobservable, which is the reading an operator acts on. Keys on those rows are
+  refused up front (`✗ <machine> is unverifiable — it cannot be acted on until it answers again`).
+  The machines that *are* answering carry on untouched; one silent box costs its own rows, not the view.
+- **Every action is routed**, through that run's own machine client and no other (`route()` in
+  `src/tui/dashboard.ts`, `clientFor` in `src/tui/fleet-view.ts`) — tick, claim, teardown,
+  resume/retry-now, and the read-only timeline and detail views too. Two machines can be working an
+  item with the **same key**, so the confirmation names the machine (`Tear down "<key>" on <machine>
+  (removes its worktree)?`) and so does the result (`✓ torn down "<key>" on <machine>`).
+- A machine header row is not itself actionable: `a machine header is not actionable — pick one of its
+  repos or cards`.
+
+The Doctor tab reports each remote's own `/health` too (below). The **Config** tab stays local by
+design: config lives on each host, and editing another machine's from here would be a write across a
+link the factory deliberately does not have.
+
+If herdr cannot be asked for its machine list (not installed, no server, an older CLI), the fleet is
+this machine alone and the action line says why, once.
 
 Modals: confirm (`y` / `↵` = yes, `n` / `Esc` = no) · chooser (`↑↓` + `↵`, `Esc` cancels) · prompt (`↵`
 submit, `Esc` cancel) · multiline editor, e.g. `guidelines-prompt.md` (`^S` save, `Esc` cancel) ·
@@ -514,16 +561,24 @@ must revert that file yourself if `blocked` comes back non-empty.
 
 ### The Doctor tab is not `doctor --deep`
 
-`src/tui/doctor.ts` calls `baseGroups()` and nothing else: the machine-wide groups only — *managed by
+`src/tui/doctor.ts` calls `baseGroups()`: the machine-wide groups only — *managed by
 herdr-factory* (`node runtime >= 26`, `auto-update`, `supervisor service`, `server`, `database`) and
 *you provide* (`git`, `herdr`, `gh`, `claude`). `r` re-runs the shallow checks; `d` runs the deep ones
 (`gh auth status`, `herdr workspace list`). The banner reads
 `● all checks passed (shallow) · r: re-run · d: deep` or
 `⚠ N check(s) failing (deep) · M warning(s) · …`.
 
+The only thing it adds beyond this machine is an `Other machines in the fleet:` group — one row per
+**remote** machine, built from that machine's own `/health` (`fleetHealthLines()` in
+`src/tui/fleet-view.ts`), because a remote running an older build, or not answering at all, is
+invisible from this machine's checks. A remote that cannot be reached is a `✗` row and **counts
+toward the banner's failure total**. The group is absent on a one-machine install, and a fleet that
+cannot be listed never fails the local checks.
+
 It **never runs the repo group** — config validity, source buildability, per-source auth and health,
-required secrets, the evidence publisher and the evidence-upload backlog are all invisible here. A green
-Doctor tab proves nothing about a repo. Run:
+required secrets, the evidence publisher and the evidence-upload backlog are all invisible here (for
+this machine *and* for every remote: a remote's row is its `/health` summary, not its repos' health).
+A green Doctor tab proves nothing about a repo. Run:
 
 ```sh
 herdr-factory --repo <name> doctor --deep

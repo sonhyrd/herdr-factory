@@ -1,38 +1,18 @@
-// Carry-forward cache for the dashboard's eligible-work rows. The refresh paints in two phases — a
-// quick status-only paint, then the slower per-repo eligible queries "fold in" (dashboard.ts). The
-// design goal is a flicker-free refresh, but two things collapse the eligible list for a frame if it
-// isn't carried across: (1) the phase-1 paint has no eligible data yet, and (2) an eligible query can
-// transiently fail/time out (getJson → null) or lag behind the status query (a networked source poll
-// such as a Jira listEligible). Keeping the last SUCCESSFUL result per repo and rendering that in both
-// the quick paint and a failed fold-in keeps the rows on screen until a genuinely fresh answer lands.
+// One rule about the dashboard's eligible-work rows: an item that has since been CLAIMED must not
+// render as both a running card and a ready one.
+//
+// It can, because the refresh paints in two phases — a quick status-only paint, then the slower
+// per-machine eligible queries folding in (`tui/fleet-view.ts`) — and the quick paint carries the
+// last successful eligible result forward rather than blanking it. That carry-forward is what keeps
+// the rows from blinking out for a frame, and it is also how a stale item survives long enough to
+// collide with the run that claimed it.
+//
+// (The carry-forward itself lives in `fleet-view.ts`, keyed per machine AND repo, since it also has
+// to drop the entries of a repo a reachable machine no longer serves.)
 import type { ActiveRun, EligibleItem } from "./api.ts";
-
-/** A fetchEligible result: the payload, or null when the query failed / timed out / server is down. */
-export type EligibleResult = { eligible: EligibleItem[] } | null;
 
 /** Source+key identity of a work item — the (work_source, ticket_key) pair the engine dedups on. */
 const idOf = (source: string | null, key: string) => `${source ?? ""}|${key}`;
-
-/**
- * Fold a round of fresh eligible results into the carry-forward `cache` (mutated and returned):
- *   - success (non-null, INCLUDING an empty list): replace — so genuinely-claimed/absent items clear.
- *   - failure (null: timeout/error/server-down): keep the last good value rather than collapsing.
- *   - a repo no longer configured: drop, so the cache can't grow unbounded across repo churn.
- * `fresh[i]` corresponds to `repos[i]`.
- */
-export function foldEligible(
-  cache: Map<string, { eligible: EligibleItem[] }>,
-  repos: string[],
-  fresh: EligibleResult[],
-): Map<string, { eligible: EligibleItem[] }> {
-  repos.forEach((name, i) => {
-    const r = fresh[i];
-    if (r) cache.set(name, r);
-  });
-  const live = new Set(repos);
-  for (const name of [...cache.keys()]) if (!live.has(name)) cache.delete(name);
-  return cache;
-}
 
 /**
  * Drop eligible items that already appear as an active run (same source+key). A carried-forward

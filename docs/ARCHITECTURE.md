@@ -1854,9 +1854,10 @@ the TUI's fleet dashboard is the next.
 | --- | --- |
 | `fleet/machines.ts` | **Who is in the fleet**: this machine, plus every *enabled* entry of `herdr machine list --json`. No new config — herdr's saved machines are the register, and `herdr machine disable` is how a box leaves. Parsing is defensive (another tool's output): an entry with no label or target is dropped, `enabled: false` is excluded, and a herdr that cannot be asked leaves the local machine alone. |
 | `fleet/transport.ts` | **How a machine's API is reached.** Local: `server.json`, as `tui/api.ts` has always read it. Remote: an SSH local forward (`ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:8765 <target>`) with ControlMaster reuse, so every server keeps binding `127.0.0.1` only and nothing is exposed. `HERDR_FACTORY_FLEET_ENDPOINTS` overrides a machine's base URL by name — the seam the e2e suite substitutes for SSH, and the escape hatch for a host off the default port. **The ControlPath is length-checked** (`resolveControlDir`): `<stateRoot>/fleet-ssh/%C` when it fits a 104-byte `sun_path` with 20 bytes of headroom for the suffix ssh appends while binding the master, else the short per-user `/tmp/hf-<uid>/` (0700), else no multiplexing at all (`ControlMaster=no`). Getting this wrong is not a degraded forward but no forward: ssh exits 255 with `unix_listener: path … too long for Unix domain socket` before the tunnel is up. When ssh does exit early, its **first line of stderr is kept** (`failureDetail`) and becomes the machine's `unverifiable` reason. **A forward is judged by `/health`, not by ssh's exit**: with `ControlPersist` a new master is forked into the background and the client we spawned exits **0** as soon as the tunnel is up, so only a **non-zero** exit (or the deadline) is unreachable — reading exit 0 as failure reported every remote `unverifiable: ssh exited 0` while the tunnel was answering. `ControlPersist` is kept rather than dropped because the connection it leaves behind is the reuse the next fleet read (and a box that prompts for a passphrase) depends on; the cost is that tear-down is a control command, not a signal: `close()` signals a foreground client but sends `ssh -O cancel -o ControlPath=… -L <port>:127.0.0.1:8765 <target>` for a backgrounded one — `cancel` (that forward) and not `exit` (the shared master), so the reuse survives the command. |
-| `fleet/client.ts` | **`MachineClient`** — the same calls `tui/api.ts` makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. `failureDetail()` passes the transport's reason (ssh's stderr) through to the view. |
-| `fleet/shapes.ts` | The API response shapes, as a zero-import leaf. There are now two readers of the same HTTP API (the TUI's and the fleet's) and they must not drift, so the shapes moved out of `tui/api.ts`, which re-exports them. |
-| `fleet/read.ts` | The **merged view** (`readFleet`) and the **routing rule** (`routeRun`). |
+| `fleet/client.ts` | **`MachineClient`** — the whole set a UI needs (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. It is what the TUI reads and acts through for *every* machine, this one included; `tui/api.ts` keeps only the local hot-reload nudge the config editor fires. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. `failureDetail()` passes the transport's reason (ssh's stderr) through to the view. |
+| `fleet/shapes.ts` | The API response shapes, as a zero-import leaf — moved out of `tui/api.ts` (which re-exports them) so a UI or a CLI reader can depend on what the server answers without dragging in reconcile. |
+| `fleet/read.ts` | The **merged view** (`readFleet`), the **routing rule** (`routeRun`), and the primitive both the CLI and the TUI read through: `readMachines(clients, read)` — every machine in parallel under its own budget, each answering `ok` with whatever the caller went there for, or `unverifiable` with the time it last answered (and the transport's reason when it has one). WHAT is read differs per surface (the CLI wants statuses, the TUI also wants eligible work); the timeout, the verdict and the last-seen memo must not, or one surface will eventually report a machine it could not reach as a machine with nothing on it. |
+| `tui/fleet-view.ts` | The **TUI's** window onto the fleet: the merged per-machine view the Dashboard renders (repos, runs, eligible work), the carry-forward that keeps an unverifiable machine's last known rows on screen, the header/status formatting, and `clientFor` — the one route an action may take. Eligible work is read in a second phase, as the single-machine dashboard always has, so a lagging source query can never turn a healthy machine `unverifiable`. |
 
 Two invariants carry `read.ts`, and both exist because the alternative misleads an operator:
 
@@ -1874,10 +1875,17 @@ Two invariants carry `read.ts`, and both exist because the alternative misleads 
 
 Tested with a fake transport over throwaway loopback servers (`test/fleet.test.ts` — merged view,
 disabled machine excluded, unverifiable + last-seen + the transport's reason, the timeout, and an
-action that hits only its own machine), with the forward's own argv and early-exit reporting driven
-through a fake `ssh` on `PATH` (`test/fleet-transport.test.ts` — ControlPath length fallback,
-unmultiplexed fallback, ssh's stderr surfaced), and end to end against **two real `serve`
-processes** (`fleet-cli`, §13).
+action that hits only its own machine; `test/tui-fleet-view.test.ts` — the same for the TUI's view,
+plus the carried-forward rows and the header lines), with the forward's own argv and early-exit
+reporting driven through a fake `ssh` on `PATH` (`test/fleet-transport.test.ts` — ControlPath length
+fallback, unmultiplexed fallback, ssh's stderr surfaced), and end to end against **two real `serve`
+processes** — at the CLI (`fleet-cli`) and through the real TUI in a real PTY (`tui-fleet`, where
+`x` on a key BOTH machines are working may only tear down the one the card belongs to), §13.
+
+The TUI's chrome for all this appears **only when there is a fleet**: with one machine the dashboard
+renders exactly as it did before this layer existed, which is what keeps a single-machine install
+from paying for a feature it has no use for. The config editor stays local on purpose — config lives
+on each host, and editing another machine's would be a write across a link the factory does not have.
 
 ---
 

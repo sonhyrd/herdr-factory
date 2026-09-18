@@ -1414,6 +1414,9 @@ Two properties are worth knowing before you trust the output:
 `--json` emits the whole snapshot — every machine with its state, version, last-seen time and repos,
 plus the flattened run list — which is the shape to script against.
 
+The [TUI](#the-tui) reads the same fleet: the dashboard shows every machine's board, and its keys
+act on the machine that owns the run.
+
 ## The TUI
 
 Plain `herdr-factory` (no arguments) opens a full-screen terminal UI built on
@@ -1452,6 +1455,16 @@ cursor.
   plus the belt's step-by-step progress (with per-step timing) and the event timeline; on a
   **repo** it opens general AWS SSO/source-auth diagnostics followed by configuration, work counts,
   and a live source/pickup health check for every belt.
+
+  With more than one machine in the [fleet](#fleet--every-run-on-every-machine), the dashboard shows
+  **all of them**: a header per machine (reachable?, server version, cap occupancy and memory gate,
+  when it last answered), an `@machine` badge on every repo row, and `m` to narrow the board to one
+  machine or widen it back to all. Every action goes to the machine that owns the run — the
+  confirmation names it, so `x` on a key two boxes happen to share can't land on the wrong one. A
+  machine that stops answering keeps the rows of its last successful read, marked `unverifiable`
+  with the time it last answered and *not* acted on until it comes back; the machines that are
+  answering carry on as normal. A machine of one renders exactly as it always has — no headers, no
+  badges, no filter.
 - **Config** — a repo list `[1]` and a full `config.yml` editor split across four bordered panels:
   `[2]` config (repo · limits · secrets · evidence), `[3]` work sources, `[4]` layouts (the
   repo-level [layout](#layouts) library — nest into a layout to edit its tabs and panes; belts
@@ -1482,7 +1495,9 @@ cursor.
   declared per source type (`JIRA_EMAIL`/`JIRA_API_TOKEN` for jira, `GITHUB_TOKEN` for
   github_issues, `SENTRY_AUTH_TOKEN` for sentry) — written separately to the `env` file (`chmod 600`).
 - **Doctor** — the same checks as the CLI: `r` re-runs, `d` toggles deep mode (live herdr/gh/S3
-  probes). The `herdr`/`gh`/`claude`/`git` presence checks resolve against the **service's** PATH
+  probes), plus a row per **other machine in the fleet**, from its own `/health` — a box running an
+  older build, or one that isn't answering, is invisible from this machine's checks otherwise.
+  The `herdr`/`gh`/`claude`/`git` presence checks resolve against the **service's** PATH
   (the environment the resident server runs its tools in), not the TUI's own — so they read the
   same whether you open the TUI from a terminal or a GUI launcher (Spotlight, a dock icon, a
   hotkey), which otherwise inherits only the bare system PATH.
@@ -1636,9 +1651,10 @@ scripts/e2e --no-build -- --reporter=verbose  # iterate without rebuilding
 scripts/e2e --lane fake                       # only the no-herdr lane (failure injection + scale)
 ```
 
-30 scenarios, ~6 minutes in the container: the core belts, layouts, every attention park and the human
+31 scenarios, ~6 minutes in the container: the core belts, layouts, every attention park and the human
 loop, the evidence station, the PR lifecycle, source parity for Jira and Sentry, belt/config breadth, a
-herdr outage, a two-machine fleet, a live TUI boot in a real PTY — and four performance measures that record real numbers
+herdr outage, a two-machine fleet at the CLI and again in a live TUI (where a keypress on one machine's
+run must reach that machine and no other), a live TUI boot in a real PTY — and four performance measures that record real numbers
 into each scenario's `metrics.json` (external-call budget, throughput at 60 items, per-pass latency
 under load, and a ~900-pass resource soak). A second lane swaps herdr for a shim, which is how an
 unreachable herdr and 60 concurrent runs get tested without 60 PTYs.

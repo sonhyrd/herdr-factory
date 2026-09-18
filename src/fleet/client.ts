@@ -1,9 +1,11 @@
 // One machine's factory API, behind one interface.
 //
-// The calls are exactly the set `src/tui/api.ts` makes today (status, eligible, timeline,
-// obligations, health, claim, teardown, resume, retry-now, tick, reload) — so a caller that used to
-// be hard-wired to the local server can be handed a `MachineClient` and stop caring where the run
-// lives. Reads answer `null` when the machine can't be reached; actions answer `{ ok: false, error }`.
+// The calls are the whole set a UI needs (status, eligible, timeline, obligations, health, claim,
+// teardown, resume, retry-now, tick, reload) — so a caller that used to be hard-wired to the local
+// server can be handed a `MachineClient` and stop caring where the run lives. That is what the TUI's
+// Dashboard now reads and acts through, this machine included, rather than keeping a second
+// single-machine client of its own.
+// Reads answer `null` when the machine can't be reached; actions answer `{ ok: false, error }`.
 // Nothing here throws for an unreachable machine: that is a fact the fleet view reports, not a
 // failure that should take the command down.
 import type {
