@@ -8,8 +8,15 @@ import { BoxRenderable, ScrollBoxRenderable, type CliRenderer } from "@opentui/c
 import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";
 import { baseGroups } from "../doctor.ts";
-import { BORDER, theme } from "./theme.ts";
+import { BORDER, activeTheme, theme, type ThemeSource } from "./theme.ts";
 import type { TabView } from "./types.ts";
+
+/** How the theme was chosen, in words, for the report row below. */
+const THEME_SOURCE: Record<ThemeSource, string> = {
+  herdr: "following herdr's config",
+  env: "from HERDR_FACTORY_THEME",
+  default: "default — herdr names no theme",
+};
 
 export function createDoctor(renderer: CliRenderer): TabView {
   const root = new BoxRenderable(renderer, { flexDirection: "column", width: "100%", height: "100%", backgroundColor: theme.bg, paddingLeft: 1, paddingRight: 1 });
@@ -86,6 +93,17 @@ export function createDoctor(renderer: CliRenderer): TabView {
         addCheck(mark, fg, `  ${line}`, c.ok && !warn ? theme.text.primary : fg);
       }
     });
+    // The TUI's own row. The theme resolver can't print — stdout belongs to the renderer — so this is
+    // where it reports which palette won, and the one place a fallback is visible.
+    addText("", theme.text.tertiary);
+    addText("This TUI:", theme.text.secondary);
+    if (activeTheme.note) warnings++;
+    addCheck(
+      activeTheme.note ? "⚠" : "✓",
+      activeTheme.note ? theme.status.warn : theme.status.good,
+      `  theme — ${activeTheme.name} (${THEME_SOURCE[activeTheme.source]})${activeTheme.note ? ` · ${activeTheme.note}` : ""}`,
+      activeTheme.note ? theme.status.warn : theme.text.primary,
+    );
     list.scrollTop = 0;
     const mode = deep ? "deep" : "shallow";
     const hint = "r: re-run · d: deep";
