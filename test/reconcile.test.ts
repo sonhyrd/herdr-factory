@@ -2170,6 +2170,39 @@ describe("custom belt (agent-driven, no PR)", () => {
     expect(calls.branchDelete).toContain("fix/G-2-s");
   });
 
+  // Issue #6: a dedicated-pane belt whose last step's spawn exceeded herdr's readiness wait. The
+  // spawn threw, so pane_id/dispatched_at were never recorded — but the agent WAS up, did the work
+  // and signalled step-done. The undispatched-pass spawn branch used to fire before the advance,
+  // so every pass started another agent on the finished step and the run could never complete.
+  it("a last step that signalled done after its spawn failed to record completes the run — with no second spawn", async () => {
+    const { deps, store, worktree, calls } = build();
+    customBelt(deps);
+    const run = seed(store, worktree, "G-TIMEOUT", "running", "propose", {}, "gen");
+    // The spawn threw: no pane recorded, the pass never marked dispatched.
+    store.upsertRunStep(run.id, "propose", { paneId: null, dispatchedAt: null });
+    store.markStepDone(run.id, "propose");
+    await reconcileRun(deps, store.getRun(run.id)!);
+    const got = store.getRun(run.id)!;
+    expect(got.phase).toBe("done");
+    expect(got.outcome).toBe("completed"); // not "abandoned"
+    expect(calls.agentStart).toBe(0); // no duplicate agent for a step that already finished
+    // ...and the ENDED run is never dispatched again, however stale the caller's snapshot is.
+    await reconcileRun(deps, run);
+    expect(calls.agentStart).toBe(0);
+    expect(store.getRun(run.id)!.outcome).toBe("completed");
+  });
+
+  it("an intermediate step in the same shape still advances (and dispatches the next step once)", async () => {
+    const { deps, store, worktree, calls } = build();
+    customBelt(deps);
+    const run = seed(store, worktree, "G-TIMEOUT2", "running", "research", {}, "gen");
+    store.upsertRunStep(run.id, "research", { paneId: null, dispatchedAt: null });
+    store.markStepDone(run.id, "research");
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.step).toBe("propose");
+    expect(calls.agentSend.length).toBe(1); // the NEXT step dispatched once, not a second `research` agent
+  });
+
   it("attention on a custom belt is never PR-polled (watchPr gate)", async () => {
     const { deps, store, state, worktree, calls } = build();
     customBelt(deps);

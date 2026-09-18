@@ -828,6 +828,14 @@ export async function reconcileRun(deps: Deps, run: Run, ctx: TickCtx = {}): Pro
 }
 
 async function reconcileRunImpl(deps: Deps, run: Run, ctx: TickCtx): Promise<void> {
+  // The caller's `run` is a SNAPSHOT — the tick reads every active run up front and reconciles them
+  // with bounded concurrency, so a run torn down (by an earlier phase of this pass, a nudge, or the
+  // CLI) while this one waited for its turn still arrives here as `running`. Acting on that stale
+  // phase dispatches work for a run that no longer exists — a spawn minutes AFTER teardown, into a
+  // worktree that has been removed. Re-read under the run lock and stop if it ended.
+  const live = deps.store.getRun(run.id);
+  if (!live || live.endedAt !== null) return;
+  run = live;
   // Resolve the run's source + belt ONCE and thread them down. The belt carries the step sequence
   // + lifecycle; the source materializes the work doc and owns the lifecycle write-back.
   const src = deps.resolveSource(run.workSource);
@@ -1925,7 +1933,13 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   // can't tell those apart, since it's kept across re-entries as the pane-reuse handle
   // (dispatched_at is the per-pass truth). If the step's configured layout pane isn't up yet,
   // wait (bounded → attention) rather than spawning our own.
-  if (!rs || !rs.paneId || rs.dispatchedAt == null) {
+  //
+  // `done` vetoes the respawn: a dispatch that FAILED to record (a dedicated spawn whose readiness
+  // wait timed out and threw, leaving pane_id/dispatched_at unset) can still have a live agent that
+  // did the work and signalled step-done. Re-spawning then puts a SECOND agent on a finished step —
+  // and on the belt's last step it loops forever, because the advance that would end the run sits
+  // below this branch and is never reached. The step's work is done; fall through and advance it.
+  if (!rs?.done && (!rs || !rs.paneId || rs.dispatchedAt == null)) {
     const res = await spawnStep(deps, run, belt, src, step.name);
     if (res.status === "waiting") await handleLayoutWait(deps, run, belt, step);
     return;
@@ -2065,10 +2079,13 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   //  3. Two-strike confirmation: the first confirmed absence only records `absentAt`; only a
   //     second confirmed absence past the confirmation window respawns (a herdr-daemon restart
   //     that briefly drops every pane from the list heals in between).
+  // A step with NO recorded pane reaches here only when its `done` vetoed the respawn branch above
+  // and the advance didn't fire (a PR belt's last step, done before its PR is visible): there is no
+  // pane to ask about, so it counts as gone and falls into the same two-strike recovery.
   let alive: boolean;
   try {
-    alive = await deps.herdr.paneAlive(rs.paneId);
-    if (!alive) alive = await deps.herdr.paneAlive(rs.paneId, { fresh: true });
+    alive = rs.paneId != null && (await deps.herdr.paneAlive(rs.paneId));
+    if (!alive && rs.paneId != null) alive = await deps.herdr.paneAlive(rs.paneId, { fresh: true });
   } catch (e) {
     if (e instanceof HerdrUnreachableError) {
       deps.log("warn", `${run.ticketKey}: ${step.name} liveness check deferred — ${e.message}`);

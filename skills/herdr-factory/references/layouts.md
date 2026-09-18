@@ -265,7 +265,7 @@ Everything else is dropped, agents included. Three cases prune **nothing**:
 
 What was dropped is logged (`layout "<id>": belt "<belt>" targets no step at tab(s) <titles> — not building them`) and recorded on the `layout_applied` event as `detail.prunedTabs`.
 
-**Which belt gets asked** is `resolveHookLayout`: if an **active run** owns that branch, its belt decides **alone** — that belt's layout, or nothing. A layout-less belt (a `quick`/`review`/`plan` belt whose steps spawn dedicated panes) therefore gets **no** layout painted into its workspace; borrowing another belt's would break the spawn with `failed to spawn dedicated agent (no tab/pane configured)`. Only for **hand-created worktrees** (a branch no active run owns) do we walk **all** the repo's belts and take the first that yields a layout. Belts are sorted by `priority` at load, so "walk the belts" means priority order. There is no workspace-specificity scoring: one config file = one repo.
+**Which belt gets asked** is `resolveHookLayout`: if an **active run** owns that branch, its belt decides **alone** — that belt's layout, or nothing. A layout-less belt (a `quick`/`review`/`plan` belt whose steps spawn dedicated panes) therefore gets **no** layout painted into its workspace; borrowing another belt's would break the spawn (`failed to spawn dedicated agent for step "<step>" — the pane could not be created, or its agent never became ready`). Only for **hand-created worktrees** (a branch no active run owns) do we walk **all** the repo's belts and take the first that yields a layout. Belts are sorted by `priority` at load, so "walk the belts" means priority order. There is no workspace-specificity scoring: one config file = one repo.
 
 ---
 
