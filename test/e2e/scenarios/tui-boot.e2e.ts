@@ -77,7 +77,16 @@ scenario(
 
     const lines = readFileSync(STARTUP_LOG, "utf8").trim().split("\n").filter(Boolean);
     const timing = JSON.parse(lines[lines.length - 1]!) as Timing;
-    const screen = w.herdr.readPane(pane!, 60);
+    // `app_ready` is the shell; the Dashboard's first poll lands a moment later. Wait for the status
+    // line it writes, so what follows is read off a PAINTED screen rather than the "loading…" frame.
+    let screen = "";
+    await w.waitFor(
+      () => {
+        screen = w.herdr.readPane(pane!, 60);
+        return /server up|server not running/.test(screen);
+      },
+      { label: "the Dashboard painted its first poll", timeoutMs: 60_000, pollMs: 500 },
+    );
 
     w.recordMetrics({
       nodeStartupMs: timing.node_startup,
@@ -104,6 +113,5 @@ scenario(
     for (const chrome of ["(this machine)", "@local", "fleet ", "unverifiable"]) {
       expect(screen, `a one-machine TUI shows no "${chrome}"`).not.toContain(chrome);
     }
-    expect(screen, "the status line is the one-server one").toMatch(/server up|server not running/);
   },
 );
