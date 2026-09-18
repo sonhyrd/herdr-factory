@@ -247,6 +247,24 @@ belt:
 - `title` on a rule is documentation only.
 - The branch comes from `herdr worktree list --workspace <w> --json` → the entry whose `open_workspace_id` matches (fallback: `path` == the checkout path) → its `branch`.
 
+### A factory-claimed worktree gets only the tabs its belt uses
+
+`pruneLayoutToBelt` (`src/core/layout-match.ts`), applied by `resolveHookLayout` for an **owned** run only. Layouts are a shared library — the same entry usually serves several belts and is written for the longest one — so a belt reusing it would otherwise come up with idle terminals and idle agents for steps it never dispatches. A `work`→`pr` belt pointing at a four-tab `work`/`evidence`/`review`/`pr` layout builds **two** tabs.
+
+A tab survives when:
+
+- some step on this belt names it in `tab:` (title match, exactly as `tab:`/`pane:` targeting matches it), **or**
+- it hosts the layout's `setup: true` pane — the `setup.command` runs nowhere else, **or**
+- one of its panes carries its own `prompt:` — the documented way to put agent work in a pane no step targets.
+
+Everything else is dropped, agents included. Three cases prune **nothing**:
+
+- the belt's steps target no layout pane at all (they all spawn dedicated panes) — the layout is furniture the user wants (dev servers, logs);
+- no step's `tab:` matches any tab in the layout — a mismatch, left whole so the step's `layout_wait` still reports it instead of it becoming an empty build (config load catches this for a `default_layout`, not for a `layout_matching` one);
+- a **hand-created** worktree — no belt dispatches into it, so nothing in it is unused.
+
+What was dropped is logged (`layout "<id>": belt "<belt>" targets no step at tab(s) <titles> — not building them`) and recorded on the `layout_applied` event as `detail.prunedTabs`.
+
 **Which belt gets asked** is `resolveHookLayout`: if an **active run** owns that branch, its belt decides **alone** — that belt's layout, or nothing. A layout-less belt (a `quick`/`review`/`plan` belt whose steps spawn dedicated panes) therefore gets **no** layout painted into its workspace; borrowing another belt's would break the spawn with `failed to spawn dedicated agent (no tab/pane configured)`. Only for **hand-created worktrees** (a branch no active run owns) do we walk **all** the repo's belts and take the first that yields a layout. Belts are sorted by `priority` at load, so "walk the belts" means priority order. There is no workspace-specificity scoring: one config file = one repo.
 
 ---

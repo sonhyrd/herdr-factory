@@ -8,6 +8,7 @@
 // a script).
 //
 //   • resolveBeltLayout — pick the layout for a worktree from its belt (branch globs → default).
+//   • pruneLayoutToBelt — drop the tabs of a shared layout no step on THIS belt uses (layout-match).
 //   • tabTree           — turn one configured tab into herdr's declarative pane tree: splits with
 //                         their ratios, labels, cwd, env, and each pane's command as ARGV.
 //   • splitRatio        — the size → ratio conversion, given the region being split.
@@ -39,7 +40,7 @@ import { telemetrySpan } from "../telemetry/index.ts";
 
 // Pure worktree→layout matching lives in the leaf ./layout-match.ts (so the lean event-hook entry
 // can import it without this module's runner/telemetry graph). Re-exported here for existing callers.
-export { globMatch, resolveBeltLayout, resolveHookLayout } from "./layout-match.ts";
+export { globMatch, resolveBeltLayout, resolveHookLayout, pruneLayoutToBelt, beltTargetedTabs } from "./layout-match.ts";
 
 // ── Shell wrapping ────────────────────────────────────────────────────────────────────────────────
 

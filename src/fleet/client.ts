@@ -36,6 +36,9 @@ export interface MachineClient {
   resume(repo: string, key: string, source?: string | null): Promise<Posted<ResumeOutcome>>;
   retryNow(repo: string, key?: string | null, source?: string | null): Promise<Posted<RetryNowOutcome>>;
   reload(): Promise<ReloadOutcome>;
+  /** Why the transport could not reach this machine (ssh's own stderr), or null when it does not
+   *  know. What the fleet view reports instead of a generic "could not reach its API". */
+  failureDetail(): string | null;
 }
 
 /** Same generous POST budget as the TUI's: a claim or a retry-now does real work (a retry-now
@@ -87,6 +90,7 @@ export function httpMachineClient(machine: Machine, transport: MachineTransport)
 
   return {
     machine,
+    failureDetail: () => transport.failureDetail?.(machine) ?? null,
     health: () => get<Health>("/health", 500),
     status: (repo, detail = false) => get<RepoStatus>(`${r(repo)}/status${detail ? "?refresh=1" : "?quick=1"}`, detail ? 2500 : 500),
     eligible: (repo) => get<{ eligible: EligibleItem[] }>(`${r(repo)}/eligible`),

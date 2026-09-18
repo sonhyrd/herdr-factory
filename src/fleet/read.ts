@@ -215,7 +215,9 @@ export async function readMachines<T>(
         return unverifiable(e instanceof Error ? e.message : String(e));
       }
       if (got === TIMED_OUT) return unverifiable(`no answer within ${timeoutMs}ms`);
-      if (got === null) return unverifiable(m.local ? "no server running here" : "could not reach its API");
+      // A remote machine's transport usually knows more than "it did not answer" — ssh's own first
+      // line of stderr (bad auth, unknown host, a forward it refused). Prefer it over the generic.
+      if (got === null) return unverifiable(m.local ? "no server running here" : client.failureDetail() ?? "could not reach its API");
       lastSeen.set(m.name, now);
       return { ...base, state: "ok", version: got.health.version, lastSeenAt: now, payload: got.payload };
     }),

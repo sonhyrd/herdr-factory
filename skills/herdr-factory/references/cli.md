@@ -389,7 +389,7 @@ saw.
 herdr-factory fleet — 2 machines (1 reachable, 1 unverifiable) · 2 runs
 
   ✓ local (this machine) — v0.1.0 · 1 repo · 1 running · cap 1/4 working across all repos · memory 7412 MB available (floor 1024 MB)
-  ✗ build-box (ops@build-box) — unverifiable: no answer within 5000ms · last seen 4m ago · its runs are NOT known to be gone
+  ✗ build-box (ops@build-box) — unverifiable: ops@build-box: Permission denied (publickey) · last seen 4m ago · its runs are NOT known to be gone
 
   MACHINE  REPO  KEY     BELT         STEP  PHASE    AGE  PROBLEMS
   local    app   HF-101  ship-gh      work  running  12m  -
@@ -398,7 +398,9 @@ herdr-factory fleet — 2 machines (1 reachable, 1 unverifiable) · 2 runs
 Semantics worth knowing:
 
 - **A remote machine's API is reached over an SSH local forward** (`ssh -N -L <free port>:127.0.0.1:8765 <target>`, ControlMaster reused), so every server keeps binding `127.0.0.1` only. The local machine is read from `server.json`, as the TUI always has.
-- **`unverifiable` ≠ empty.** A machine that times out or refuses reports `unverifiable` with the time it last answered (remembered in `<stateRoot>/fleet-last-seen.json`). Its runs are **unknown, not gone** — do not claim an item because it did not appear in a fleet read where its machine was unverifiable.
+- **ssh exiting 0 is not a failure.** `ControlPersist` keeps the shared connection alive between calls, so the `ssh` that opens a forward exits 0 the moment a backgrounded master takes it over. A machine is judged by whether its forwarded port answers `/health`; only a non-zero ssh exit (or the timeout) reads `unverifiable`. Tear-down cancels the forward through the control socket (`ssh -O cancel`) and leaves the shared connection up for the next read.
+- **The ControlMaster socket goes wherever it fits.** A Unix socket path is capped at 104 bytes (macOS), so the socket lives in `/tmp/hf-<uid>/` (mode 0700) unless `<stateRoot>/fleet-ssh/%C` is short enough, and the forward runs unmultiplexed if neither fits. Nothing to configure, and no reason left for a machine to read `unverifiable` while `ssh -L` by hand works.
+- **`unverifiable` ≠ empty.** A machine that times out or refuses reports `unverifiable` with the time it last answered (remembered in `<stateRoot>/fleet-last-seen.json`) and, when ssh is what failed, **ssh's own first line of stderr** as the reason (`Permission denied (publickey)`, `Connection refused`) rather than a generic "could not reach its API". Its runs are **unknown, not gone** — do not claim an item because it did not appear in a fleet read where its machine was unverifiable.
 - **Machines are read in parallel**, each under `--timeout` (default 5000ms), so one dead box costs one pause and not the view.
 - **Actions route to the owning machine only.** A key active on two machines is refused rather than guessed (`… is active on more than one machine (…) — narrow it with --machine or --repo`), and a key found nowhere names the machines that read as unverifiable.
 - `--json` emits `{readAt, machines[], runs[]}`: every machine with `state`, `version`, `lastSeenAt`, `detail`, `repos`, `machineLine`, `problems`, and the flattened run list (`machine`, `repo`, `key`, `source`, `belt`, `step`, `phase`, `ageSeconds`, `prNumber`, `problems`). Script against this, not the table.
@@ -428,7 +430,7 @@ Sequence for a first repo: `init` → `doctor --repo <r> --deep` → `run --foll
 | var | effect | default |
 |---|---|---|
 | `HERDR_FACTORY_CONFIG_DIR` | config root: `repos/<name>/{config.yml,env,prompts/}` + `config.schema.json` | `~/.config/herdr-factory` |
-| `HERDR_FACTORY_STATE_ROOT` | state root: `herdr-factory.db`, `server.json`, `update-status.json`, `fleet-last-seen.json`, `fleet-ssh/`, `node-path`, `runtime/`, `logs/`, `<repo>/logs/` | `~/.local/state/herdr-factory` |
+| `HERDR_FACTORY_STATE_ROOT` | state root: `herdr-factory.db`, `server.json`, `update-status.json`, `fleet-last-seen.json`, `fleet-ssh/` (unless too long for a Unix socket — see `fleet`), `node-path`, `runtime/`, `logs/`, `<repo>/logs/` | `~/.local/state/herdr-factory` |
 | `HERDR_FACTORY_PORT` | server TCP port on 127.0.0.1 | `8765` |
 | `HERDR_BIN_PATH` | path to the `herdr` binary | `herdr` (on PATH) |
 | `HERDR_FACTORY_FLEET_ENDPOINTS` | path to a JSON file of `{"<machine name>": "http://host:port"}`; a named machine is dialled at that URL instead of being forwarded over SSH (a host whose server is off 8765 — and the seam the e2e suite uses in place of real SSH). Absent/unreadable file = no overrides | unset |

@@ -1134,6 +1134,14 @@ belt:
   none, never another belt's. Only a hand-created worktree (no owning run) resolves by walking the
   repo's belts. Layouts are keyed to the repo by the config file (one config = one repo), so no
   repo path is restated.
+- **Only the tabs the belt uses** — a layout is a shared library entry, usually written for the
+  longest belt that uses it, so a factory-claimed worktree gets only the tabs **this** belt's steps
+  target by title. A `work`→`pr` belt pointing at a four-tab ship layout comes up with two tabs; no
+  terminal and no agent is started for a step that will never dispatch. A tab with work of its own
+  survives being untargeted: the one hosting the `setup: true` pane, and one whose pane carries its
+  own `prompt`. Nothing is pruned when the belt's steps target no layout pane at all, when no step's
+  `tab` matches any tab in the layout (a mismatch the step's layout wait reports), or for a
+  hand-created worktree — no belt dispatches into that one, so nothing in it is unused.
 - **Idempotent** — applied exactly once per worktree, and only to a **fresh** (1-tab/1-pane) linked
   worktree, so it never clobbers an arranged or restored workspace. Panes a herdr **plugin** adds to
   every new tab (a sidebar) are not arrangement: labels listed in `machine.yml`'s
@@ -1379,11 +1387,25 @@ port>:127.0.0.1:8765 <target>`, with OpenSSH's ControlMaster reused between call
 in the fleet keeps binding `127.0.0.1` only — nothing is exposed to the network. The local machine is
 still read directly from `server.json`.
 
+The ControlMaster socket lives in a **short per-user directory** (`/tmp/hf-<uid>/`, mode 0700), with
+`<stateRoot>/fleet-ssh/` used when it is short enough to fit: a Unix socket path is capped at 104
+bytes on macOS, and the state root plus `%C` plus the suffix ssh appends while binding the master
+overflows it on a normal home directory — which used to make every remote machine read
+`unverifiable`. If no ControlPath fits, the forward simply runs **unmultiplexed** (it pays a
+handshake per call rather than failing).
+
+Because that shared connection is kept alive between calls (`ControlPersist`), the `ssh` that sets a
+forward up **exits 0** as soon as the tunnel is handed to the backgrounded master. A machine is
+therefore judged by whether its forwarded port answers `/health` — only a **non-zero** ssh exit, or
+the timeout, makes it `unverifiable`. On the way out the forward is cancelled through the same
+control socket, which leaves the shared connection up for the next `herdr-factory fleet`.
+
 Two properties are worth knowing before you trust the output:
 
 - **Machines are read in parallel, each under its own timeout** (`--timeout`, default 5000ms), so one
   unreachable box costs you one pause and not the view.
 - **A machine that does not answer is `unverifiable`, not empty.** Its row says so, and carries the
+  reason (ssh's own first line of stderr, when the forward is what failed) and the
   time it last answered successfully — because "no runs" and "we couldn't ask" are opposite facts,
   and reporting the second as the first is how an operator ends up claiming an item that is already
   being worked somewhere else. Actions (claim, teardown, resume, retry-now, tick) always go to the
@@ -1553,7 +1575,8 @@ harness with no skill mechanism can be pointed at the folder directly.
 ~/.local/state/herdr-factory/    herdr-factory.db · runtime/<node>/ · node-path · server.json
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
                                  fleet-last-seen.json (when each fleet machine last answered)
-                                 fleet-ssh/ (ControlMaster sockets for the fleet's SSH forwards)
+                                 fleet-ssh/ (ControlMaster sockets — only when this path fits a Unix
+                                 socket's 104 bytes; otherwise /tmp/hf-<uid>/, mode 0700)
                                  logs/ (supervisor + server) · <repo>/logs/<date>.log (per-repo)
 <worktree>/.memory/herdr-factory/   per-run working memory: prompts · handoffs · work doc · evidence
 ```
