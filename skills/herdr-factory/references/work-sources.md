@@ -533,10 +533,12 @@ without posting anything; otherwise post `[herdr-factory claim id=<run> host=<ho
 `settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
 the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
 posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
-(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release. A dead
-host's claim is **never** cleared automatically: free the item by posting its release comment by hand.
+(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release.
+
+Before arbitrating, a factory releases claims **it posted itself** whose run no longer exists in its own DB (crashed, or a teardown whose release post failed) — it is the only authority that can tell those apart from live work, and left open they fence the item against every host. Another host's dead claim is still **never** cleared automatically: free it by posting its release comment by hand.
 
 - **Stuck item, log says `claimed elsewhere by <host> (run <id>) — skipping` every tick**, and that host is gone or never finished: post a comment `[herdr-factory release id=<id> host=<host>]` on the item. Nothing reaps it for you.
 - **A release failed to post** logs `could not post claim release (post "[herdr-factory release …]" by hand to free the item)` — do exactly that.
-- **Costs:** ~`settle_ms` per claim; claim + release comments on every item (two more per lost race). Jira has no compare-and-set, so the guard relies on monotonic comment ids; only the newest 100 Jira comments are read.
+- **Costs:** ~`settle_ms` per claim; claim + release comments on every item (two more per lost race). Jira has no compare-and-set, so the guard relies on monotonic comment ids; the whole comment thread is paged (100 per call), so an old claim comment is never missed.
+- **Our own stale claims self-heal:** after a crash, the same host releases its old claim on the next tick it sees the item (log: `<KEY>: released our own stale claim (run <id> no longer exists here)`) and claims it afresh. Only claims bearing another host's name need the manual release below.
 - The markers carry the herdr marker, so ask-human reply polling never mistakes them for a human answer.

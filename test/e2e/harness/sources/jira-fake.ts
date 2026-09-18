@@ -384,13 +384,15 @@ export class JiraFake {
     });
   }
 
-  /** GET /rest/api/3/issue/<key>/comment?orderBy=created&maxResults=100 */
+  /** GET /rest/api/3/issue/<key>/comment?orderBy=created&startAt=0&maxResults=100 — paged, like the
+   *  real endpoint: the client walks `startAt` until `total`. */
   private listComments(res: ServerResponse, issue: StoredIssue, url: URL): void {
     const orderBy = url.searchParams.get("orderBy") ?? "created";
     const maxResults = Number(url.searchParams.get("maxResults") ?? "100") || 100;
+    const startAt = Number(url.searchParams.get("startAt") ?? "0") || 0;
     const ordered = orderBy.startsWith("-") ? [...issue.comments].reverse() : [...issue.comments];
-    const page = ordered.slice(0, maxResults);
-    this.json(res, 200, { startAt: 0, maxResults, total: issue.comments.length, comments: page.map((c) => this.commentJson(c, issue)) });
+    const page = ordered.slice(startAt, startAt + maxResults);
+    this.json(res, 200, { startAt, maxResults, total: issue.comments.length, comments: page.map((c) => this.commentJson(c, issue)) });
   }
 
   /** POST /rest/api/3/issue/<key>/comment {"body": <ADF>} → 201 with the created comment. */

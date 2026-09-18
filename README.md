@@ -724,12 +724,17 @@ without posting anything; otherwise post `[herdr-factory claim id=<run> host=<ho
 `settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
 the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
 posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
-(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release. A dead
-host's claim is **never** cleared automatically: free the item by posting its release comment by hand.
+(a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release.
+
+Before that read, every tick, a factory posts the release for any claim of **its own** whose run no longer
+exists in its DB (a crash, or a teardown whose release post failed) — it is the only authority that can tell
+those from live work, and left open they fence the item against every host. Another host's dead claim is
+**never** cleared automatically: free it by posting its release comment by hand.
 
 Costs: a claim adds ~`settle_ms` and two visible comments per item (claim + release), plus two more per
-lost race. Jira has no compare-and-set, so the guard relies on comment ids being monotonic. Only the
-newest 100 Jira comments are read. `local_markdown` and `sentry` do not accept `claim_guard`.
+lost race. Jira has no compare-and-set, so the guard relies on comment ids being monotonic. The whole Jira
+comment thread is paged (100 per call), so an old claim comment is never missed. `local_markdown` and
+`sentry` do not accept `claim_guard`.
 
 ### `belt` (≥ 1)
 

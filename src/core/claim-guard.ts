@@ -10,8 +10,12 @@
 //   4. loser: post its release, delete its (still pristine) run row, log `claimed elsewhere by <host>`
 //   (an item that already shows another open claim is skipped before step 1 — nothing is posted)
 //
-// A winner posts its release at teardown. A dead winner's claim is NEVER cleared automatically (fence,
-// never reap): only a human posting the release comment frees the item.
+// A winner posts its release at teardown. ANOTHER host's dead claim is NEVER cleared automatically
+// (fence, never reap): only a human posting the release comment frees the item. Our OWN stale claims
+// are the exception — a claim by THIS host whose run no longer exists locally (crash, teardown that
+// could not post its release) is released before arbitrating, because this factory is the authority
+// on its own runs: it can see the row is gone. Nothing else can free those, and left open they fence
+// the item against every host, forever.
 import type { Deps, SourceRuntime } from "./deps.ts";
 import type { Run } from "../types.ts";
 import { HERDR_MARKER } from "./deps.ts";
@@ -35,9 +39,9 @@ const LEDGER_RE = /\[herdr-factory (claim|release) id=(\d+) host=([A-Za-z0-9._-]
 export const claimMarker = (t: ClaimTag): string => `${HERDR_MARKER} claim id=${t.runId} host=${t.host}]`;
 export const releaseMarker = (t: ClaimTag): string => `${HERDR_MARKER} release id=${t.runId} host=${t.host}]`;
 
-/** The open claim with the lowest comment id, or null when none is open. Pure. Quoted (`> `) lines are
+/** Every open claim (no matching release), lowest comment id first. Pure. Quoted (`> `) lines are
  *  ignored, so a human quoting a claim neither claims nor releases anything. */
-export function claimWinner(comments: readonly LedgerComment[]): (ClaimTag & { commentId: number }) | null {
+export function openClaims(comments: readonly LedgerComment[]): (ClaimTag & { commentId: number })[] {
   const released = new Set<string>();
   const claims: (ClaimTag & { commentId: number })[] = [];
   for (const c of comments) {
@@ -53,7 +57,12 @@ export function claimWinner(comments: readonly LedgerComment[]): (ClaimTag & { c
   }
   const open = claims.filter((c) => !released.has(`${c.runId}@${c.host}`));
   open.sort((a, b) => a.commentId - b.commentId);
-  return open[0] ?? null;
+  return open;
+}
+
+/** The open claim with the lowest comment id, or null when none is open. Pure. */
+export function claimWinner(comments: readonly LedgerComment[]): (ClaimTag & { commentId: number }) | null {
+  return openClaims(comments)[0] ?? null;
 }
 
 /** Is the guard active for this source? Needs both the config switch and the source's comment hooks. */
@@ -77,12 +86,12 @@ export async function arbitrateClaim(deps: Deps, src: SourceRuntime, run: Run): 
   let winner: ClaimTag | null;
   let posted = false;
   try {
-    winner = claimWinner(await src.client.listClaimComments!(run.ticketKey));
+    winner = await readLedger(deps, src, run.ticketKey, me.host);
     if (!winner) {
       posted = true;
       await src.client.postClaimComment!(run.ticketKey, claimMarker(me));
       await deps.sleep(src.claimGuard.settleMs);
-      winner = claimWinner(await src.client.listClaimComments!(run.ticketKey));
+      winner = await readLedger(deps, src, run.ticketKey, me.host);
     }
   } catch (e) {
     if (posted) await releaseClaim(deps, src, run);
@@ -94,6 +103,26 @@ export async function arbitrateClaim(deps: Deps, src: SourceRuntime, run: Run): 
   if (posted) await releaseClaim(deps, src, run);
   deps.store.deleteClaimingRun(run.id);
   return winner ?? me;
+}
+
+/** Is this run still ours to hold a claim for? A row that is gone (crash, DB reset) or already ended
+ *  (a teardown whose release post failed) is not — its claim is stale. */
+function claimIsLive(deps: Deps, runId: number): boolean {
+  const run = deps.store.getRun(runId);
+  return !!run && run.endedAt === null;
+}
+
+/** Read the ledger, first releasing any claim THIS host holds for a run that no longer exists locally
+ *  (see the header) — so a crashed or half-torn-down factory stops fencing the item, for itself and
+ *  for every other host. Returns the open claim that wins after those releases. */
+async function readLedger(deps: Deps, src: SourceRuntime & { claimGuard: NonNullable<SourceRuntime["claimGuard"]> }, key: string, host: string): Promise<(ClaimTag & { commentId: number }) | null> {
+  const open = openClaims(await src.client.listClaimComments!(key));
+  const stale = open.filter((c) => c.host === host && !claimIsLive(deps, c.runId));
+  for (const tag of stale) {
+    await src.client.postClaimComment!(key, releaseMarker(tag));
+    deps.log("info", `${key}: released our own stale claim (run ${tag.runId} no longer exists here)`);
+  }
+  return open.find((c) => !stale.includes(c)) ?? null;
 }
 
 /** Post this run's release marker. Best-effort: a failure is logged loudly (the claim then stays open
