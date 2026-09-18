@@ -59,6 +59,14 @@ scenario({
 });
 ```
 
+A scenario can also declare **`fleetMachines`** — extra `serve` processes in the same world, each its
+own config dir, state root, port and DB, standing in for another machine of the fleet. The world
+points the fleet's transport seam (`HERDR_FACTORY_FLEET_ENDPOINTS`) at them and seeds the fake
+herdr's `machine list`, so `herdr-factory fleet` reaches them without SSH — the one part of the
+transport a container cannot have. Fake lane only: a real herdr's saved machines are the operator's.
+Reached from a scenario as `w.machine(name)` (its CLI, its API, and `stop()` for the "a machine goes
+away" half). That is `fleet-cli`.
+
 Agent behaviours available per step (and per pass): `commit`, `hangMs`, `signal`
 (`step-done`/`bounce`/`ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`,
 `openPr`, `setBranch` (rename onto the repo's branch convention through the prompt's rendered

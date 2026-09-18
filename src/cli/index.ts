@@ -24,6 +24,8 @@ import { runObligations } from "../core/obligations.ts";
 import { explainRun, fmtDur } from "../core/explain.ts";
 import { runForeground } from "./run.ts";
 import { triageRun } from "./triage.ts";
+import { renderFleet } from "./fleet.ts";
+import { buildFleet, DEFAULT_MACHINE_TIMEOUT_MS, readFleet } from "../fleet/index.ts";
 import { MEMORY_DIR } from "../core/step.ts";
 import * as service from "../watchers/service.ts";
 import { buildDeps, today } from "../build-deps.ts";
@@ -343,6 +345,28 @@ program
       console.log(`supervisor: ${(await service.isLoaded()) ? "loaded" : "not loaded"}`);
     } catch (e) {
       fail(e);
+    }
+  }));
+
+program
+  .command("fleet")
+  .description(
+    "every run on every machine in one table: this machine plus each ENABLED herdr saved machine (read through an SSH forward to its API). Machines are read in parallel — one that can't be reached is reported `unverifiable` with the time it last answered, never as having no runs. Repo-agnostic; pass --repo to narrow it",
+  )
+  .option("--json", "emit the whole snapshot as JSON (machines + runs) instead of the table")
+  .option("--timeout <ms>", `per-machine read budget (default ${DEFAULT_MACHINE_TIMEOUT_MS})`)
+  .action(cliAction("fleet", async (opts: { json?: boolean; timeout?: string }) => {
+    const timeoutMs = opts.timeout === undefined ? undefined : Number(opts.timeout);
+    if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0)) fail("fleet: --timeout must be a positive number of milliseconds");
+    const repo = (program.opts() as { repo?: string }).repo;
+    // A herdr that can't be asked leaves the fleet as this machine alone; say so on stderr so the
+    // table (and a `--json` consumer's stdout) stays clean either way.
+    const fleet = await buildFleet({ onWarn: (m) => console.error(`fleet: ${m}`) });
+    try {
+      const snapshot = await readFleet(fleet.clients, { timeoutMs, repos: repo ? [repo] : undefined });
+      console.log(opts.json ? JSON.stringify(snapshot, null, 2) : renderFleet(snapshot));
+    } finally {
+      fleet.close();
     }
   }));
 

@@ -123,4 +123,12 @@ export interface ScenarioSpec {
   afterStop?: () => Promise<void> | void;
   /** Factory repo config name (what `--repo` takes). Default "app". */
   repoName?: string;
+  /** Extra `serve` processes in the world, each standing in for ANOTHER MACHINE in the fleet: its own
+   *  config dir, state root, port and work folder, over the same target checkout, with its repo named
+   *  after the machine. The world points the fleet's transport seam
+   *  (`HERDR_FACTORY_FLEET_ENDPOINTS`) at them and seeds the fake herdr's `machine list`, so
+   *  `herdr-factory fleet` reaches them without any SSH — which is the only part of the transport a
+   *  container cannot have. Fake lane only: a real herdr's saved machines are the operator's, and a
+   *  scenario must not add to them. Reached from a scenario with `w.machine(name)`. */
+  fleetMachines?: Record<string, { briefs?: Record<string, string>; config?: (p: WorldPaths) => Record<string, unknown> }>;
 }

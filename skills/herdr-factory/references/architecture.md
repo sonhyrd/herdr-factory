@@ -411,6 +411,16 @@ The self-update resets the package checkout to the channel target (`main` = the 
 
 The scheduled service is launchd (`com.herdr-factory.server`, `StartInterval 60`) on macOS and a systemd `--user` timer (`herdr-factory.timer`, `OnUnitActiveSec=60`) on Linux; anything else throws. Note that only a narrow env allowlist is baked into the plist/unit — `HERDR_FACTORY_CONFIG_DIR`, `HERDR_FACTORY_STATE_ROOT`, and `HERDR_FACTORY_PORT` are forwarded supervisor→serve but **not** baked in, so a non-default config dir or port needs another mechanism.
 
+### The fleet (`src/fleet/`)
+
+Everything above is one machine: one `serve`, one DB, one `server.json`. The fleet layer reads
+**several** machines without changing any of that, and `herdr-factory fleet` is its first consumer.
+
+- **Who is in it**: this machine plus every *enabled* entry of `herdr machine list --json`. No config key. `herdr machine disable` removes a box; a herdr that cannot be asked leaves the local machine alone (so a single-machine install behaves exactly as before).
+- **How a remote one is reached**: an SSH local forward (`ssh -N -L <free port>:127.0.0.1:8765 <target>`, ControlMaster reused), so every server keeps binding `127.0.0.1` only. `HERDR_FACTORY_FLEET_ENDPOINTS` names a machine's base URL directly instead.
+- **One interface**: `MachineClient` — the same calls the TUI's reader makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload). Reads answer `null` for an unreachable machine; actions answer `{ok:false,error}`. Unreachability never throws.
+- **Two invariants**: machines are read in **parallel under a per-machine timeout**, so one slow box costs its own row and not the view; and a machine that does not answer is **`unverifiable` with its last successful read time** (`<state>/fleet-last-seen.json`), never "no runs" — the difference decides whether an operator wrongly claims an item another machine is already working. Actions route to the owning machine only, and an ambiguous key is refused rather than guessed.
+
 ---
 
 ## 13. Files on disk
@@ -434,6 +444,7 @@ Inside the state root:
 | `logs/supervisor.out.log`, `logs/supervisor.err.log` | `ensure-up` decisions and the launchd-started server's stdout (macOS; Linux goes to journald) |
 | `server.json` | `{pid, port, version, startedAt}` — the advertised server; a malformed file reads as "no server" |
 | `update-status.json` | the last self-update attempt: channel, outcome, head/target, `behind`, `dirtySkip`, `warning` |
+| `fleet-last-seen.json` | when each fleet machine last answered a read — what an `unverifiable` machine's row reports instead of "no runs" |
 | `evidence/` | captures served by the `local` evidence publisher |
 | `runtime/<version>`, `runtime/current` | the vendored Node, with `current` as the atomically-flipped symlink |
 

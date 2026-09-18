@@ -17,6 +17,8 @@ import { ds4DataHome, ds4Preflight, resolveOpencode, writeOpencodeConfig } from 
 import { GhFake, initialGhState } from "./gh-fake/state.ts";
 import type { AgentScript, Driver, Lane, ScenarioSpec, Tier, WorldPaths } from "./types.ts";
 
+type FleetMachineSpec = NonNullable<ScenarioSpec["fleetMachines"]>[string];
+
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HARNESS_DIR, "..", "..", "..");
 
@@ -105,7 +107,10 @@ export class World {
     ghLog: string;
     herdrLog: string;
     herdrDown: string;
+    fleetEndpoints: string;
   };
+  /** The other MACHINES of the fleet: one extra `serve` each (see `ScenarioSpec.fleetMachines`). */
+  private readonly fleet = new Map<string, { factory: Factory; paths: WorldPaths; spec: FleetMachineSpec }>();
   private started = false;
 
   constructor(spec: ScenarioSpec) {
@@ -146,6 +151,7 @@ export class World {
       ghLog: join(this.paths.art, "gh-calls.jsonl"),
       herdrLog: join(this.paths.art, "herdr-calls.jsonl"),
       herdrDown: join(home, "herdr-down"),
+      fleetEndpoints: join(home, "fleet-endpoints.json"),
     };
     this.env = {
       ...(process.env as Record<string, string>),
@@ -163,6 +169,10 @@ export class World {
       HERDR_FACTORY_AUTO_UPDATE: "0",
       HERDR_FACTORY_LAYOUT_STATE_DIR: join(this.paths.stateRoot, "layout-hook"),
       HERDR_BIN_PATH: join(this.paths.bin, "herdr"),
+      // The fleet's transport seam: real SSH cannot exist in the container, so each fleet machine's
+      // API is named directly. Harmless when no scenario declares any (an absent file = no override,
+      // i.e. server.json for the local machine and a real forward for a remote one).
+      HERDR_FACTORY_FLEET_ENDPOINTS: this.files.fleetEndpoints,
       HERDR_SOCKET_PATH: join(home, ".config", "herdr", "herdr.sock"),
       HF_HERDR_REAL: realHerdr,
       HF_HERDR_LOG: this.files.herdrLog,
@@ -198,6 +208,52 @@ export class World {
     });
     this.gh = new GhFake({ statePath: this.files.ghState, logPath: this.files.ghLog });
     this.db = new Db(this.paths.stateRoot, this.repoName);
+
+    // Each extra machine is a whole second factory: its own config dir, state root and port, so
+    // nothing it does can touch this machine's DB — which is the point, since the fleet's job is to
+    // merge two independent servers' views. Ports sit 2000 above the main allocation, clear of every
+    // other world's main port.
+    let i = 0;
+    for (const [name, spec] of Object.entries(this.spec.fleetMachines ?? {})) {
+      if (this.lane !== "fake") throw new Error(`scenario "${this.spec.name}" declares fleetMachines on the real lane — a real herdr's saved machines are the operator's`);
+      const paths: WorldPaths = {
+        ...this.paths,
+        configDir: join(home, ".config", `hf-${name}`),
+        repoConfigDir: join(home, ".config", `hf-${name}`, "repos", name),
+        stateRoot: join(home, ".state", `hf-${name}`),
+        briefs: join(home, `briefs-${name}`),
+      };
+      const machinePort = port + 2000 + i++;
+      const factory = new Factory({
+        repoRoot: REPO_ROOT,
+        repo: name,
+        env: {
+          ...this.env,
+          HERDR_FACTORY_CONFIG_DIR: paths.configDir,
+          HERDR_FACTORY_STATE_ROOT: paths.stateRoot,
+          HERDR_FACTORY_PORT: String(machinePort),
+        },
+        logPath: join(this.paths.art, `factory-serve-${name}.log`),
+        stateRoot: paths.stateRoot,
+        port: machinePort,
+      });
+      this.fleet.set(name, { factory, paths, spec });
+    }
+  }
+
+  /** Another machine's factory (`ScenarioSpec.fleetMachines`) — its CLI, its API, and `stop()` for
+   *  the "one machine goes away" half of a fleet scenario. */
+  machine(name: string): Factory {
+    const entry = this.fleet.get(name);
+    if (!entry) throw new Error(`no fleet machine "${name}" in scenario "${this.spec.name}"`);
+    return entry.factory;
+  }
+
+  /** That machine's on-disk geography — its briefs folder is where work for it is dropped. */
+  machinePaths(name: string): WorldPaths {
+    const entry = this.fleet.get(name);
+    if (!entry) throw new Error(`no fleet machine "${name}" in scenario "${this.spec.name}"`);
+    return entry.paths;
   }
 
   // ── construction ──────────────────────────────────────────────────────────────────────────────
@@ -216,6 +272,7 @@ export class World {
       this.files.agentLogDir,
       this.files.agentStateDir,
       join(this.paths.home, ".config", "herdr"),
+      ...[...this.fleet.values()].flatMap(({ paths }) => [paths.repoConfigDir, paths.stateRoot, paths.briefs]),
     ]) {
       mkdirSync(d, { recursive: true });
     }
@@ -364,9 +421,20 @@ export class World {
       },
       agent: { command: "claude", flags: [] },
     };
-    const cfg = mergeConfig(base, this.spec.config(this.paths));
-    const yaml = `# yaml-language-server: $schema=../../config.schema.json\n${yamlStringify(cfg, { lineWidth: 0 })}`;
-    writeFileSync(join(this.paths.repoConfigDir, "config.yml"), yaml);
+    const render = (over: Record<string, unknown>): string =>
+      `# yaml-language-server: $schema=../../config.schema.json\n${yamlStringify(mergeConfig(base, over), { lineWidth: 0 })}`;
+    writeFileSync(join(this.paths.repoConfigDir, "config.yml"), render(this.spec.config(this.paths)));
+
+    // Each fleet machine gets the same treatment: its own config.yml (over the same defaults and the
+    // same target checkout) and its own briefs. The endpoints file is what makes `fleet` reach them.
+    for (const [name, { paths, spec }] of this.fleet) {
+      writeFileSync(join(paths.repoConfigDir, "config.yml"), render((spec.config ?? this.spec.config)(paths)));
+      for (const [key, body] of Object.entries(spec.briefs ?? {})) writeFileSync(join(paths.briefs, `${key}.md`), body);
+    }
+    writeFileSync(
+      this.files.fleetEndpoints,
+      JSON.stringify(Object.fromEntries([...this.fleet].map(([name, { factory }]) => [name, `http://127.0.0.1:${factory.port}`])), null, 2),
+    );
 
     if (this.spec.env) {
       const body = Object.entries(this.spec.env)
@@ -425,6 +493,11 @@ export class World {
         throw new Error(`scenario "${this.spec.name}" declares layouts on the fake lane — no plugin host exists there, so no layout would ever be built`);
       }
       await this.herdr.start();
+      // After start(), which blanks the shim's state: these are the saved SSH machines the factory's
+      // fleet discovery reads. The target is cosmetic — the endpoints file is what is actually dialled.
+      if (this.fleet.size) {
+        (this.herdr as FakeHerdr).setMachines([...this.fleet.keys()].map((label) => ({ label, target: `harness@${label}`, enabled: true })));
+      }
     } else {
       // Link before boot so the one-shot [[startup]] hook is registered too; if linking needs the
       // socket, retry once the server is up (a fresh world has no stale claims for the startup hook
@@ -435,7 +508,10 @@ export class World {
         throw new Error(`herdr plugin link failed:\n${this.herdr.cli(["plugin", "link", REPO_ROOT]).stderr}`);
       }
     }
-    if (this.driver === "serve") await this.factory.serve();
+    if (this.driver === "serve") {
+      await this.factory.serve();
+      for (const { factory } of this.fleet.values()) await factory.serve();
+    }
     this.assertShimsWin();
     this.started = true;
   }
@@ -485,6 +561,7 @@ export class World {
       }
     }
     try {
+      for (const { factory } of this.fleet.values()) await factory.stop();
       await this.factory.stop();
     } finally {
       await this.herdr.stop();
@@ -584,6 +661,7 @@ export class World {
       "",
       "— serve log (tail) —",
       this.factory.serveLog(20),
+      ...[...this.fleet].flatMap(([name, { factory }]) => ["", `— machine ${name}: serve log (tail) —`, factory.serveLog(20)]),
       "",
       "— agent transcript (tail) —",
       tail(join(this.files.agentLogDir, "agent.log"), 40),

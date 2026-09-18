@@ -46,6 +46,13 @@ scenario({ name: "...", briefs: {...}, config: (p) => ({...}), agent: {...} }, a
   (rename onto the repo's branch convention via the prompt's `set-branch` command), `run`. Resolution
   is `passes["<step>:<pass>"]` ▸ `steps[step]` ▸ `default` ▸ built-in. `w.setAgentScript()` swaps it
   mid-scenario (the agent re-reads it every turn).
+- **`fleetMachines`** declares extra `serve` processes in the same world — each another MACHINE of the
+  fleet, with its own config dir, state root, port, DB and briefs folder over the same target
+  checkout, and its repo named after the machine. The world writes the fleet's transport override
+  (`HERDR_FACTORY_FLEET_ENDPOINTS`) and seeds the fake herdr's `machine list`, so `herdr-factory
+  fleet` reaches them with no SSH — the only part of the transport a container cannot have. Fake lane
+  only (a real herdr's saved machines are the operator's). `w.machine(name)` is that factory:
+  its `cli()`, its `api()`, and `stop()` for the "a machine goes away" half of a fleet assertion.
 - **Assertions** rank: `w.db.run()/events()/steps()/intents()` → `expectTimeline` /
   `expectParked` / `expectNoPendingIntents` → `w.factory.repoApi("GET", "obligations?key=…")` →
   filesystem (`w.branchExists`, `w.humanInbox`, `w.factory.evidence`) → argv traces
@@ -90,6 +97,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `jira-ask-human` | the reply channel as comments, including the marker filter that stops the factory answering itself |
 | `jira-stale-item` | a ticket that vanishes is `stale`, not an infinite retry |
 | `sentry-parity` | the mirror image: internal ledger, Sentry never moved for lifecycle, the `on_merge` note, and a release regression reopening the work |
+| `fleet-cli` | the fleet: two factory servers in one world (its own config dir, state root, port and DB each) merged into one `fleet --json`; discovery really goes through `herdr machine list`, and stopping one machine reports it `unverifiable` with its last-seen time, never as empty |
 | `herdr-unreachable` | an outage injected into the world's wrapper: liveness DEFERS while herdr can't be asked, judges once it can, and never respawns a second agent |
 | `perf-scale-drain` | 60 briefs through a cap of 5: one run per item, the cap never exceeded (sampled continuously), every item terminal |
 | `perf-call-budgets` | 12 watched PRs cost **one** batched GraphQL query per pass — no per-run `pr view`, no re-discovery by `pr list` |

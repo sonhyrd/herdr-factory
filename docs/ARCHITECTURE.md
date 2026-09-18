@@ -1742,6 +1742,7 @@ herdr-factory schema [--stdout]           # write the config.yml JSON Schema for
 herdr-factory install | uninstall | start | stop   # the supervisor service (launchd / systemd)
 herdr-factory capture-lock acquire|release <resource> [owner] # machine-global exclusive_resource lock
 herdr-factory doctor [--deep] [--repo <name>]      # managed / you-provide / per-repo health (--deep: live probes)
+herdr-factory fleet [--json] [--timeout <ms>]      # every run on every machine (fleet-wide; --repo narrows it)
 herdr-factory help
 ```
 
@@ -1827,6 +1828,36 @@ finished` line, ending with the **server** + **supervisor** state.
 (`serve`/`ensure-up`/`restart`/`install`/…) are repo-agnostic — the server discovers every repo
 under `~/.config/herdr-factory/repos/`. The shared `buildDeps(repo)` (open DB, construct clients
 from config) backs both the server and every command's local path.
+
+### 11.1 The fleet — machine-aware reads and action routing (`src/fleet/`)
+
+Everything above is single-machine: one `serve`, one DB, one `server.json`. The fleet layer makes a
+caller **machine-agnostic** without changing any of it — `herdr-factory fleet` is its first consumer,
+the TUI's fleet dashboard is the next.
+
+| module | job |
+| --- | --- |
+| `fleet/machines.ts` | **Who is in the fleet**: this machine, plus every *enabled* entry of `herdr machine list --json`. No new config — herdr's saved machines are the register, and `herdr machine disable` is how a box leaves. Parsing is defensive (another tool's output): an entry with no label or target is dropped, `enabled: false` is excluded, and a herdr that cannot be asked leaves the local machine alone. |
+| `fleet/transport.ts` | **How a machine's API is reached.** Local: `server.json`, as `tui/api.ts` has always read it. Remote: an SSH local forward (`ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:8765 <target>`) with ControlMaster reuse, so every server keeps binding `127.0.0.1` only and nothing is exposed. `HERDR_FACTORY_FLEET_ENDPOINTS` overrides a machine's base URL by name — the seam the e2e suite substitutes for SSH, and the escape hatch for a host off the default port. |
+| `fleet/client.ts` | **`MachineClient`** — the same calls `tui/api.ts` makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. |
+| `fleet/shapes.ts` | The API response shapes, as a zero-import leaf. There are now two readers of the same HTTP API (the TUI's and the fleet's) and they must not drift, so the shapes moved out of `tui/api.ts`, which re-exports them. |
+| `fleet/read.ts` | The **merged view** (`readFleet`) and the **routing rule** (`routeRun`). |
+
+Two invariants carry `read.ts`, and both exist because the alternative misleads an operator:
+
+1. **One slow machine never blocks the rest.** Every machine is read concurrently under its own
+   budget (`--timeout`, default 5000ms), so the view's latency is the slowest machine's *budget*, not
+   its actual latency.
+2. **Silence is never emptiness.** A machine that times out or refuses is reported `unverifiable`,
+   carrying the last time it *did* answer (remembered in `<state>/fleet-last-seen.json`, written
+   atomically). Reporting it as "no runs" would invite exactly the wrong action — claiming an item
+   another machine is already working. `routeRun` carries the same posture: an action goes to the one
+   machine that owns the run, a key active on two machines is **refused** rather than guessed, and a
+   key found nowhere says so *with* the names of the machines this read could not verify.
+
+Tested with a fake transport over throwaway loopback servers (`test/fleet.test.ts` — merged view,
+disabled machine excluded, unverifiable + last-seen, the timeout, and an action that hits only its
+own machine) and end to end against **two real `serve` processes** (`fleet-cli`, §13).
 
 ---
 
@@ -2013,7 +2044,9 @@ command it finds there (which makes the suite a live check of the §14 agent-CLI
   refuses a fake-lane scenario that declares `layouts`; layout coverage is real-lane only.
 
 Coverage today is the core flows, branch renaming onto a repo's convention, the attention/human loop, the evidence station, the PR lifecycle,
-source parity for `jira` and `sentry`, belt/config breadth, a herdr outage, the four performance
+source parity for `jira` and `sentry`, belt/config breadth, a herdr outage, a two-machine fleet
+(`fleet-cli`: two real `serve` processes, reached through the transport's endpoint seam rather than
+real SSH, merged into one `fleet --json` — and one of them stopped, to pin `unverifiable`), the four performance
 measures (call budgets, scale drain, tick latency, resource soak), a live TUI boot in a real PTY, and an
 opt-in tier that hands the SHIPPED prompts to a local model. `github_issues` parity waits on a
 `GITHUB_API_URL` seam. The scenario table, what

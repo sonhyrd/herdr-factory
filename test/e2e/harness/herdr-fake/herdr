@@ -178,7 +178,7 @@ function sleepSync(ms) {
 // --- state -------------------------------------------------------------------
 
 function blankState() {
-  return { seq: 0, workspaces: {}, tabs: {}, panes: {}, plugins: [] };
+  return { seq: 0, workspaces: {}, tabs: {}, panes: {}, plugins: [], machines: [] };
 }
 
 /** Auto-creating on read: unlike the gh fake there is nothing a scenario must seed, and refusing to
@@ -1111,6 +1111,16 @@ function handlePlugin(argv) {
   return null;
 }
 
+/** Saved SSH machine profiles — herdr's own fleet list, which the factory reads to decide which
+ *  machines exist. Seeded by the scenario (FakeHerdr.setMachines); `[]` is the single-machine world
+ *  every other scenario runs in. The shape is herdr's: label, target, session, enabled. */
+function handleMachine(argv) {
+  if (argv[1] !== "list") return null;
+  const machines = readState().machines ?? [];
+  if (!hasFlag(argv, "--json")) return text(machines.map((m) => `${m.label}\t${m.target}\t${m.enabled === false ? "disabled" : "enabled"}`).join("\n"));
+  return { code: 0, out: `${JSON.stringify(machines)}\n`, err: "" };
+}
+
 function handle(argv) {
   const [a, b] = argv;
 
@@ -1131,6 +1141,7 @@ function handle(argv) {
   if (a === "tab") return handleTab(argv);
   if (a === "pane") return handlePane(argv);
   if (a === "agent") return handleAgent(argv);
+  if (a === "machine") return handleMachine(argv);
   if (a === "plugin") return handlePlugin(argv);
   if (a === "notification" && b === "show") {
     // Same degradation the real lane shows in a container: the argv log is how the suite asserts a

@@ -29,6 +29,14 @@ export function serverInfoPath(): string {
   return join(stateRoot(), "server.json");
 }
 
+/** Last time each fleet machine answered a read, by machine name. An unreachable machine is
+ *  reported as `unverifiable` *with this timestamp* rather than as having no runs, so the file has
+ *  to outlive the `fleet` process that recorded it. Absent/corrupt = "never seen", which is the
+ *  honest answer for a machine that has never answered. */
+export function fleetLastSeenPath(): string {
+  return join(stateRoot(), "fleet-last-seen.json");
+}
+
 /** Where the supervised auto-updater records its LAST attempt's outcome (channel, whether it
  *  updated / was skipped for a dirty checkout / failed, and the current-vs-target commit). Sits
  *  next to server.json so `doctor` and the TUI can surface a failed/behind update instead of it
