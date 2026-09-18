@@ -1379,11 +1379,19 @@ port>:127.0.0.1:8765 <target>`, with OpenSSH's ControlMaster reused between call
 in the fleet keeps binding `127.0.0.1` only — nothing is exposed to the network. The local machine is
 still read directly from `server.json`.
 
+The ControlMaster socket lives in a **short per-user directory** (`/tmp/hf-<uid>/`, mode 0700), with
+`<stateRoot>/fleet-ssh/` used when it is short enough to fit: a Unix socket path is capped at 104
+bytes on macOS, and the state root plus `%C` plus the suffix ssh appends while binding the master
+overflows it on a normal home directory — which used to make every remote machine read
+`unverifiable`. If no ControlPath fits, the forward simply runs **unmultiplexed** (it pays a
+handshake per call rather than failing).
+
 Two properties are worth knowing before you trust the output:
 
 - **Machines are read in parallel, each under its own timeout** (`--timeout`, default 5000ms), so one
   unreachable box costs you one pause and not the view.
 - **A machine that does not answer is `unverifiable`, not empty.** Its row says so, and carries the
+  reason (ssh's own first line of stderr, when the forward is what failed) and the
   time it last answered successfully — because "no runs" and "we couldn't ask" are opposite facts,
   and reporting the second as the first is how an operator ends up claiming an item that is already
   being worked somewhere else. Actions (claim, teardown, resume, retry-now, tick) always go to the
@@ -1538,7 +1546,8 @@ harness with no skill mechanism can be pointed at the folder directly.
 ~/.local/state/herdr-factory/    herdr-factory.db · runtime/<node>/ · node-path · server.json
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
                                  fleet-last-seen.json (when each fleet machine last answered)
-                                 fleet-ssh/ (ControlMaster sockets for the fleet's SSH forwards)
+                                 fleet-ssh/ (ControlMaster sockets — only when this path fits a Unix
+                                 socket's 104 bytes; otherwise /tmp/hf-<uid>/, mode 0700)
                                  logs/ (supervisor + server) · <repo>/logs/<date>.log (per-repo)
 <worktree>/.memory/herdr-factory/   per-run working memory: prompts · handoffs · work doc · evidence
 ```

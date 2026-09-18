@@ -112,10 +112,11 @@ async function fakeMachine(opts: {
   return self;
 }
 
-function fakeTransport(machines: FakeMachine[]): MachineTransport {
+function fakeTransport(machines: FakeMachine[], failureDetail?: (machine: Machine) => string | null): MachineTransport {
   return {
     endpoint: async (machine) => machines.find((m) => m.machine.name === machine.name)?.baseUrl ?? null,
     close: () => undefined,
+    failureDetail,
   };
 }
 
@@ -234,6 +235,15 @@ describe("readFleet", () => {
     expect(blind.detail).toBeTruthy();
     // The reachable machine is unaffected: one silent box never costs the rest of the view.
     expect(snapshot.runs.map((r) => r.key)).toEqual(["HF-1"]);
+  });
+
+  it("reports what the transport knows about an unreachable machine, not a generic reason", async () => {
+    const there = await fakeMachine({ name: "build-box", repos: {} });
+    there.down();
+    const transport = fakeTransport([], () => "ssh: connect to host build-box port 22: Connection refused");
+    const snapshot = await readFleet([httpMachineClient(there.machine, transport)], { lastSeen: memoryLastSeenStore() });
+
+    expect(snapshot.machines[0]!).toMatchObject({ state: "unverifiable", detail: "ssh: connect to host build-box port 22: Connection refused" });
   });
 
   it("a machine that has never answered is unverifiable with no last-seen time", async () => {

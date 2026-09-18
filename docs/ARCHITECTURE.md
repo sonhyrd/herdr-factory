@@ -1838,8 +1838,8 @@ the TUI's fleet dashboard is the next.
 | module | job |
 | --- | --- |
 | `fleet/machines.ts` | **Who is in the fleet**: this machine, plus every *enabled* entry of `herdr machine list --json`. No new config — herdr's saved machines are the register, and `herdr machine disable` is how a box leaves. Parsing is defensive (another tool's output): an entry with no label or target is dropped, `enabled: false` is excluded, and a herdr that cannot be asked leaves the local machine alone. |
-| `fleet/transport.ts` | **How a machine's API is reached.** Local: `server.json`, as `tui/api.ts` has always read it. Remote: an SSH local forward (`ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:8765 <target>`) with ControlMaster reuse, so every server keeps binding `127.0.0.1` only and nothing is exposed. `HERDR_FACTORY_FLEET_ENDPOINTS` overrides a machine's base URL by name — the seam the e2e suite substitutes for SSH, and the escape hatch for a host off the default port. |
-| `fleet/client.ts` | **`MachineClient`** — the same calls `tui/api.ts` makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. |
+| `fleet/transport.ts` | **How a machine's API is reached.** Local: `server.json`, as `tui/api.ts` has always read it. Remote: an SSH local forward (`ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:8765 <target>`) with ControlMaster reuse, so every server keeps binding `127.0.0.1` only and nothing is exposed. `HERDR_FACTORY_FLEET_ENDPOINTS` overrides a machine's base URL by name — the seam the e2e suite substitutes for SSH, and the escape hatch for a host off the default port. **The ControlPath is length-checked** (`resolveControlDir`): `<stateRoot>/fleet-ssh/%C` when it fits a 104-byte `sun_path` with 20 bytes of headroom for the suffix ssh appends while binding the master, else the short per-user `/tmp/hf-<uid>/` (0700), else no multiplexing at all (`ControlMaster=no`). Getting this wrong is not a degraded forward but no forward: ssh exits 255 with `unix_listener: path … too long for Unix domain socket` before the tunnel is up. When ssh does exit early, its **first line of stderr is kept** (`failureDetail`) and becomes the machine's `unverifiable` reason. |
+| `fleet/client.ts` | **`MachineClient`** — the same calls `tui/api.ts` makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. `failureDetail()` passes the transport's reason (ssh's stderr) through to the view. |
 | `fleet/shapes.ts` | The API response shapes, as a zero-import leaf. There are now two readers of the same HTTP API (the TUI's and the fleet's) and they must not drift, so the shapes moved out of `tui/api.ts`, which re-exports them. |
 | `fleet/read.ts` | The **merged view** (`readFleet`) and the **routing rule** (`routeRun`). |
 
@@ -1853,11 +1853,16 @@ Two invariants carry `read.ts`, and both exist because the alternative misleads 
    atomically). Reporting it as "no runs" would invite exactly the wrong action — claiming an item
    another machine is already working. `routeRun` carries the same posture: an action goes to the one
    machine that owns the run, a key active on two machines is **refused** rather than guessed, and a
-   key found nowhere says so *with* the names of the machines this read could not verify.
+   key found nowhere says so *with* the names of the machines this read could not verify. An
+   unreachable remote machine's reason is the transport's when it has one (ssh's stderr), and only
+   the generic "could not reach its API" when it does not.
 
 Tested with a fake transport over throwaway loopback servers (`test/fleet.test.ts` — merged view,
-disabled machine excluded, unverifiable + last-seen, the timeout, and an action that hits only its
-own machine) and end to end against **two real `serve` processes** (`fleet-cli`, §13).
+disabled machine excluded, unverifiable + last-seen + the transport's reason, the timeout, and an
+action that hits only its own machine), with the forward's own argv and early-exit reporting driven
+through a fake `ssh` on `PATH` (`test/fleet-transport.test.ts` — ControlPath length fallback,
+unmultiplexed fallback, ssh's stderr surfaced), and end to end against **two real `serve`
+processes** (`fleet-cli`, §13).
 
 ---
 
