@@ -336,7 +336,9 @@ export class FakeHerdr {
   }
 
   /** Refuse the next `agent prompt` to this pane as `agent_prompt_stalled` WITHOUT delivering the
-   *  text — herdr's "the submission was dropped" answer. `"*"` covers every pane. */
+   *  text — herdr's "the submission was dropped" answer. The pane stays silent, so its `revision`
+   *  does not move either and the engine's progress probe cannot mistake this for a landed prompt.
+   *  `"*"` covers every pane. */
   stallPrompt(paneId: string, on = true): void {
     this.patchInjection((i) => {
       const set = new Set(i.promptStall ?? []);

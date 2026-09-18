@@ -1218,6 +1218,24 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.paneDisplay).toContainEqual(["w1:p1", "fix:ST-1", null]);
   });
 
+  it("a confirmed dispatch is submitted ONCE, however idle herdr keeps reporting the pane", async () => {
+    // Issue #22: a cursor-agent pane takes the prompt and works while herdr still reports `idle`.
+    // Its dispatch is confirmed by the pane-revision probe in the client, so the pass is dispatched
+    // and every later tick must leave it alone — the re-send loop that buried the agent in dozens of
+    // identical queued follow-ups was the pass never being marked dispatched, not the idle status.
+    const { deps, store, state, calls } = build();
+    state.eligible = [ticket("ID-1")];
+    state.paneState = "idle"; // ...and it STAYS idle: herdr never flips this harness
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "ID-1")!;
+    expect(store.getRunStep(run.id, "fix")?.dispatchedAt).not.toBeNull();
+    expect(calls.agentSend.length).toBe(1);
+
+    await reconcileRepo(deps);
+    await reconcileRepo(deps);
+    expect(calls.agentSend.length).toBe(1); // no re-submission on any later tick
+  });
+
   it("read_only enforcement: a FROZEN read-only step that moves HEAD (commits) parks for attention", async () => {
     const { deps, store, state, worktree, shipBelt } = build();
     shipBelt.steps[1] = stepCfg("review", { readOnly: true }); // read-only review, guard attached like production

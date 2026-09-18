@@ -71,6 +71,7 @@ interface RawAgent {
   agent_status: string;
   cwd: string;
   agent_session?: { value?: string };
+  revision?: number;
 }
 interface AgentListResp {
   result?: { agents?: RawAgent[] };
@@ -204,6 +205,7 @@ export class HerdrClient {
       agentStatus: a.agent_status,
       cwd: a.cwd,
       sessionId: a.agent_session?.value ?? null,
+      revision: typeof a.revision === "number" ? a.revision : null,
     }));
     this.agentsMemo = { at: Date.now(), agents };
     return agents;
@@ -529,6 +531,12 @@ export class HerdrClient {
    *  like a successful dispatch, so the step's budget clock started against an agent that never got
    *  the work and the run parked at budget instead of retrying.
    *
+   *  A stalled verdict is NOT taken at face value, because herdr's state detection is per-harness and
+   *  not every harness flips: `cursor-agent` on Linux takes the prompt and works while herdr keeps
+   *  reporting the pane `idle`, so `--until working` always times out. Believing that verdict re-sends
+   *  the prompt on every tick, and the agent queues each copy as a follow-up. So a stall falls back to
+   *  a PROGRESS PROBE — did the pane visibly react? — and only a pane that did nothing is unconfirmed.
+   *
    *  Returns whether the prompt is confirmed to have landed. `false` (only possible under `confirm`)
    *  means "treat this dispatch as not having happened" — never that the agent misbehaved. */
   async agentSend(paneId: string, text: string, opts: { confirm?: boolean } = {}): Promise<boolean> {
@@ -539,11 +547,42 @@ export class HerdrClient {
       // default (idle/done/blocked), which waits out the agent's whole TURN and would hold the tick.
       args.push("--wait", "--until", "working", "--until", "blocked", "--timeout", String(HerdrClient.PROMPT_CONFIRM_TIMEOUT_MS));
     }
+    const before = opts.confirm ? await this.paneRevision(paneId) : null;
     const r = await run(this.bin, args, {
       allowFail: true,
       timeoutMs: opts.confirm ? HerdrClient.PROMPT_CONFIRM_TIMEOUT_MS + 15_000 : undefined,
     });
-    return r.code === 0;
+    if (r.code === 0 || !opts.confirm) return r.code === 0;
+    return await this.paneMadeProgress(paneId, before);
+  }
+
+  /** herdr's `revision` for a pane — a counter it bumps every time the pane's terminal content
+   *  changes — read FRESH (never the agents memo, whose whole point is to be a few seconds stale).
+   *  null when the pane is gone, herdr is unreachable, or this herdr doesn't report the field. */
+  private async paneRevision(paneId: string): Promise<number | null> {
+    const agents = await this.agents({ fresh: true }).catch(() => [] as Agent[]);
+    return agents.find((a) => a.paneId === paneId)?.revision ?? null;
+  }
+
+  /** Did the pane visibly react to a submission whose handshake stalled?
+   *
+   *  The signal is herdr's own per-pane `revision`: it is already carried by `agent list` (the call
+   *  every liveness question makes, so this costs one extra invocation per dispatch and no new herdr
+   *  surface), it is monotonic, and it moves for ANY change to the pane's screen — including the
+   *  agent echoing the prompt it just received. The alternatives are worse: `agent_session` is
+   *  present for any live agent and so says nothing about THIS submission, and diffing the worktree
+   *  or `pane read` output costs a git scan or a screen capture per dispatch to answer the same
+   *  question later and less directly.
+   *
+   *  Deliberately optimistic: unrelated output (a harness redrawing its spinner) can advance the
+   *  revision and confirm a dispatch that never landed. That trade is the right way round — a false
+   *  confirm starts the step's budget clock, which the budget watchdog already backstops by
+   *  re-prompting, whereas a false stall re-submits the prompt every tick for the whole layout
+   *  window and buries the agent in duplicate queued messages. */
+  private async paneMadeProgress(paneId: string, before: number | null): Promise<boolean> {
+    if (before == null) return false; // no baseline ⇒ nothing to compare; keep herdr's stalled verdict
+    const after = await this.paneRevision(paneId);
+    return after != null && after > before;
   }
 
   /** How long to wait for a submitted prompt to visibly move the agent. herdr needs ≥5s to call a
