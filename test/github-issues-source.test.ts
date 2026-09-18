@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeFakeGithub, makeSource, makeWired, type FakeGithub } from "./helpers/github-fake.ts";
 import { TokenBucket } from "../src/clients/http.ts";
+import { githubCallCounts } from "../src/clients/github-budget.ts";
+import { isSourceRateLimited, type SourceRateLimitedError } from "../src/core/rate-limit-gate.ts";
 import { isGithubIssuesItem, StaleItemError } from "../src/types.ts";
 
 let fake: FakeGithub | undefined;
@@ -429,16 +431,60 @@ describe("GithubIssuesClient — rate limits + auth", () => {
     expect(t.key).toBe("7");
   });
 
-  it("PRIMARY exhaustion (remaining: 0, reset far away) fails fast — no retry burns against an empty budget", async () => {
+  it("PRIMARY exhaustion (remaining: 0, reset far away) fails fast as the typed backoff signal, naming the reset", async () => {
     fake = makeFakeGithub();
     fake.addIssue(7);
     const { src } = makeWired(fake);
     const farReset = Math.floor(Date.now() / 1000) + 1800; // 30 min out
     fake.failNext.push({ status: 403, remaining: "0", reset: farReset });
     const started = Date.now();
-    await expect(src.describe("7")).rejects.toThrow(/403/);
+    const e = await src.describe("7").then(
+      () => null,
+      (x: unknown) => x,
+    );
+    expect(isSourceRateLimited(e)).toBe(true); // the reconciler holds the SOURCE, not just this call
+    const limited = e as SourceRateLimitedError;
+    expect(limited.exhausted).toBe(true);
+    expect(Math.round(limited.resetAtMs / 1000)).toBe(farReset); // the backend's own reset, not a guess
+    expect(limited.detail).toContain("GITHUB_TOKEN"); // …and the account-sharing remedy
     expect(Date.now() - started).toBeLessThan(2_000); // failed fast, not 60s-per-attempt sleeps
     expect(fake.calls.filter((c) => c.path.endsWith("/issues/7")).length).toBe(1); // exactly one attempt
+  });
+
+  it("a secondary-limit 403 that OUTLASTS the retries becomes the backoff signal too (Retry-After, budget intact)", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const { src } = makeWired(fake);
+    for (let i = 0; i < 3; i++) fake.failNext.push({ status: 403, retryAfter: 0, remaining: "30" }); // every attempt
+    const e = await src.describe("7").then(
+      () => null,
+      (x: unknown) => x,
+    );
+    expect(isSourceRateLimited(e)).toBe(true);
+    expect((e as SourceRateLimitedError).exhausted).toBe(false); // a secondary limit, not an empty budget
+  });
+
+  it("a 403 with budget left and no Retry-After stays an ordinary error — that is a permission problem, not a limit", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const { src } = makeWired(fake);
+    fake.failNext.push({ status: 403, remaining: "4000" });
+    const e = await src.describe("7").then(
+      () => null,
+      (x: unknown) => x,
+    );
+    expect(isSourceRateLimited(e)).toBe(false); // holding the source would hide a bad scope behind a wait
+    expect(String(e)).toMatch(/403/);
+  });
+
+  it("counts every REST attempt against the shared account budget — retries included", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const { src } = makeWired(fake);
+    const before = githubCallCounts().rest;
+    fake.failNext.push({ status: 500 }); // one retry, so the request costs two calls
+    await src.describe("7");
+    expect(githubCallCounts().rest - before).toBe(2);
   });
 
   it("mutations acquire EVERY chained budget bucket — the hourly cap blocks even when the minute cap is open", async () => {

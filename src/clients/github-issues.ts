@@ -7,9 +7,10 @@
 // auth is borrowed here (`gh auth token`) when no GITHUB_TOKEN is configured.
 import type { Logger } from "../core/deps.ts";
 import { SourceUnauthenticatedError } from "../auth/errors.ts";
+import { SourceRateLimitedError } from "../core/rate-limit-gate.ts";
 import { recordRateLimitRemaining, telemetryEvent } from "../telemetry/index.ts";
 import { run } from "./exec.ts";
-import { GITHUB_MUTATION_BUCKETS, githubReadBucket } from "./github-budget.ts";
+import { countGithubCall, GITHUB_MUTATION_BUCKETS, githubReadBucket } from "./github-budget.ts";
 import { HttpStatusError, httpOk, httpOkBytes, type HttpError, type HttpPolicy, type HttpResponse, type TokenBucket } from "./http.ts";
 
 const API = "https://api.github.com";
@@ -53,6 +54,32 @@ function asGithubAuthError(e: unknown): unknown {
     return new SourceUnauthenticatedError({ reason: "rejected", hint: "GitHub rejected the token (401) — refresh GITHUB_TOKEN, or run `gh auth login`", cause: e });
   }
   return e;
+}
+
+/** Map a rate-limit 403/429 that SURVIVED the retry policy to the typed signal, so the reconciler
+ *  holds the whole source until the reset instead of re-polling into an empty budget every tick.
+ *  The limit is per ACCOUNT: with several hosts on one `gh` login (or one PAT), everyone's polls
+ *  land on the same exhausted counter, and re-polling is what keeps it exhausted.
+ *
+ *  Two shapes qualify, per the documented headers: `x-ratelimit-remaining: 0` (the budget is gone
+ *  — primary exhaustion) and a bare `Retry-After` (a secondary limit still asking us to wait after
+ *  the retries gave up). A 403 with budget left and no Retry-After is the permission/scope case and
+ *  stays an ordinary HttpStatusError. */
+function asGithubRateLimitError(e: unknown, method: string, path: string): unknown {
+  if (!(e instanceof HttpStatusError)) return e;
+  if (e.status !== 403 && e.status !== 429) return e;
+  const exhausted = e.rateLimitRemaining === 0;
+  if (!exhausted && e.retryAfterMs == null) return e;
+  // No reset stamp on a bare secondary 403 that also lacked Retry-After can't happen (one of the
+  // two is set above), but clamp anyway so a zero/negative wait can't produce a no-op hold.
+  const waitMs = Math.max(e.retryAfterMs ?? 0, 1_000);
+  const reason = exhausted ? "rate limit exhausted (x-ratelimit-remaining: 0)" : "rate limited (Retry-After)";
+  return new SourceRateLimitedError({
+    resetAtMs: Date.now() + waitMs,
+    exhausted,
+    detail: `GitHub ${reason} on ${method} ${path} — HTTP ${e.status}; backing off for ${Math.ceil(waitMs / 1000)}s. The limit is per ACCOUNT: give each host its own GITHUB_TOKEN instead of a shared \`gh\` login.`,
+    cause: e,
+  });
 }
 
 // REST payload shapes (the fields we read; everything else rides along in `fields`).
@@ -147,6 +174,7 @@ export class GithubIssuesClient {
       const policy: HttpPolicy = {
         buckets: opts.mutation ? this.budget.mutation : this.budget.read,
         isRetryable: githubRetryable,
+        onAttempt: () => countGithubCall("rest"),
         // Bounded inline waits on BOTH paths — a reconcile tick must never stall for minutes on
         // rate-limit sleeps. Mutations fail fast back to their durable retry loop (the transition
         // outbox) and retry only once (a timed-out write may have landed — comment duplication
@@ -173,6 +201,9 @@ export class GithubIssuesClient {
       if (Number.isFinite(remaining)) recordRateLimitRemaining(remaining, { backend: "github", resource: res.headers.get("x-ratelimit-resource") ?? "core" });
       return res;
     };
+    // Both classifiers run on every escape: a 401 becomes the auth signal, a rate-limit 403/429
+    // becomes the backoff signal, and anything else passes through untouched.
+    const classify = (e: unknown): unknown => asGithubRateLimitError(asGithubAuthError(e), method, path);
     try {
       return await attempt();
     } catch (e) {
@@ -183,10 +214,10 @@ export class GithubIssuesClient {
         try {
           return await attempt();
         } catch (e2) {
-          throw asGithubAuthError(e2); // still 401 after a rotation ⇒ the credential itself is bad
+          throw classify(e2); // still 401 after a rotation ⇒ the credential itself is bad
         }
       }
-      throw asGithubAuthError(e);
+      throw classify(e);
     }
   }
 

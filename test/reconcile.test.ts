@@ -10,6 +10,7 @@ import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type GitApi, type GitHubApi, type HerdrApi, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import { SourceUnauthenticatedError } from "../src/auth/errors.ts";
 import { getAuthFailure, resetAuthGate } from "../src/auth/gate.ts";
+import { getRateLimit, resetRateLimitGate, SourceRateLimitedError } from "../src/core/rate-limit-gate.ts";
 import { resetMachineGateLog } from "../src/machine.ts";
 import type { Config, StepConfig } from "../src/config.ts";
 import { BUDGET_GUARD, HEARTBEAT_GUARD, LAYOUT_WAIT_GUARD, READ_ONLY_GUARD } from "../src/steps/guards.ts";
@@ -23,8 +24,14 @@ afterEach(() => {
   for (const t of tmps) rmSync(t, { recursive: true, force: true });
   tmps.length = 0;
   resetAuthGate(); // the gate Map is process-global (keyed by repo "demo") — don't leak across tests
+  resetRateLimitGate(); // same for the rate-limit holds
   resetMachineGateLog(); // same for the machine gate's log-once state
 });
+
+/** What a source throws once the backend has said "stop until <reset>" (the github_issues client
+ *  maps a 403/429 with an exhausted budget onto exactly this). */
+const rateLimited = (untilMs: number) =>
+  new SourceRateLimitedError({ resetAtMs: untilMs, exhausted: true, detail: "fake: rate limit exhausted (x-ratelimit-remaining: 0)" });
 
 // PR template for the fakes: `isDraft` is optional here (most tests don't care) and normalized to
 // false on return, so existing `{ number, state, url }` literals stay valid; draft tests set it.
@@ -67,6 +74,8 @@ interface FakeState {
   humanAskError: Error | null; // askHuman throws this instead of posting
   failEligible: boolean; // the jira source's listEligible throws (backend outage)
   authFail: boolean; // the jira source's calls throw SourceUnauthenticatedError (not authenticated)
+  /** Epoch MILLISECONDS the jira source's calls claim its rate limit resets — null ⇒ not limited. */
+  rateLimitedUntilMs: number | null;
   itemLabels: Record<string, string[]>; // labels the jira fake attaches per key (default [])
   promptStalls: boolean; // agentSend reports the submission never moved the agent (herdr's stalled verdict)
 }
@@ -123,7 +132,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, itemLabels: {}, promptStalls: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -144,6 +153,7 @@ function build(opts: { multi?: boolean } = {}) {
     reviewSig: 0,
     agentStart: 0,
     notify: 0,
+    eligibleQueries: 0, // jira listEligible calls that actually reached the backend
   };
     // Panes in a herdr layout tree — the fake answers layoutApply with that many ids.
   const countPanes = (n: LayoutNode): number => (n.type === "pane" ? 1 : countPanes(n.first) + countPanes(n.second));
@@ -156,12 +166,15 @@ function build(opts: { multi?: boolean } = {}) {
     authStatus: async () => (state.authFail ? { state: "unauthenticated", detail: "fake: JIRA_API_TOKEN missing" } : { state: "ok" }),
     listEligible: async () => {
       if (state.authFail) throw new SourceUnauthenticatedError({ reason: "rejected", hint: "fake: not authenticated" });
+      if (state.rateLimitedUntilMs != null) throw rateLimited(state.rateLimitedUntilMs);
       if (state.failEligible) throw new Error("jira is down (fake)");
+      calls.eligibleQueries += 1;
       return state.eligible.map(wrapJira);
     },
     describe: async (key) => ({ key, summary: "Fix the thing", type: "Bug" }),
     transition: async (key, to, _pickup, _ctx, statusOverride) => {
       if (state.authFail) throw new SourceUnauthenticatedError({ reason: "rejected", hint: "fake: not authenticated" });
+      if (state.rateLimitedUntilMs != null) throw rateLimited(state.rateLimitedUntilMs);
       if (state.failTransitions || state.failTransitionStates.has(to)) throw new Error(`transition to ${to} failed (fake)`);
       if (state.staleTransitionStates.has(to)) return { kind: "stale", detail: "issue deleted (fake)" };
       calls.transitions.push([key, to]);
@@ -3020,6 +3033,68 @@ describe("work-source auth gate (unauthenticated → pause + auto-resume, never 
     setNow(1000 + 31); // past the retry interval, so the held write-back is due
     await flushTransitionOutbox(deps);
     expect(store.listProblems("demo")).toEqual([]); // the unconditional clear, not the gate, removed it
+  });
+});
+
+describe("work-source rate-limit gate (back off until the backend's own reset)", () => {
+  it("claiming: a rate-limited source is NOT re-polled until its reset, other sources keep claiming, then it resumes", async () => {
+    const { deps, store, state, calls, setNow } = build({ multi: true });
+    state.rateLimitedUntilMs = (1000 + 300) * 1000; // the backend named a reset 300s out
+    state.eligible = [ticket("A-1")];
+    state.eligible2 = [ticket("M-1")];
+
+    await reconcileRepo(deps);
+    expect(store.activeRunForTicket("demo", "jira", "A-1")).toBeUndefined();
+    expect(store.activeRunForTicket("demo", "lm", "M-1")).toBeDefined(); // a different source is untouched
+    expect(getRateLimit("demo", "jira", 1000)?.until).toBe(1300);
+    expect(getRateLimit("demo", "lm", 1000)).toBeUndefined();
+    expect(calls.notify).toBe(1);
+
+    // THE POINT: the next tick doesn't call the backend at all — re-polling an exhausted
+    // account-wide budget is what keeps it exhausted.
+    calls.eligibleQueries = 0;
+    state.rateLimitedUntilMs = null; // even though the backend would answer now
+    setNow(1000 + 299);
+    await reconcileRepo(deps);
+    expect(calls.eligibleQueries).toBe(0);
+    expect(store.activeRunForTicket("demo", "jira", "A-1")).toBeUndefined();
+
+    // Past the reset the hold drops itself and the held item is claimed.
+    setNow(1000 + 301);
+    await reconcileRepo(deps);
+    expect(calls.eligibleQueries).toBe(1);
+    expect(store.activeRunForTicket("demo", "jira", "A-1")).toBeDefined();
+    expect(getRateLimit("demo", "jira", 1000 + 301)).toBeUndefined();
+  });
+
+  it("the hold is recorded on the problem ledger (what `status`/`explain` read) and cleared on recovery", async () => {
+    const { deps, store, state, setNow } = build();
+    const run = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-R1", branch: "b" });
+    const intent = store.enqueueTransition({ runId: run.id, repo: "demo", workSource: "jira", ticketKey: "K-R1", toState: "in_review" });
+    state.rateLimitedUntilMs = (1000 + 60) * 1000;
+
+    await flushTransitionOutbox(deps);
+    expect(store.getTransitionIntent(intent.id)?.deliveredAt).toBeNull(); // queued, never lost
+    expect(store.listProblems("demo")).toEqual([expect.objectContaining({ key: "source:jira:rate-limit", kind: "rate_limit" })]);
+
+    state.rateLimitedUntilMs = null;
+    setNow(1000 + 61);
+    await flushTransitionOutbox(deps);
+    expect(store.listProblems("demo")).toEqual([]);
+  });
+
+  it("a hold is EXTENDED, never shortened, by a later observation that names a nearer reset", async () => {
+    const { deps, store, state, setNow } = build();
+    const run = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-R2", branch: "b" });
+    store.enqueueTransition({ runId: run.id, repo: "demo", workSource: "jira", ticketKey: "K-R2", toState: "in_review" });
+    state.rateLimitedUntilMs = (1000 + 600) * 1000;
+    await flushTransitionOutbox(deps);
+    expect(getRateLimit("demo", "jira", 1000)?.until).toBe(1600);
+
+    state.rateLimitedUntilMs = (1000 + 30) * 1000; // a racing call reports a much nearer reset
+    setNow(1000 + 31);
+    await flushTransitionOutbox(deps);
+    expect(getRateLimit("demo", "jira", 1000 + 31)?.until).toBe(1600); // the far reset still governs
   });
 });
 

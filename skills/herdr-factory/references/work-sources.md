@@ -213,6 +213,18 @@ A 401 while using a memoized gh-CLI token triggers exactly one refetch (`github:
 
 Scope needed: write access on the **polled** repo (labels, comments, close), which is not necessarily the PR repo.
 
+### Rate limits — one token per host
+
+GitHub counts its 5,000 requests/hour **per account**, not per machine or process. Several factories sharing one `gh auth` login therefore share one budget, and exhausting it breaks everything on that account at once — `gh`, the agents, the operator's own tooling — with `HTTP 403: API rate limit exceeded for user ID …`. **Recommend a separate `GITHUB_TOKEN` per host in each repo's `env`**, not a shared `gh` login.
+
+When the limit is hit anyway, a `403`/`429` carrying `x-ratelimit-remaining: 0` or a `Retry-After` — surviving the client's retries — becomes a `SourceRateLimitedError` and the reconciler **holds that source until the reset the response named** rather than re-polling (re-polling an empty budget is what keeps it empty):
+
+- Logged once per hold: `<source>: rate limited — holding its polls for <n>s (until the backend's own reset)`, then `<source>: rate limited — not polling for another <n>s (…)` each skipped tick, and `<source>: rate limit cleared — polls resuming` on recovery.
+- Recorded on the problem ledger as key `source:<name>:rate-limit`, kind `rate_limit` — so the dashboard's repo light, `status` (as `⏳ <detail>`) and `explain` (as a `note:` line) all show it. Held write-backs stay queued; parked runs waiting on a human are rescheduled as a normal miss, never escalated.
+- It clears itself at the reset — no operator action. A `403` with budget left and **no** `Retry-After` is *not* treated as a limit: that is a missing scope, and it stays an ordinary error.
+
+Every tick logs its spend so you can tell who is eating the shared budget: `github: <n> call(s) this tick (<r> REST, <c> gh CLI) — shared with every other host on the same account`. `REST` is the `github_issues` source; `gh CLI` is the PR/review watcher.
+
 ### What makes an item eligible
 
 ```

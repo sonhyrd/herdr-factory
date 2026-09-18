@@ -32,12 +32,17 @@ export class HttpStatusError extends Error {
   readonly status: number;
   readonly bodyText: string;
   readonly retryAfterMs: number | null;
-  constructor(url: string, status: number, bodyText: string, retryAfterMs: number | null) {
+  /** `x-ratelimit-remaining`, when the backend sent it. 0 distinguishes an exhausted BUDGET (which
+   *  no retry can outlast — the caller backs the whole source off) from an ambiguous 403 or a
+   *  per-endpoint secondary limit that merely asked us to slow down. */
+  readonly rateLimitRemaining: number | null;
+  constructor(url: string, status: number, bodyText: string, retryAfterMs: number | null, rateLimitRemaining: number | null = null) {
     super(`HTTP ${status}: ${url}: ${bodyText.slice(0, 300)}`);
     this.name = "HttpStatusError";
     this.status = status;
     this.bodyText = bodyText;
     this.retryAfterMs = retryAfterMs;
+    this.rateLimitRemaining = rateLimitRemaining;
   }
 }
 
@@ -81,6 +86,11 @@ function parseRetryAfter(headers: Headers): number | null {
     if (Number.isFinite(reset) && reset > 0) return Math.max(0, Math.round(reset * 1000 - Date.now()));
   }
   return null;
+}
+
+function parseRemaining(headers: Headers): number | null {
+  const raw = Number(headers.get("x-ratelimit-remaining"));
+  return Number.isFinite(raw) ? raw : null;
 }
 
 /**
@@ -130,7 +140,7 @@ export function httpExpectOk(req: HttpRequest, as: "text" | "bytes" = "text"): E
     Effect.flatMap((res) =>
       res.status >= 200 && res.status < 300
         ? Effect.succeed(res)
-        : Effect.fail(new HttpStatusError(req.url, res.status, res.text, parseRetryAfter(res.headers))),
+        : Effect.fail(new HttpStatusError(req.url, res.status, res.text, parseRetryAfter(res.headers), parseRemaining(res.headers))),
     ),
   );
 }
@@ -224,6 +234,9 @@ export interface HttpPolicy {
    *  caller with its own durable retry loop (the transition outbox) sets this LOW to fail fast
    *  back to that loop instead of stalling a reconcile tick for a full minute. */
   maxRetryAfterMs?: number;
+  /** Called once per ATTEMPT, retries included — a backend whose budget is shared account-wide
+   *  counts what it actually sent, not what its callers asked for. */
+  onAttempt?: () => void;
 }
 
 /**
@@ -249,6 +262,7 @@ export function httpWithPolicy(req: HttpRequest, policy: HttpPolicy = {}, as: "t
     );
   });
   const attempt = acquireAll.pipe(
+    Effect.flatMap(() => Effect.sync(() => policy.onAttempt?.())),
     Effect.flatMap(() => httpExpectOk(req, as)),
     Effect.catchAll((e) =>
       e instanceof HttpStatusError && e.retryAfterMs != null && retryable(e)

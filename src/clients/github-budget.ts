@@ -24,3 +24,21 @@ const githubMutationMinuteBucket = new TokenBucket(1, 2); // ~60/min sustained v
 const githubMutationHourBucket = new TokenBucket((500 - 10) / 3600, 10);
 
 export const GITHUB_MUTATION_BUCKETS = [githubMutationMinuteBucket, githubMutationHourBucket] as const;
+
+/** How a GitHub call was made. Both spend the SAME account budget, and only one of them rides the
+ *  buckets above — so an operator chasing "who ate the 5,000" needs them counted apart:
+ *  `rest` = the github_issues source's own REST calls; `cli` = the PR watcher's `gh` invocations. */
+export type GithubCaller = "rest" | "cli";
+
+// Process-wide counters, monotonic for the process lifetime. Callers report DELTAS (reconcile logs
+// the spend per tick) rather than the absolutes, so nothing has to reset them.
+const calls: Record<GithubCaller, number> = { rest: 0, cli: 0 };
+
+export function countGithubCall(via: GithubCaller): void {
+  calls[via] += 1;
+}
+
+/** A snapshot of the counters — subtract two snapshots for the spend over an interval. */
+export function githubCallCounts(): Readonly<Record<GithubCaller, number>> {
+  return { ...calls };
+}

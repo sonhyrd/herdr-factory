@@ -258,6 +258,24 @@ the issue (the factory closes it as completed anyway, as a backstop). A failed r
 issue open, labelled `herdr:aborted`, for retriage; questions and attention notes arrive as
 issue comments — reply in a new comment and the run resumes.
 
+**Give each host its own `GITHUB_TOKEN`.** GitHub's API rate limit (5,000 requests/hour) is counted
+per **account**, not per machine or per process — so several factories sharing one `gh auth` login
+spend one budget between them, and when it runs out everything on that account fails at once
+(`gh`, your agents, your own tooling), with `HTTP 403: API rate limit exceeded for user ID …`. Put a
+separate PAT (scope: `issues:write` on the polled repo) in each host's `env`:
+
+```sh
+GITHUB_TOKEN=ghp_...    # ~/.config/herdr-factory/repos/<name>/env, chmod 600 — one per host
+```
+
+When a poll or write-back does hit the limit — a `403`/`429` carrying `x-ratelimit-remaining: 0` or
+a `Retry-After` — the factory **holds that source until the reset the response named** instead of
+re-polling into an empty budget (re-polling is what keeps it empty). Held sources appear in
+`status` and `explain` as `⏳ <source>: rate limited — holding polls for <n>s`, and on the
+dashboard's repo light; they resume on their own at the reset, no operator action needed. Every
+tick also logs what it spent — `github: 14 call(s) this tick (11 REST, 3 gh CLI)` — so you can see
+which host is eating the shared budget.
+
 ## Sentry — fix production errors
 
 A `sentry` source turns a Sentry project's issues (production errors) into the work queue: the
@@ -532,7 +550,9 @@ Everything repo-specific lives in `~/.config/herdr-factory/repos/<name>/`:
 - `config.yml` — the file described below (`<name>` is what you pass to `--repo`).
 - `env` — per-source credentials, `chmod 600`: `JIRA_EMAIL` + `JIRA_API_TOKEN` (both required) for a
   `jira` source; `GITHUB_TOKEN` for `github_issues` (optional — without it the factory uses your
-  `gh` CLI's token); `SENTRY_AUTH_TOKEN` for a `sentry` source; `local_markdown` needs none.
+  `gh` CLI's token, but **one token per host** is strongly recommended: the rate limit is per
+  account, so a shared login means one shared budget); `SENTRY_AUTH_TOKEN` for a `sentry` source;
+  `local_markdown` needs none.
   Strictly per-repo; there is no global secrets file.
 - `guidelines-prompt.md` _(optional)_ — appended to every step prompt of every belt.
 - `prompts/` _(optional)_ — `config`-sourced `prompt_file`s referenced by `config.yml`, **and** a

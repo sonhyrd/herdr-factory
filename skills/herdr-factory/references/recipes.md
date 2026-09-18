@@ -53,7 +53,7 @@ belt:
 - `repo.path` — the main checkout that worktrees fork from. A linked worktree is rejected (`looks like a linked worktree`).
 - `belt[0].label` — required for `github_issues` (there is no default). The label must already exist in the repo.
 
-**Credentials** — none. With no `GITHUB_TOKEN` in `env`, the source uses the `gh` CLI login. Confirm with `herdr-factory --repo my-repo auth status`.
+**Credentials** — none required. With no `GITHUB_TOKEN` in `env`, the source uses the `gh` CLI login; give each host its own `GITHUB_TOKEN` once more than one polls GitHub (the rate limit is per account). Confirm with `herdr-factory --repo my-repo auth status`.
 
 **First work item**
 ```sh
