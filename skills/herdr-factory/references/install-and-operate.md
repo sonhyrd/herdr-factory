@@ -530,3 +530,39 @@ herdr-factory --repo <name> doctor --deep
 ```
 
 Every check and its remediation is in [troubleshooting.md](./troubleshooting.md).
+
+It does carry one row the CLI has no equivalent for — the TUI's own, under a `This TUI:` group:
+`✓   theme — <name> (following herdr's config | from HERDR_FACTORY_THEME | default — herdr names no
+theme)`, amber with ` · unknown theme "<x>" — rendering the <y> palette` appended when the resolver
+fell back. It counts as a warning in the banner, never a failure.
+
+### Theming (the TUI follows herdr)
+
+`src/tui/theme.ts` is the only place in `src/tui` that names a color, and it picks its palette at
+launch:
+
+1. `HERDR_FACTORY_THEME` — a herdr theme name, or `dark`/`light`. Wins over everything.
+2. `[theme] name` in herdr's own config: `$XDG_CONFIG_HOME/herdr/config.toml`, else
+   `~/.config/herdr/config.toml`. Read (not stat'd), so a symlinked config resolves. `[theme.custom]`
+   and any later table end the section, so only the real `name` counts.
+3. Nothing → `light`, the palette the TUI shipped with. An install that never themed herdr sees no
+   change at all.
+
+A palette ships for every herdr built-in (`catppuccin`, `terminal`, `tokyo-night`, `dracula`, `nord`,
+`gruvbox`, `one-dark`, `solarized`, `kanagawa`, `rose-pine`, `vesper`) and for the light variants
+`light_name` points at (`catppuccin-latte`, `tokyo-night-day`, `gruvbox-light`, `one-light`,
+`solarized-light`, `kanagawa-lotus`, `rose-pine-dawn`). All of them carry the same role names, so
+every `theme.*` token exists whichever palette won, and text roles hold WCAG-AA contrast against the
+background (measured in `test/tui-theme.test.ts`).
+
+A name this build doesn't know never crashes the TUI. It resolves to the nearest palette available:
+the family whose name it extends (`kanagawa-dragon` → kanagawa), else `light` or `dark` as the name
+suggests (`-light`/`-day`/`-dawn`/`-latte`/`-lotus` vs `-dark`/`night`/`mocha`/…), else `light`.
+
+Two caveats worth saying out loud:
+
+- The theme is resolved **once, at start**. Changing herdr's theme takes effect on the TUI's next
+  launch — there is no live reload.
+- herdr's `auto_switch` / `dark_name` / `light_name` are **not** followed. The factory can't read the
+  host terminal's light/dark appearance, so it follows `name` only; with `auto_switch = true` and no
+  `name`, the TUI stays light. Use `HERDR_FACTORY_THEME` to pin it.
