@@ -325,6 +325,12 @@ export interface GitHubApi {
 
 export interface GitApi {
   branchExists(repoCwd: string, branch: string): Promise<boolean>;
+  /** Fetch one remote branch into the checkout a worktree is about to be cut from. Bounded and
+   *  prompt-free; false ⇒ the fetch failed (offline, no credentials, timeout) and the local ref
+   *  stands. Never throws — a claim must not depend on the network. */
+  fetchRef(repoCwd: string, remote: string, branch: string): Promise<boolean>;
+  /** Human-readable age of `ref`'s tip commit ("4 days ago"), null when unresolvable. */
+  refAge(repoCwd: string, ref: string): Promise<string | null>;
   /** The branch a checkout is currently ON (null ⇒ detached/unresolvable) — the run's branch is
    *  tracked from this, never assumed to still be the name minted at claim time. */
   currentBranch(repoCwd: string): Promise<string | null>;

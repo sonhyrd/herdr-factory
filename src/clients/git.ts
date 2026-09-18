@@ -1,7 +1,36 @@
 import { run } from "./exec.ts";
 
+/** A fetch talks to the network, so it gets a tighter budget than the default exec timeout — a slow
+ *  remote must delay one claim, never the tick. */
+const FETCH_TIMEOUT_MS = 30_000;
+
 /** Git operations herdr-factory performs directly (outside herdr's model). */
 export class GitClient {
+  /** Refresh one remote branch's tracking ref, so a worktree cut from `<remote>/<branch>` starts at
+   *  the remote's tip rather than at whatever the checkout happened to have when it was cloned.
+   *  Never prompts (`GIT_TERMINAL_PROMPT=0`: a credential prompt would hang the subprocess until its
+   *  timeout), never throws — a timed-out fetch is just a failed one, which the caller degrades on. */
+  async fetchRef(repoCwd: string, remote: string, branch: string): Promise<boolean> {
+    try {
+      const r = await run("git", ["-C", repoCwd, "fetch", "--no-tags", "--quiet", remote, branch], {
+        allowFail: true,
+        timeoutMs: FETCH_TIMEOUT_MS,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      });
+      return r.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** How long ago `ref`'s tip commit was made ("4 days ago"), or null when git can't resolve it —
+   *  the human-readable age a failed fetch reports so a stale base is visible in the log. */
+  async refAge(repoCwd: string, ref: string): Promise<string | null> {
+    const r = await run("git", ["-C", repoCwd, "log", "-1", "--format=%cr", ref], { allowFail: true });
+    const age = r.stdout.trim();
+    return r.code === 0 && age ? age : null;
+  }
+
   async branchExists(repoCwd: string, branch: string): Promise<boolean> {
     const r = await run("git", ["-C", repoCwd, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
       allowFail: true,

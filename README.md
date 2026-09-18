@@ -566,7 +566,11 @@ is pure data (`herdr-factory reload` picks it up without a restart).
 ### `repo`
 
 - `path` — the **main** checkout (not a linked worktree; validated at load). `~`/`$HOME` expand.
-- `base_ref` — what worktrees fork from (default `origin/main`).
+- `base_ref` — what worktrees fork from (default `origin/main`). When it names a remote branch
+  (`<remote>/<branch>`), the factory fetches it in `path` before each new worktree is created, so a
+  run starts at the remote's tip rather than at whatever the checkout was last fetched to. The fetch
+  is bounded and never prompts for credentials; if it fails the claim still goes ahead and the run
+  logs a warning naming the base's age.
 - `github` — `owner/name` (default: derived from the origin remote).
 
 ### `limits` (all optional)

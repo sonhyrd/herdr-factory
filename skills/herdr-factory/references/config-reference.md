@@ -148,7 +148,7 @@ agent                     { command="claude" , flags=[] , kind }
 | key | type | req | default | meaning |
 |---|---|---|---|---|
 | `path` | string | **yes** | — | The project's **MAIN** (non-linked) checkout that clone worktrees fork from. `expandHome`d. |
-| `base_ref` | string | no | `"origin/main"` | The ref worktrees branch from and PRs target. |
+| `base_ref` | string | no | `"origin/main"` | The ref worktrees branch from and PRs target. A `<remote>/<branch>` value is fetched in `repo.path` before each new worktree is created (bounded, no credential prompt); a failed fetch warns and cuts from the local ref anyway. |
 | `github` | string | no | derived from the checkout's git origin (`""` if unresolvable) | `owner/name` PRs are opened against. |
 
 ### 3.2 `limits`

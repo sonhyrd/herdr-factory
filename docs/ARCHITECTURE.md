@@ -595,7 +595,10 @@ reverse-engineered during the bash prototype.
   to `reviewSignature`'s, so batched and per-run polling mix freely.
 - **`git.ts`** — `branchExists`, `branchDelete`, `branchRename`, `currentBranch` (what the worktree
   is checked out on — the run's branch is tracked from it), `remoteBranchExists` (local-only: was
-  this branch ever pushed), `originUrl`, `worktreePrune`, `headSha` (the worker progress heartbeat).
+  this branch ever pushed), `originUrl`, `worktreePrune`, `headSha` (the worker progress heartbeat),
+  `fetchRef` (the only NETWORK git call: refresh the base ref before a worktree is cut from it —
+  30s budget, `GIT_TERMINAL_PROMPT=0` so a missing credential fails instead of hanging, and it
+  answers false rather than throwing), `refAge` (the tip's relative date, for the stale-base warning).
 
 ---
 
@@ -983,6 +986,15 @@ winner); it is not a claim failure. A backend error releases (if it posted) and 
 throws — the next pass retries. `teardownImpl` posts the release (best-effort, loud on failure). A dead
 winner is FENCED, never reaped: only a human-posted release frees the item. Both markers carry
 `HERDR_MARKER`, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
+**Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
+ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
+`base_ref` with no `<remote>/` prefix, and never on the worktree-reopen path). Nothing else touches
+that checkout — the factory only ever works in linked worktrees — so without this a plain clone
+keeps the `origin/main` it was cloned with and every run is cut from a base that can be many merges
+old. A failed fetch **never blocks the claim**: the local ref is a worse base, not an unusable one,
+and parking every run on a network blink would be worse than building on a known-old base — so the
+claim continues and the run logs `could not fetch <base_ref> … (<base_ref> is <age>); the base may
+be stale`.
 Each source's
 `listEligible` poll is **rate-gated by its `pollIntervalSeconds`** (the resolved per-source
 `poll_interval_seconds` ?? `limits.source_poll_interval_seconds` ?? `tick_interval_seconds`): the

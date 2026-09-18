@@ -1005,6 +1005,31 @@ export async function applyPendingFocus(deps: Deps, run: Run): Promise<void> {
   });
 }
 
+/**
+ * Fetch the base ref before a worktree is cut from it. Nothing else in the factory fetches the
+ * target checkout, so a clone that is only ever read (the normal case — the factory works in linked
+ * worktrees, never in `repo.path` itself) keeps the `origin/main` it was cloned with, and every run
+ * is based on code that may be many merges old.
+ *
+ * A failed fetch NEVER blocks the claim: the local ref is a worse base, not an unusable one, and
+ * parking every run because the network blinked would be worse than building on a known-old base.
+ * It logs a warning naming the base's age instead, so the staleness is visible in the run's log.
+ * Only `<remote>/<branch>` base refs are fetchable — a local base ref (`main`) is whatever the
+ * checkout itself holds, which no fetch would move.
+ */
+async function refreshBaseRef(deps: Deps, run: Run): Promise<void> {
+  const baseRef = deps.config.repo.baseRef;
+  const slash = baseRef.indexOf("/");
+  if (slash <= 0) return;
+  const [remote, branch] = [baseRef.slice(0, slash), baseRef.slice(slash + 1)];
+  if (await deps.git.fetchRef(deps.config.repo.path, remote, branch)) return;
+  const age = await deps.git.refAge(deps.config.repo.path, baseRef);
+  deps.log(
+    "warn",
+    `${run.ticketKey}: could not fetch ${baseRef} in ${deps.config.repo.path} — cutting the worktree from the local ref (${baseRef} is ${age ?? "of unknown age"}); the base may be stale`,
+  );
+}
+
 async function reconcileClaiming(deps: Deps, run: Run, belt: BeltRuntime, src: SourceRuntime): Promise<void> {
   const repo = deps.config.repoName;
   // The worktree is created FROM (or re-attached BY) the branch the run is on: at claim these are
@@ -1016,6 +1041,7 @@ async function reconcileClaiming(deps: Deps, run: Run, belt: BeltRuntime, src: S
   // 1. ensure worktree
   if (!run.workspaceId || !(await deps.herdr.workspaceExists(run.workspaceId))) {
     const exists = await deps.git.branchExists(deps.config.repo.path, branch);
+    if (!exists) await refreshBaseRef(deps, run);
     const wt = exists
       ? await deps.herdr.worktreeOpen(deps.config.repo.path, branch)
       : await deps.herdr.worktreeCreate(deps.config.repo.path, branch, deps.config.repo.baseRef);
