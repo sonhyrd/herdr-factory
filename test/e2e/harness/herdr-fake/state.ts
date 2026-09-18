@@ -60,12 +60,21 @@ export interface FakeWorkspace {
   worktree?: { checkout_path: string; repo_root: string; repo_name: string; is_linked_worktree: boolean; branch: string };
 }
 
+/** A saved SSH machine profile, exactly as `herdr machine list --json` answers one. */
+export interface FakeMachineProfile {
+  label: string;
+  target: string;
+  session?: string | null;
+  enabled?: boolean;
+}
+
 export interface FakeHerdrState {
   seq: number;
   workspaces: Record<string, FakeWorkspace>;
   tabs: Record<string, FakeTab>;
   panes: Record<string, FakePane>;
   plugins: string[];
+  machines: FakeMachineProfile[];
 }
 
 /** The injection file's schema. Any key present here WINS over its env fallback for that key. */
@@ -83,7 +92,7 @@ export interface FakeHerdrInjection {
 }
 
 function blankState(): FakeHerdrState {
-  return { seq: 0, workspaces: {}, tabs: {}, panes: {}, plugins: [] };
+  return { seq: 0, workspaces: {}, tabs: {}, panes: {}, plugins: [], machines: [] };
 }
 
 export class FakeHerdr {
@@ -354,6 +363,15 @@ export class FakeHerdr {
       i.sleepMs = ms;
       i.sleep = subcommands;
     });
+  }
+
+  /** Seed the saved SSH machines `herdr machine list --json` answers — which is where the factory's
+   *  FLEET comes from. Fake-lane only: a real herdr's machine list is the operator's, and a scenario
+   *  may not add to it. Call after `start()`, which blanks the state. */
+  setMachines(machines: FakeMachineProfile[]): void {
+    const s = this.state();
+    s.machines = machines;
+    this.writeState(s);
   }
 
   resetInjection(): void {
