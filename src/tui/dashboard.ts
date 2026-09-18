@@ -24,8 +24,8 @@
 // Refresh is flicker-free: quick status paints first, eligible source queries fold in afterward, and
 // both passes reconcile in place — reusing existing text renderables and only rewriting content or
 // adding/removing rows at the tail. The quick paint carries the last good eligible items forward
-// (eligibleCache) instead of blanking them, so the rows survive the phase-1 gap and a lagging or
-// failed fold-in rather than blinking out for a frame.
+// (fleet-view.ts's cache) instead of blanking them, so the rows survive the phase-1 gap and a
+// lagging or failed fold-in rather than blinking out for a frame.
 import { BoxRenderable, ScrollBoxRenderable, StyledText, TextRenderable, bg, fg, type CliRenderer, type TextChunk } from "@opentui/core";
 import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";

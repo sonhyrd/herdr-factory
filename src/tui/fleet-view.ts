@@ -245,7 +245,8 @@ export interface FleetSource {
 export function createFleetSource(opts: FleetSourceOpts = {}): FleetSource {
   const lastSeen = opts.lastSeen ?? fileLastSeenStore();
   // Keyed `<machine>|<repo>`: the last SUCCESSFUL eligible result, so the rows survive the gap
-  // between the two phases and a failed source query (see eligible-cache.ts for the same idea).
+  // between the two phases and a failed source query. Anything carried this way can collide with a
+  // run that has since claimed it — `withoutClaimed` (eligible-cache.ts) is what settles that.
   const eligibleCache = new Map<string, EligibleItem[]>();
   // The last view each machine answered with, so an unverifiable one keeps its rows.
   const lastGood = new Map<string, MachineView>();
