@@ -9,7 +9,7 @@
 //
 // Both answer `null` rather than throwing when the machine can't be reached: an unreachable machine
 // is DATA in a fleet read (`unverifiable`), not an error that fails the whole view.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -93,6 +93,11 @@ async function answersHealth(baseUrl: string, timeoutMs: number): Promise<boolea
 interface Forward {
   proc: ChildProcess;
   baseUrl: string;
+  target: string;
+  localPort: number;
+  /** The client we spawned exited 0 and left a ControlPersist master holding the forward, so this
+   *  forward outlives `proc` and is torn down through the control socket instead of a signal. */
+  backgrounded: boolean;
 }
 
 /** macOS's `sun_path` is 104 bytes — the smallest limit of the platforms we run on, so it is the one
@@ -132,8 +137,17 @@ export function resolveControlDir(preferred: string): string | null {
   return controlPathFits(short) ? short : null;
 }
 
-/** The forward's argv. `controlDir` of `null` means no multiplexing at all — the fallback for a
- *  machine whose ControlPath cannot be made to fit. */
+/**
+ * The forward's argv. `controlDir` of `null` means no multiplexing at all — the fallback for a
+ * machine whose ControlPath cannot be made to fit.
+ *
+ * `ControlPersist` is kept deliberately, rather than dropped to keep the client in the foreground:
+ * the connection it leaves behind is what makes a second machine's forward and the NEXT
+ * `herdr-factory fleet` cheap, and on a box that asks for a passphrase or an MFA touch it is the
+ * difference between one prompt and one per call. The price is that when ssh has to fork a NEW
+ * master, the client we spawned exits 0 the moment the forward is up — so "exited" is not "failed"
+ * here, and `open()` reads the forward's own `/health` instead of the client's exit (see below).
+ */
 export function sshForwardArgs(opts: { target: string; localPort: number; connectTimeoutMs: number; controlDir: string | null }): string[] {
   return [
     "-N",
@@ -177,6 +191,11 @@ export interface SshTransportOpts {
  * invocation is short-lived, so in practice each remote machine costs one `ssh -N` for the duration
  * of the command — and with ControlPersist the NEXT invocation reuses the multiplexed connection
  * instead of paying the handshake again.
+ *
+ * Which means a forward can outlive the `ssh` we spawned: when ssh has to start a master, the client
+ * exits 0 as soon as the tunnel is up and the backgrounded master holds it. So a forward is judged
+ * by whether it answers `/health`, and released either with a signal (foreground client) or with
+ * `ssh -O cancel` (backgrounded master) — see `open()` and `tearDown()`.
  */
 export class SshForwardTransport implements MachineTransport {
   private readonly forwards = new Map<string, Forward>();
@@ -200,7 +219,9 @@ export class SshForwardTransport implements MachineTransport {
     if (!machine.sshTarget) return null;
 
     const held = this.forwards.get(machine.name);
-    if (held) return held.proc.exitCode === null ? held.baseUrl : (this.forwards.delete(machine.name), null);
+    // A backgrounded forward is held by the ControlPersist master, not by the client that set it up:
+    // its `exitCode` is 0 and says nothing about whether the tunnel is still there.
+    if (held) return held.backgrounded || held.proc.exitCode === null ? held.baseUrl : (this.forwards.delete(machine.name), null);
     return this.open(machine.name, machine.sshTarget);
   }
 
@@ -225,22 +246,53 @@ export class SshForwardTransport implements MachineTransport {
     proc.once("close", () => (drained.done = true));
     const baseUrl = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + this.connectTimeoutMs;
+    let backgrounded = false;
     while (Date.now() < deadline) {
+      const code = proc.exitCode;
       // ssh gave up (auth, unknown host, refused forward, a ControlPath that does not fit).
-      if (proc.exitCode !== null) {
+      if (code !== null && code !== 0) {
         // The last of its stderr can still be in flight when `exitCode` lands; `close` is the point
         // at which all of it has arrived, and its first line is the whole diagnosis.
         for (let i = 0; i < 20 && !drained.done; i++) await new Promise((r) => setTimeout(r, 10));
-        return this.failed(name, firstLine(stderr) || `ssh exited ${proc.exitCode}`);
+        return this.failed(name, firstLine(stderr) || `ssh exited ${code}`);
       }
+      // Exit 0 is the ControlPersist handshake, not a failure: ssh forked a master into the
+      // background and the foreground client returned. The forward is up for as long as that master
+      // lives, so only `/health` on the forwarded port — never the client's exit — decides.
+      if (code === 0) backgrounded = true;
       if (await answersHealth(baseUrl, 1000)) {
-        this.forwards.set(name, { proc, baseUrl });
+        this.forwards.set(name, { proc, baseUrl, target, localPort: port, backgrounded });
         return baseUrl;
       }
       await new Promise((r) => setTimeout(r, 100));
     }
-    proc.kill("SIGTERM");
-    return this.failed(name, firstLine(stderr) || `the SSH forward did not answer /health within ${this.connectTimeoutMs}ms`);
+    this.tearDown({ proc, baseUrl, target, localPort: port, backgrounded });
+    return this.failed(
+      name,
+      firstLine(stderr) ||
+        (backgrounded
+          ? `ssh backgrounded its forward but it did not answer /health within ${this.connectTimeoutMs}ms`
+          : `the SSH forward did not answer /health within ${this.connectTimeoutMs}ms`),
+    );
+  }
+
+  /**
+   * Release one forward.
+   *
+   * A client still in the foreground dies on a signal. A backgrounded one is already gone and the
+   * forward belongs to the ControlPersist master, so it takes a control command over the same
+   * ControlPath — otherwise the tunnel and its local port outlive the command that opened them.
+   * `-O cancel` (the forward) rather than `-O exit` (the whole master): the master is exactly the
+   * connection reuse ControlPersist is there for, and the next fleet read should still find it.
+   */
+  private tearDown({ proc, target, backgrounded, localPort }: Forward): void {
+    if (!backgrounded) {
+      proc.kill("SIGTERM");
+      return;
+    }
+    if (this.controlDir === null) return; // unmultiplexed: nothing was left behind to stop
+    const args = ["-O", "cancel", "-o", `ControlPath=${join(this.controlDir, "%C")}`, "-L", `${localPort}:127.0.0.1:${REMOTE_API_PORT}`, target];
+    spawnSync("ssh", args, { stdio: "ignore", timeout: 5000 });
   }
 
   /** Remember why this machine has no endpoint, and answer the transport's "unreachable" = null. */
@@ -255,7 +307,7 @@ export class SshForwardTransport implements MachineTransport {
 
   close(): void {
     this.closed = true;
-    for (const { proc } of this.forwards.values()) proc.kill("SIGTERM");
+    for (const forward of this.forwards.values()) this.tearDown(forward);
     this.forwards.clear();
   }
 }
