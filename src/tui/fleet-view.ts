@@ -124,21 +124,29 @@ function where(m: MachineView): string {
 }
 
 /**
- * One machine's header line: can we reach it, what it is running, how loaded it is, and when it
- * last answered. The unverifiable line leads with the last-seen time and says outright that the
- * rows below it are last-known — that is the difference between "this box is quiet" and "this box
- * has been gone all morning", and an operator acts differently on each.
+ * One machine's header: can we reach it, what it is running, how loaded it is, and when it last
+ * answered. Two lines rather than one — the terminal clips, and the occupancy gate and the
+ * unverifiable caveat are exactly the parts that would fall off the right edge of a pane.
+ *
+ * The unverifiable head leads with the last-seen time, and its second line says outright that the
+ * rows below are last-known: that is the difference between "this box is quiet" and "this box has
+ * been gone all morning", and an operator acts differently on each.
  */
-export function machineHeader(m: MachineView, readAt: number): { text: string; tone: "accent" | "bad" } {
+export function machineHeader(m: MachineView, readAt: number): { text: string; tone: "accent" | "bad" }[] {
   if (m.state === "unverifiable") {
-    const rows = m.repos.length ? " · the rows below are its last known state, NOT known to be gone" : "";
-    return { text: `✗ ${m.name} (${where(m)}) — unverifiable: ${m.detail ?? "no answer"} · last seen ${ago(readAt, m.lastSeenAt)}${rows}`, tone: "bad" };
+    const rows = m.repos.length ? " — rows below are last known, NOT known to be gone" : "";
+    return [
+      { text: `✗ ${m.name} (${where(m)}) — unverifiable · last seen ${ago(readAt, m.lastSeenAt)}`, tone: "bad" },
+      { text: `    ${m.detail ?? "no answer"}${rows}`, tone: "bad" },
+    ];
   }
   const running = m.repos.reduce((n, r) => n + (r.status?.active.length ?? 0), 0);
-  const parts = [`v${m.version ?? "?"}`, `${m.repos.length} repo${m.repos.length === 1 ? "" : "s"}`, `${running} running`];
-  if (m.machineLine) parts.push(m.machineLine.replace(/^machine: /, ""));
-  parts.push(`read ${ago(readAt, m.lastSeenAt)}`);
-  return { text: `✓ ${m.name} (${where(m)}) — ${parts.join(" · ")}`, tone: "accent" };
+  const head = `✓ ${m.name} (${where(m)}) — v${m.version ?? "?"} · ${m.repos.length} repo${m.repos.length === 1 ? "" : "s"} · ${running} running · read ${ago(readAt, m.lastSeenAt)}`;
+  const lines: { text: string; tone: "accent" | "bad" }[] = [{ text: head, tone: "accent" }];
+  // The host-local gate (cap occupancy, free memory) is the machine's own line, and long enough to
+  // deserve its own row.
+  if (m.machineLine) lines.push({ text: `    ${m.machineLine.replace(/^machine: /, "")}`, tone: "accent" });
+  return lines;
 }
 
 /** A run on an unverifiable machine: no card (a card would claim to be live), one line saying what
@@ -185,7 +193,7 @@ export function fleetStatusLine(view: FleetView, updateNote: string | null): { t
  *  Built from each machine's own `/health` (plus its status line), because a remote box's version
  *  and occupancy are invisible from this machine's checks. The local machine is skipped — every
  *  other check on that tab is already about it. */
-export async function fleetHealthLines(opts: FleetSourceOpts = {}): Promise<{ ok: boolean; label: string }[]> {
+export async function fleetHealthLines(opts: FleetSourceOpts = {}): Promise<{ ok: boolean; label: string; detail: string | null }[]> {
   const source = createFleetSource(opts);
   const views: FleetView[] = [];
   try {
@@ -194,7 +202,12 @@ export async function fleetHealthLines(opts: FleetSourceOpts = {}): Promise<{ ok
     await source.poll((v) => void views.push(v), () => views.length > 0);
     const view = views[0];
     if (!view) return [];
-    return view.machines.filter((m) => !m.local).map((m) => ({ ok: m.state === "ok", label: machineHeader(m, view.readAt).text.replace(/^[✓✗] /, "") }));
+    return view.machines
+      .filter((m) => !m.local)
+      .map((m) => {
+        const [head, extra] = machineHeader(m, view.readAt);
+        return { ok: m.state === "ok", label: head!.text.replace(/^[✓✗] /, ""), detail: extra?.text.trim() ?? null };
+      });
   } finally {
     source.close();
   }

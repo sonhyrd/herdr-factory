@@ -70,7 +70,7 @@ export function createDoctor(renderer: CliRenderer): TabView {
     // from its own /health. An unreachable one is a ✗ row here, not a missing one — the same rule
     // the dashboard keeps. Never lets the local checks fail: a fleet that cannot be listed is a
     // fleet of one.
-    const fleet = fleetHealthLines().catch(() => [] as { ok: boolean; label: string }[]);
+    const fleet = fleetHealthLines().catch(() => [] as Awaited<ReturnType<typeof fleetHealthLines>>);
     try {
       groups = await baseGroups(deep);
     } catch (e) {
@@ -107,6 +107,7 @@ export function createDoctor(renderer: CliRenderer): TabView {
       for (const m of remotes) {
         if (!m.ok) failures++;
         addCheck(m.ok ? "✓" : "✗", m.ok ? theme.status.good : theme.status.bad, `  ${m.label}`, m.ok ? theme.text.primary : theme.status.bad);
+        if (m.detail) addText(`    ${m.detail}`, m.ok ? theme.text.tertiary : theme.status.bad);
       }
     }
     // The TUI's own row. The theme resolver can't print — stdout belongs to the renderer — so this is

@@ -96,5 +96,14 @@ scenario(
     for (const bad of ["requires Node >= 26", "Cannot find", "ERR_DLOPEN", "experimental-ffi", "Error:", "at Module"]) {
       expect(screen, `the TUI screen shows no "${bad}"`).not.toContain(bad);
     }
+
+    // There are no herdr machines in this world, so there is no fleet — and a machine of one must
+    // render exactly as it did before the fleet existed: no machine header, no `@machine` badge on
+    // a repo row, and the single-server status line rather than a fleet count. (`tui-fleet` covers
+    // the other side: what appears once there IS another machine.)
+    for (const chrome of ["(this machine)", "@local", "fleet ", "unverifiable"]) {
+      expect(screen, `a one-machine TUI shows no "${chrome}"`).not.toContain(chrome);
+    }
+    expect(screen, "the status line is the one-server one").toMatch(/server up|server not running/);
   },
 );

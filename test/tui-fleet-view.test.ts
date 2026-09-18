@@ -221,13 +221,16 @@ describe("what the operator reads", () => {
       machineLine: "machine: cap 2/4 working across all repos · memory ok",
       repos: [{ repo: "api", status: repoStatus("api", [activeRun(), activeRun({ id: 2 })]), eligible: [] }],
     });
-    const header = machineHeader(m, 1000);
-    expect(header.tone).toBe("accent");
-    expect(header.text).toContain("✓ build-box (user@build)");
-    expect(header.text).toContain("v1.2.3");
-    expect(header.text).toContain("2 running");
-    expect(header.text).toContain("cap 2/4");
-    expect(header.text).toContain("read 1m ago");
+    const [head, gate] = machineHeader(m, 1000);
+    expect(head!.tone).toBe("accent");
+    expect(head!.text).toContain("✓ build-box (user@build)");
+    expect(head!.text).toContain("v1.2.3");
+    expect(head!.text).toContain("1 repo ");
+    expect(head!.text).toContain("2 running");
+    expect(head!.text).toContain("read 1m ago");
+    // The host gate gets its own line: on the head it would be the part a narrow pane clips.
+    expect(gate!.text).toContain("cap 2/4 working across all repos");
+    expect(head!.text.length, "the head line fits a narrow pane").toBeLessThan(80);
   });
 
   it("an unverifiable machine's header leads with how long it has been silent, and says its runs are not gone", () => {
@@ -241,15 +244,17 @@ describe("what the operator reads", () => {
       stale: true,
       repos: [{ repo: "api", status: repoStatus("api", [activeRun()]), eligible: [] }],
     });
-    const header = machineHeader(m, 1000);
-    expect(header.tone).toBe("bad");
-    expect(header.text).toContain("unverifiable: no answer within 2000ms");
-    expect(header.text).toContain("last seen 5m ago");
-    expect(header.text).toContain("NOT known to be gone");
+    const [head, why] = machineHeader(m, 1000);
+    expect(head!.tone).toBe("bad");
+    expect(head!.text).toContain("unverifiable");
+    expect(head!.text).toContain("last seen 5m ago");
+    expect(why!.text).toContain("no answer within 2000ms");
+    expect(why!.text).toContain("NOT known to be gone");
+    for (const line of machineHeader(m, 1000)) expect(line.text.length, `"${line.text}" fits a narrow pane`).toBeLessThan(80);
   });
 
   it("a machine that has never answered says so instead of claiming a last-seen time", () => {
-    expect(machineHeader(machineView({ state: "unverifiable", lastSeenAt: null }), 1000).text).toContain("never seen");
+    expect(machineHeader(machineView({ state: "unverifiable", lastSeenAt: null }), 1000)[0]!.text).toContain("never seen");
   });
 
   it("a last-known run renders as a line that admits what it is, not as a live card", () => {

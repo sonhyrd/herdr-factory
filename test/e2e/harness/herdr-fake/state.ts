@@ -219,6 +219,12 @@ export class FakeHerdr {
     return r.code === 0 ? r.stdout.trim() : `(process-info failed: ${r.stderr.trim()})`;
   }
 
+  /** Mirrors `HerdrServer.sendKeys` so the handle type is one shape — but there is no PTY on this
+   *  lane, so a scenario that needs key presses (the TUI) belongs on the real one. */
+  sendKeys(paneId: string, ...keys: string[]): void {
+    throw new Error(`the fake lane has no terminal — cannot send ${keys.join(" ")} to ${paneId}. Run this scenario on the real lane.`);
+  }
+
   /** Every pane's output + process in a workspace — the post-mortem. */
   /** Every pane of every workspace — the shape `World.stop()` dumps into the artifacts. */
   allScreens(lines = 200): string {

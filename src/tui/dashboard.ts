@@ -510,13 +510,15 @@ export function createDashboard(
     const specs: LineSpec[] = [];
     for (const m of shown) {
       if (fleet) {
-        const header = machineHeader(m, view.readAt);
         if (specs.length) specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
-        specs.push({
-          kind: "text",
-          content: header.text,
-          fg: toneColor(header.tone),
-          target: { machine: m.name, repo: "", kind: "machine", stale: m.stale },
+        // Only the head line is focusable: the rest is that line's continuation, not another row.
+        machineHeader(m, view.readAt).forEach((line, i) => {
+          specs.push({
+            kind: "text",
+            content: line.text,
+            fg: toneColor(line.tone),
+            target: i === 0 ? { machine: m.name, repo: "", kind: "machine", stale: m.stale } : undefined,
+          });
         });
       }
       // The local machine with no server and nothing remembered: list what IS configured here, as
