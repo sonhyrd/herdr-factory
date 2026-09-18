@@ -103,6 +103,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `perf-call-budgets` | 12 watched PRs cost **one** batched GraphQL query per pass — no per-run `pr view`, no re-discovery by `pr list` |
 | `perf-tick-latency` | p50/p95 of a full pass with 20 active runs, and that one slow `gh` costs its own call rather than the loop |
 | `tui-boot` | the real launcher in a real PTY: opentui's FFI resolves, `app_ready` inside its budget, no stack trace on screen |
+| `tui-theme` | the TUI follows herdr's theme, read from a real `config.toml` at launch: `tokyo-night`, `HERDR_FACTORY_THEME` overriding it, an unknown name falling back, and no herdr theme still light |
 | `ds4-w2pr` | *(tier ds4)* a real local model, the **shipped** prompts, no harness hints: does the work reach a PR? |
 | `perf-resource-soak` | ~900 passes (six full lifecycles, then a long idle tail): RSS, FDs, DB and worktrees stay flat, and the server is still healthy |
 

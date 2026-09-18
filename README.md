@@ -1142,6 +1142,12 @@ belt:
   is still booting), so a belt with a `default_layout` must target its **first** step at a layout
   pane — validated at config-load, not left to fail at runtime.
 
+A step's prompt is submitted to its pane **once**. herdr is asked to confirm that the submission
+actually moved the agent, and where it can't — some harnesses (`cursor-agent` on Linux) work away
+while herdr still reports the pane `idle` — the factory falls back to whether the pane's screen
+changed. Either way the dispatch counts and no later tick re-sends it, so an agent is never handed
+the same prompt twice; only a pane that showed no sign of the prompt at all is retried.
+
 A step whose `tab`/`pane` names a pane the layout doesn't (yet) provide waits up to
 `limits.layout_wait_seconds`; an expired window is automatically re-armed up to 3 times (a
 transient herdr/layout race self-heals — even from an already-parked run), and only then does the
@@ -1462,6 +1468,36 @@ cursor.
 The TUI renders through opentui's native core, which needs FFI — the launcher adds the flags and
 resolves the same vendored Node the engine uses, so there's nothing to set up.
 
+### Theme
+
+The TUI **follows herdr's theme**, so one setting themes both and every machine sharing a herdr
+config looks the same. At launch it reads `[theme] name` from herdr's own config
+(`$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml` — a symlinked file works)
+and renders on the matching palette: one ships for every herdr built-in
+(`catppuccin`, `tokyo-night`, `dracula`, `nord`, `gruvbox`, `one-dark`, `solarized`, `kanagawa`,
+`rose-pine`, `vesper`, `terminal`) and for the light variants `light_name` points at
+(`catppuccin-latte`, `tokyo-night-day`, `gruvbox-light`, `one-light`, `solarized-light`,
+`kanagawa-lotus`, `rose-pine-dawn`). Text colors hold WCAG-AA contrast against their background,
+measured in the tests rather than eyeballed.
+
+With **no herdr config, or no `[theme] name`**, it renders the light palette it always has — nothing
+changes for an install that never themed herdr. A name this build doesn't know (a newer herdr, a
+custom theme) falls back to the nearest palette it can — the same family where the name extends one
+we ship (`kanagawa-dragon` → kanagawa), else dark or light as the name suggests, else light — and
+never fails to boot. `HERDR_FACTORY_THEME=<name>|dark|light` overrides herdr's choice.
+
+The theme is picked once, at start, so changing herdr's takes effect on the next launch. The Doctor
+tab reports which palette won, and why:
+
+```
+This TUI:
+✓   theme — tokyo-night (following herdr's config)
+⚠   theme — dark (following herdr's config) · unknown theme "everforest-dark" — rendering the dark palette
+```
+
+herdr's `auto_switch` / `dark_name` / `light_name` are not followed — the host terminal's appearance
+isn't ours to read. Name the theme you want with `[theme] name`, or override it per launch.
+
 ## The agent skill
 
 The factory ships an **agent skill** — the same documentation you're reading, restructured as an
@@ -1518,6 +1554,7 @@ harness with no skill mechanism can be pointed at the folder directly.
 | `HERDR_CHANNEL`             | update channel: `main` (default, tracks upstream) or `stable` (follows the latest release tag) |
 | `HERDR_FACTORY_TELEMETRY`   | `1` enables OpenTelemetry (plus the standard `OTEL_*` vars) |
 | `HERDR_BIN_PATH`            | path to the `herdr` binary (default: `herdr` on PATH)       |
+| `HERDR_FACTORY_THEME`       | TUI palette: a herdr theme name, or `dark`/`light` — overrides herdr's `[theme] name` |
 | `HERDR_FACTORY_FLEET_ENDPOINTS` | JSON file of `{"<machine>": "http://host:port"}` overrides for [`fleet`](#fleet--every-run-on-every-machine) — names a machine's API directly instead of forwarding over SSH (a host that moved its port off 8765; the e2e suite's second server) |
 
 `HERDR_FACTORY_AUTO_UPDATE` and `HERDR_CHANNEL` are captured into the launchd/systemd **service

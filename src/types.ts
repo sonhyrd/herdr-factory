@@ -845,6 +845,10 @@ export interface Agent {
   agentStatus: string; // idle | working | done | blocked | unknown
   cwd: string;
   sessionId: string | null; // herdr agent_session.value (the claude session id)
+  /** herdr's monotonic per-pane terminal-content counter (`agent list`'s `revision`), or null when
+   *  this herdr doesn't report one. Bumped whenever the pane's screen changes, which makes it the
+   *  cheapest evidence that a submitted prompt actually reached the agent — see agentSend. */
+  revision: number | null;
 }
 
 export type PrState = "OPEN" | "MERGED" | "CLOSED";

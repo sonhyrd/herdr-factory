@@ -404,6 +404,20 @@ reverse-engineered during the bash prototype.
     to observe the agent react (`--wait --until working|blocked`) and answers false when the
     submission stalled — i.e. the keystrokes were dropped. That verdict is what keeps a lost prompt
     from looking like a successful dispatch (§8).
+    **A stall is not taken at face value.** herdr's state detection is per-harness and not every
+    harness flips: `cursor-agent` on Linux takes the prompt and works while herdr keeps reporting the
+    pane `idle`, so `--until working` always times out. So a stalled verdict falls back to a
+    **progress probe** — herdr's per-pane `revision` (its terminal-content counter, already carried by
+    `agent list`) read fresh before and after the submission. A pane whose revision ADVANCED reacted
+    to the prompt and the dispatch is confirmed; only a pane that did nothing at all is unconfirmed.
+    `revision` is the chosen signal because it costs one extra `agent list` and no new herdr surface,
+    where `agent_session` is present for any live agent (so it says nothing about *this* submission)
+    and a worktree diff or `pane read` capture answers the same question later and less directly.
+    The probe is deliberately optimistic — unrelated pane output can confirm a dispatch that never
+    landed — because the two failures are not symmetric: a false confirm starts the step's budget
+    clock, which the budget watchdog already backstops by re-prompting, while a false stall re-sends
+    the prompt every tick for the whole layout window and buries the agent in duplicate queued
+    follow-ups.
   - `reportPaneDisplay(pane, {agentName, title, tokens})` — DISPLAY-ONLY pane metadata
     (`pane report-metadata`), the channel that replaced renaming panes to convey run state. See
     `core/pane-display.ts`: the pane's real `label` stays whatever the layout built (so a step's
@@ -1298,8 +1312,13 @@ step (`spawnStep`):
      that pane and require an agent
      that is present **and idle** (agent-agnostic — claude *or* opencode), then `agent prompt`
      it (atomic submit + Enter). The submission is **confirmed**: herdr reports whether it actually
-     moved the agent, and an unconfirmed one is treated as `waiting` — the pass stays undispatched and
+     moved the agent — or, when this harness's status never flips, whether the pane's `revision`
+     advanced (see [§4](#4-herdr-ownership-boundary)) — and an unconfirmed one is treated as `waiting`:
+     the pass stays undispatched and
      retries, instead of starting the step's budget clock against an agent that never got the work.
+     Confirmation is what makes a dispatch **idempotent from the agent's point of view**: the pass is
+     marked dispatched and no later tick re-submits, so an agent herdr merely *reports* as idle is
+     never handed the same prompt twice.
      If the pane isn't up yet or its agent is still busy starting up,
      `spawnStep` returns `waiting` — the run stays in its phase and retries on later ticks
      (the wait is bounded by `layout_wait_seconds`, measured from the `run_steps` row's
@@ -1733,6 +1752,17 @@ a background `problem` — a signal orthogonal to the per-step done/pending cell
 upload shows even while its `evidence` step reads _done_. It's computed server-side per active run
 (`/status` `active[].problem`, from `undeliveredEvidenceUploadsForRun` where a failure has been
 recorded) so any `/status` reader sees it; the needs-a-human red (attention/failed) still outranks it.
+
+**Theme.** `src/tui/theme.ts` is the only module in `src/tui` that names a color, and it resolves
+which palette to build at **module import** — i.e. once, on the TUI's startup path, before the
+renderer exists: `HERDR_FACTORY_THEME`, else `[theme] name` from herdr's own `config.toml`
+(`$XDG_CONFIG_HOME`/`$HOME`-resolved, read rather than stat'd so a symlinked config works), else the
+light palette the TUI shipped with. Resolution is a `readFileSync` and a scan for one scalar — no
+TOML dependency, nothing async, and nothing that can throw: an unreadable or unknown-theme config
+falls back to the nearest palette rather than failing the boot, which is what keeps it safe to run
+where it does. Because the resolver cannot print (stdout belongs to the renderer), the outcome is
+**reported** instead: as a `This TUI:` row in the Doctor tab, and as `theme`/`theme_source` on the
+`HERDR_FACTORY_TUI_TIMING` startup record — which is also what the `tui-theme` e2e scenario asserts.
 
 **Server routing.** The mutating + nudge commands (`tick`, `step-done`, `ask-human`, `bounce`,
 `resume`, `claim`, `teardown`) route through the running server (`POST /repos/:repo/…`) when it's

@@ -26,7 +26,8 @@ Two extras worth knowing. `--tier ds4` runs the **model** scenarios and only tho
 (opencode against a DeepSeek V4 endpoint on `:8000`) following the *shipped* prompts, which is the only
 check that the prompts themselves are followable. It runs on the host, needs that server up, and never
 gates a build. And `tui-boot` launches the real TUI in a real herdr pane, so an opentui FFI or pinned-
-Node regression fails there rather than on a user's terminal.
+Node regression fails there rather than on a user's terminal; `tui-theme` boots it the same way
+against a real herdr `config.toml` to prove the TUI follows herdr's theme.
 
 Needs Docker. Artifacts land in `artifacts/e2e/<timestamp>/` (`…/latest` symlink): `summary.md`,
 `results.json`, `junit.xml`, and per scenario the DB, the engine log, the herdr server log, the agent

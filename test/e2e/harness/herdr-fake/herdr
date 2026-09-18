@@ -297,6 +297,18 @@ function statusSnapshot(paneId) {
   return { value: agentStatus(paneId), mtimeMs };
 }
 
+/** herdr's per-pane `revision` — a counter it bumps every time the pane's terminal content changes,
+ *  and the engine's evidence that a prompt landed when a harness's agent_status never flips. There is
+ *  no terminal here, so the pane's captured output LENGTH stands in: monotonic, and it advances
+ *  exactly when the pane produced something, which is the question the engine is asking. */
+function paneRevision(paneId) {
+  try {
+    return FS.statSync(paneLogPath(paneId)).size;
+  } catch {
+    return 0; // nothing written yet
+  }
+}
+
 function livePaneProcess(pane) {
   if (pane.agent && alive(pane.agent.pid)) return pane.agent.pid;
   if (pane.command && alive(pane.command.pid)) return pane.command.pid;
@@ -323,6 +335,7 @@ function agentJson(pane) {
     interactive_ready: status === "idle" || status === "done",
     cwd: pane.cwd || "",
     agent_session: { value: pane.agent.session_id },
+    revision: paneRevision(pane.pane_id),
   };
 }
 
@@ -339,6 +352,7 @@ function paneJson(pane, hidden) {
     focused: !!pane.focused,
     agent_status: agent ? agentStatus(pane.pane_id) : "gone",
     title: pane.metadata?.title ?? null,
+    revision: paneRevision(pane.pane_id),
   };
 }
 
