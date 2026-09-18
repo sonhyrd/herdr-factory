@@ -1394,6 +1394,12 @@ overflows it on a normal home directory — which used to make every remote mach
 `unverifiable`. If no ControlPath fits, the forward simply runs **unmultiplexed** (it pays a
 handshake per call rather than failing).
 
+Because that shared connection is kept alive between calls (`ControlPersist`), the `ssh` that sets a
+forward up **exits 0** as soon as the tunnel is handed to the backgrounded master. A machine is
+therefore judged by whether its forwarded port answers `/health` — only a **non-zero** ssh exit, or
+the timeout, makes it `unverifiable`. On the way out the forward is cancelled through the same
+control socket, which leaves the shared connection up for the next `herdr-factory fleet`.
+
 Two properties are worth knowing before you trust the output:
 
 - **Machines are read in parallel, each under its own timeout** (`--timeout`, default 5000ms), so one

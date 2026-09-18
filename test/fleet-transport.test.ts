@@ -5,7 +5,7 @@
 // `unverifiable` while `ssh -L …` by hand works fine. The diagnosis is only in ssh's stderr, so the
 // transport keeps it.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { controlPathFits, resolveControlDir, SshForwardTransport, sshForwardArgs, SUN_PATH_MAX } from "../src/fleet/transport.ts";
@@ -102,5 +102,73 @@ describe("fleet ssh forward — why it failed", () => {
   it("knows nothing to report about a machine it was never asked to reach", () => {
     const transport = new SshForwardTransport({ controlDir: join(dir, "control") });
     expect(transport.failureDetail(remote)).toBeNull();
+  });
+
+  // ── an ssh that exits 0 ──────────────────────────────────────────────────────────────────────
+  //
+  // With ControlPersist, starting a master forks it into the background and the client we spawned
+  // returns 0 the moment the forward is up. Reading that exit as "ssh gave up" reported every remote
+  // `unverifiable: ssh exited 0` while the tunnel was answering — so the fake here does exactly what
+  // a real ssh does: it binds the forwarded port, then exits 0.
+
+  /** The far end of the forward: an HTTP server on the port the fake `ssh` was told to listen on. */
+  function fakeForward(): string {
+    const script = join(dir, "forward.mjs");
+    writeFileSync(
+      script,
+      [
+        'import { createServer } from "node:http";',
+        'const srv = createServer((_req, res) => (res.writeHead(200, { "content-type": "application/json" }), res.end("{}")));',
+        'srv.listen(Number(process.argv[2]), "127.0.0.1");',
+        "setTimeout(() => process.exit(0), 10_000);",
+      ].join("\n"),
+    );
+    return script;
+  }
+
+  /** A fake `ssh` that backgrounds its forward and exits 0, and records `-O` control commands. */
+  function fakeBackgroundingSsh(): void {
+    fakeSsh(`
+if [[ "$*" == *"-O "* ]]; then printf '%s\\n' "$*" > "${join(dir, "control-command")}"; exit 0; fi
+port=""
+for a in "$@"; do case "$a" in *:127.0.0.1:8765) port="\${a%%:*}";; esac; done
+[[ -n "$port" ]] || exit 255
+"${process.execPath}" "${fakeForward()}" "$port" >/dev/null 2>&1 &
+exit 0`);
+  }
+
+  it("keeps polling when ssh exits 0 — the backgrounded forward is what decides", async () => {
+    fakeBackgroundingSsh();
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    const endpoint = await transport.endpoint(remote);
+    expect(endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(transport.failureDetail(remote)).toBeNull();
+    // …and the cached forward survives a second read, even though its client is long gone.
+    expect(await transport.endpoint(remote)).toBe(endpoint);
+    transport.close();
+  });
+
+  it("cancels the backgrounded master's forward on close, leaving the shared connection up", async () => {
+    fakeBackgroundingSsh();
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+    const endpoint = await transport.endpoint(remote);
+    const port = new URL(endpoint!).port;
+
+    transport.close();
+
+    const command = readFileSync(join(dir, "control-command"), "utf8");
+    expect(command).toContain("-O cancel"); // not `-O exit`: the master is the reuse we want to keep
+    expect(command).toContain(`-L ${port}:127.0.0.1:8765`);
+    expect(command).toContain("ops@build-box");
+  });
+
+  it("leaves no control command behind for a forward that failed outright", async () => {
+    fakeSsh("echo 'Permission denied (publickey).' >&2\nexit 255");
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    expect(await transport.endpoint(remote)).toBeNull();
+    transport.close();
+    expect(existsSync(join(dir, "control-command"))).toBe(false);
   });
 });
