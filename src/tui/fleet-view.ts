@@ -287,12 +287,13 @@ export function createFleetSource(opts: FleetSourceOpts = {}): FleetSource {
       for (const key of [...eligibleCache.keys()]) {
         if (!live.has(key) && reachable.has(key.slice(0, key.indexOf("|")))) eligibleCache.delete(key);
       }
-      onView({
-        readAt: quick.readAt,
-        machines: machines.map((m) =>
-          m.state === "ok" ? { ...m, repos: m.repos.map((r) => ({ ...r, eligible: eligibleCache.get(cacheKey(m.name, r.repo)) ?? [] })) } : m,
-        ),
-      });
+      const folded = machines.map((m) =>
+        m.state === "ok" ? { ...m, repos: m.repos.map((r) => ({ ...r, eligible: eligibleCache.get(cacheKey(m.name, r.repo)) ?? [] })) } : m,
+      );
+      // Remember the FOLDED view, so a machine that goes away next poll carries forward the rows an
+      // operator actually saw — eligible work included.
+      for (const m of folded) if (m.state === "ok") lastGood.set(m.name, m);
+      onView({ readAt: quick.readAt, machines: folded });
     },
     clientFor,
     machineNames() {
