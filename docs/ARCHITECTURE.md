@@ -291,6 +291,16 @@ while herdr was down, and clearing the "decided" cache, whose keys are workspace
 server recycles. Modules: `src/core/layout-match.ts` (pure matching), `layout.ts` (tree builder +
 runner), `layout-hook.ts` (the event + startup handlers).
 
+The freshness guard counts only the panes the user or an agent could have opened. A herdr PLUGIN that
+adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) puts a second pane in every
+brand-new workspace, which read as "arranged" and declined **every** layout build on such a host —
+the run then waited out its whole `layout_wait_seconds` window. So when `pane_count` isn't 1 the hook
+asks herdr for the workspace's actual panes (`pane list --workspace`) and discounts those labelled by
+a plugin: `machine.yml`'s `layout_hook.ignore_pane_labels` (host-local, because the installed plugins
+are the HOST's; default `[Sidebar]`, matched case-insensitively, `[]` to discount none — §10). One
+remaining own pane ⇒ fresh. `tab_count` is still checked raw, and a pane the user opened himself
+still declines the build (that's the case the guard exists for).
+
 A belt step then simply *targets* a resulting pane via its own `tab`/`pane` (from its `steps[]`
 entry); that pane declares its own agent (`agent: claude` + `agent_args`) so the build brings one up
 there (config-load rejects a step whose target pane starts no agent at all, and a `default_layout`
@@ -1524,7 +1534,9 @@ about to revert. It's driven two ways:
   Atlassian site `base_url`, the GitHub `repo`) is per-repo config, not a secret.
 - **Host-local** — `~/.config/herdr-factory/machine.yml` (optional, `MachineConfigSchema` strict zod;
   `machine.schema.json` is written next to `config.schema.json`): `max_active_workspaces` (machine-wide
-  cap on occupying runs across all repos) and `min_free_memory_mb` (claim floor). Deliberately outside
+  cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), and
+  `layout_hook.ignore_pane_labels` (pane labels the layout hook's freshness guard discounts as plugin
+  furniture — default `[Sidebar]`; see [§4](#4-herdr-ownership-boundary)). Deliberately outside
   `repos/` so a config dir shared by git across hosts can gitignore it. Read by `buildDeps`; a hot
   reload validates it first and refuses the whole reload when invalid (§7 *Machine gate*).
 - **Per-repo** — `~/.config/herdr-factory/repos/<name>/`:

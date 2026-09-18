@@ -13,6 +13,7 @@ import type {
   MatchItem,
   PaneBox,
   PaneDisplay,
+  PaneSummary,
   PrInfo,
   PrSnapshot,
   ReviewSig,
@@ -95,6 +96,8 @@ export interface HerdrApi {
   workspaceInfo(workspaceId: string): Promise<WorkspaceInfo | null>;
   worktreeBranch(workspaceId: string, checkoutPath?: string | null): Promise<string | null>;
   firstPaneOfTab(workspaceId: string, tabId: string): Promise<string | null>;
+  /** Every pane in a workspace with its label — the hook's freshness re-check ignores plugin panes. */
+  listPanes(workspaceId: string): Promise<PaneSummary[]>;
   /** Submit a prompt to a pane's agent (atomic: types + Enter). `confirm` waits for herdr to observe
    *  the agent react and returns false when the submission stalled — the prompt never landed. */
   agentSend(paneId: string, text: string, opts?: { confirm?: boolean }): Promise<boolean>;

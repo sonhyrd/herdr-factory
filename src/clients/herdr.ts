@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { run, runJson } from "./exec.ts";
 import { HerdrUnreachableError, type LivenessOpts } from "../core/deps.ts";
-import { HERDR_AGENT_KINDS, isReadyForInput, type Agent, type FocusedPane, type LayoutDescription, type LayoutDescriptionNode, type LayoutNode, type PaneBox, type PaneDisplay, type WorkspaceInfo, type WorktreeResult } from "../types.ts";
+import { HERDR_AGENT_KINDS, isReadyForInput, type Agent, type FocusedPane, type LayoutDescription, type LayoutDescriptionNode, type LayoutNode, type PaneBox, type PaneDisplay, type PaneSummary, type WorkspaceInfo, type WorktreeResult } from "../types.ts";
 import { herdrSocketCall } from "./herdr-socket.ts";
 
 /** The herdr agent KIND (`herdr agent start --kind`) for a spawn argv. herdr uses it to pick the
@@ -504,12 +504,17 @@ export class HerdrClient {
     return branch && branch.length > 0 ? branch : null;
   }
 
-  /** The first pane in a tab (a fresh worktree's root pane), or null. */
-  async firstPaneOfTab(workspaceId: string, tabId: string): Promise<string | null> {
+  /** Every pane in a workspace, with the label herdr shows for it. [] when herdr can't be asked. */
+  async listPanes(workspaceId: string): Promise<PaneSummary[]> {
     const j = await runJson<PaneListResp>(this.bin, ["pane", "list", "--workspace", workspaceId], { allowFail: true }).catch(
       () => ({}) as PaneListResp,
     );
-    return (j.result?.panes ?? []).find((p) => p.tab_id === tabId)?.pane_id ?? null;
+    return (j.result?.panes ?? []).map((p) => ({ paneId: p.pane_id, tabId: p.tab_id, label: p.label ?? null }));
+  }
+
+  /** The first pane in a tab (a fresh worktree's root pane), or null. */
+  async firstPaneOfTab(workspaceId: string, tabId: string): Promise<string | null> {
+    return (await this.listPanes(workspaceId)).find((p) => p.tabId === tabId)?.paneId ?? null;
   }
 
   /** Submit `text` as a prompt to the agent in `paneId`. herdr 0.7.5 split the old `agent send` into

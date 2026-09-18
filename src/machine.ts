@@ -15,12 +15,24 @@ export const MachineConfigSchema = z
     max_active_workspaces: z.number().int().min(0).optional(),
     /** Skip Phase B claims while available memory is below this many MB. */
     min_free_memory_mb: z.number().int().min(0).optional(),
+    /** Layout event hook settings. Host-local because they describe the HOST's herdr — which plugins
+     *  are installed there, not what any repo wants. */
+    layout_hook: z
+      .object({
+        /** Pane labels a herdr plugin adds to every new tab (e.g. a sidebar). The hook ignores panes
+         *  bearing them when judging a workspace fresh; `[]` ignores none. */
+        ignore_pane_labels: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
 export interface MachineConfig {
   maxActiveWorkspaces?: number;
   minFreeMemoryMb?: number;
+  /** Absent ⇒ the layout hook's own default (see DEFAULT_IGNORED_PANE_LABELS). */
+  layoutHookIgnorePaneLabels?: string[];
 }
 
 export function machineConfigPath(): string {
@@ -35,7 +47,11 @@ export function loadMachineConfig(path = machineConfigPath()): MachineConfig {
     const detail = result.error.issues.map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
     throw new Error(`invalid machine config (${path}):\n${detail}`);
   }
-  return { maxActiveWorkspaces: result.data.max_active_workspaces, minFreeMemoryMb: result.data.min_free_memory_mb };
+  return {
+    maxActiveWorkspaces: result.data.max_active_workspaces,
+    minFreeMemoryMb: result.data.min_free_memory_mb,
+    layoutHookIgnorePaneLabels: result.data.layout_hook?.ignore_pane_labels,
+  };
 }
 
 export function machineJsonSchema(): Record<string, unknown> {

@@ -821,6 +821,14 @@ export interface WorkspaceInfo {
   activeTabId: string | null;
 }
 
+/** One pane as herdr lists it. The `label` is what a plugin stamps on a pane it added (a sidebar),
+ *  which is how the layout hook tells plugin furniture from a pane the user opened. */
+export interface PaneSummary {
+  paneId: string;
+  tabId: string;
+  label: string | null;
+}
+
 /** The single globally-focused pane (what the user is looking at right now). */
 export interface FocusedPane {
   paneId: string;

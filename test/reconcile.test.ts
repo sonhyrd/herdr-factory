@@ -255,6 +255,7 @@ function build(opts: { multi?: boolean } = {}) {
     workspaceInfo: async () => ({ checkoutPath: worktree, repoRoot: "/main-checkout", repoName: "n", isLinkedWorktree: true, tabCount: 1, paneCount: 1, activeTabId: "w1:t1" }),
     worktreeBranch: async () => "fix/K-1",
     firstPaneOfTab: async () => "w1:p1",
+    listPanes: async () => [{ paneId: "w1:p1", tabId: "w1:t1", label: null }],
     agentSend: async (p, t) => { calls.agentSend.push([p, t]); return !state.promptStalls; },
     agentFocus: async (id) => { calls.agentFocus.push(id); },
     focusedPane: async () => state.focusedPane,

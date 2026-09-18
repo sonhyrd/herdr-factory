@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseEventPayload, claimApply, releaseApply, alreadyApplied, isDecided, markDecided, reapOrphanClaims, runLayoutStartup } from "../src/core/layout-hook.ts";
+import { parseEventPayload, claimApply, releaseApply, alreadyApplied, isDecided, markDecided, reapOrphanClaims, runLayoutStartup, ownPanes, DEFAULT_IGNORED_PANE_LABELS } from "../src/core/layout-hook.ts";
 import { resolveHookLayout } from "../src/core/layout-match.ts";
 import type { BeltConfig, LayoutConfig } from "../src/config.ts";
 
@@ -116,6 +116,31 @@ describe("claim / decided / reap — filesystem idempotency", () => {
     expect(alreadyApplied(live)).toBe(true); // the durable claim is untouched
     expect(alreadyApplied(gone)).toBe(false);
     expect(runLayoutStartup()).toEqual({ reaped: 0, decidedCleared: false }); // idempotent
+  });
+});
+
+describe("ownPanes — freshness ignores a plugin's own panes", () => {
+  const pane = (label: string | null) => ({ paneId: "w1:pX", tabId: "w1:t1", label });
+  const fresh = (panes: { label: string | null }[], ignored: readonly string[] = DEFAULT_IGNORED_PANE_LABELS) => ownPanes(panes, ignored).length === 1;
+
+  it("a shell pane + a plugin's Sidebar pane is still fresh", () => {
+    expect(fresh([pane(null), pane("Sidebar")])).toBe(true);
+  });
+  it("a shell pane + an unlabeled extra pane (the user split one) is not fresh", () => {
+    expect(fresh([pane(null), pane(null)])).toBe(false);
+  });
+  it("a shell pane + a user-labeled extra pane is not fresh", () => {
+    expect(fresh([pane(null), pane("notes")])).toBe(false);
+  });
+  it("matches labels case-insensitively and trimmed", () => {
+    expect(fresh([pane(null), pane(" sidebar ")])).toBe(true);
+  });
+  it("honours a host's own ignore list; an empty one ignores nothing", () => {
+    expect(fresh([pane(null), pane("Files")], ["Files", "Sidebar"])).toBe(true);
+    expect(fresh([pane(null), pane("Sidebar")], [])).toBe(false);
+  });
+  it("blank entries never swallow an unlabeled pane", () => {
+    expect(fresh([pane(null), pane(null)], ["", "  "])).toBe(false);
   });
 });
 

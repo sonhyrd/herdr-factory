@@ -589,18 +589,22 @@ is pure data (`herdr-factory reload` picks it up without a restart).
 
 Every `limits` key above is **per repo**. To bound a whole host, create `~/.config/herdr-factory/machine.yml`
 (next to `repos/`, not inside one). It is **host-local**: when the config dir is a git repo shared by several
-hosts, add `machine.yml` to that repo's `.gitignore` so each host keeps its own.
+hosts, add `machine.yml` to that repo's `.gitignore` so each host keeps its own. It also carries the
+few settings that describe the **host's herdr** rather than any repo (`layout_hook`).
 
 ```yaml
 # yaml-language-server: $schema=./machine.schema.json
 max_active_workspaces: 2   # worked runs across ALL repos on this host (same count as the per-repo cap)
 min_free_memory_mb: 4096   # don't claim while available memory is below this
+layout_hook:
+  ignore_pane_labels: [Sidebar]   # panes a herdr PLUGIN adds — not "this workspace is arranged"
 ```
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `max_active_workspaces` | unset (no machine cap) | ceiling on **worked** runs across every repo this host serves; parked + idle PR-watch runs hold no slot. Checked before each repo's claims under a machine-wide lock; a manual `claim` honours it too |
 | `min_free_memory_mb` | unset (no memory gate) | skip claiming while available memory is below it — Linux `MemAvailable`, macOS `vm_stat` free + inactive + speculative pages, `os.freemem()` elsewhere |
+| `layout_hook.ignore_pane_labels` | `[Sidebar]` | pane labels the layout hook's freshness gate ignores. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) makes every brand-new workspace 2 panes, which would decline **every** layout build on that host; panes bearing these labels don't count. Matched case-insensitively. Set it to the labels your plugins use, or `[]` to ignore none. A pane the **user** opened still declines the build |
 
 Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
 `machine at capacity (n/N)` / `low memory: <free> MB < <min> MB — not claiming` once when a gate engages
@@ -1127,7 +1131,9 @@ belt:
   repo's belts. Layouts are keyed to the repo by the config file (one config = one repo), so no
   repo path is restated.
 - **Idempotent** — applied exactly once per worktree, and only to a **fresh** (1-tab/1-pane) linked
-  worktree, so it never clobbers an arranged or restored workspace. That freshness gate loses a race
+  worktree, so it never clobbers an arranged or restored workspace. Panes a herdr **plugin** adds to
+  every new tab (a sidebar) are not arrangement: labels listed in `machine.yml`'s
+  `layout_hook.ignore_pane_labels` (default `[Sidebar]`) don't count against freshness. That gate loses a race
   against a step spawning its own pane (a new tab, decided in-process while this out-of-process hook
   is still booting), so a belt with a `default_layout` must target its **first** step at a layout
   pane — validated at config-load, not left to fail at runtime.
