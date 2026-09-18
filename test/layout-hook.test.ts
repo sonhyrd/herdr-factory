@@ -134,9 +134,14 @@ describe("resolveHookLayout — factory-owned vs manual worktree", () => {
     const belts = [belt({ name: "a", priority: 1, defaultLayout: "web" }), belt({ name: "b", priority: 2, defaultLayout: "hot" })];
     expect(resolveHookLayout(belts, layouts, undefined, "any-branch")?.layout.id).toBe("web");
   });
-  it("owner belt yielding nothing falls back to walking belts", () => {
+  it("an owned layout-less belt yields nothing — never another belt's layout", () => {
+    // The owning run's steps spawn dedicated panes; painting "web" here breaks that spawn (#12).
     const belts = [belt({ name: "a", priority: 1, defaultLayout: "web" }), belt({ name: "b", priority: 2 })];
-    expect(resolveHookLayout(belts, layouts, "b", "any-branch")?.layout.id).toBe("web");
+    expect(resolveHookLayout(belts, layouts, "b", "any-branch")).toBeUndefined();
+  });
+  it("falls back to walking belts when the named owner belt is gone from the config", () => {
+    const belts = [belt({ name: "a", priority: 1, defaultLayout: "web" })];
+    expect(resolveHookLayout(belts, layouts, "removed", "any-branch")?.layout.id).toBe("web");
   });
   it("undefined when no belt yields a layout", () => {
     expect(resolveHookLayout([belt({})], layouts, undefined, "any-branch")).toBeUndefined();

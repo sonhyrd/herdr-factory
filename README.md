@@ -1102,7 +1102,8 @@ belt:
   pane's process, so herdr can still start the agent there) (`blocking: true` waits for it to finish before any other pane's
   command or agent starts; an agent on the setup pane always waits for it).
 - **Selection** — a belt builds its `default_layout`, unless an earlier `layout_matching` glob
-  matches the worktree's branch. A hand-created worktree (no owning run) resolves by walking the
+  matches the worktree's branch. The owning run's belt decides alone: a belt with no layout gets
+  none, never another belt's. Only a hand-created worktree (no owning run) resolves by walking the
   repo's belts. Layouts are keyed to the repo by the config file (one config = one repo), so no
   repo path is restated.
 - **Idempotent** — applied exactly once per worktree, and only to a **fresh** (1-tab/1-pane) linked
