@@ -213,11 +213,12 @@ export function reapSetupStatusFiles(maxAgeMs = 24 * 60 * 60 * 1000): number {
 
 // ── Application: build the tabs, then setup, then the agents ──────────────────────────────────────
 
-/** The worktree we build a layout INTO: its existing root tab (whose panes `layout.apply` replaces)
- *  and the checkout path every pane should open in. `rootPaneId` is used to measure the tab area. */
+/** The worktree we build a layout INTO: its existing root tab (whose panes `layout.apply` replaces —
+ *  absent, every tab is APPENDED and nothing already there is touched) and the checkout path every
+ *  pane should open in. `rootPaneId` is used to measure the tab area. */
 export interface LayoutTarget {
   workspaceId: string;
-  rootTabId: string;
+  rootTabId?: string;
   rootPaneId?: string;
   cwd?: string;
   /** Extra env for every pane on top of the layout's own (e.g. the run's work key). */
@@ -279,9 +280,10 @@ async function applyLayoutImpl(deps: Deps, target: LayoutTarget, layout: LayoutC
     const tree = tabTree({ ...tab, panes }, { cwd: target.cwd, box, setup });
     // Tab 0 REBUILDS the worktree's existing tab (herdr builds the replacement first, then closes the
     // old one, so the workspace is never briefly tabless); later tabs are created by the same call.
+    // With no root tab, tab 0 is created too — a new tab set beside whatever is already there.
     // `tab_id` and `workspace_id` are mutually exclusive; `tab_label` applies either way.
     const applied = await deps.herdr.layoutApply({
-      ...(index === 0 ? { tabId: target.rootTabId } : { workspaceId: target.workspaceId }),
+      ...(index === 0 && target.rootTabId ? { tabId: target.rootTabId } : { workspaceId: target.workspaceId }),
       tabLabel: tab.title,
       root: tree,
     });
