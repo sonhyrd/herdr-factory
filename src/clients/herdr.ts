@@ -295,6 +295,13 @@ export class HerdrClient {
       strategy.mode === "adopt"
         ? await this.agentAdopt(paneId, { name, kind: strategy.kind, args: opts.argv.slice(1) })
         : await this.paneRun(paneId, shellQuoteArgv(opts.argv)).then(() => true);
+    // `agent start` waits for the agent to be READY for input, but a harness launched with its
+    // prompt on argv (cursor-agent) goes straight to work and never reports ready inside the
+    // timeout. Closing that pane kills a working agent and the retry repeats it forever — so a
+    // pane where herdr already sees an agent counts as started.
+    if (!started && strategy.mode === "adopt" && (await this.paneAlive(paneId, { fresh: true }).catch(() => false))) {
+      return paneId;
+    }
     if (!started) {
       await this.paneClose(paneId); // don't leave an empty pane behind
       return null;

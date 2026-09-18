@@ -16,6 +16,7 @@ case "$1:$2" in
   agent:start)
     if [ -n "$HERDR_FAKE_ADOPT_FAIL" ]; then echo 'agent not detected' >&2; exit 1; fi
     echo '{"result":{"agent":{"pane_id":"w1:p9"}}}' ;;
+  agent:list) if [ -n "$HERDR_FAKE_AGENTS" ]; then echo "$HERDR_FAKE_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
   pane:layout) echo '{"result":{"layout":{"area":{"width":177,"height":48},"panes":[{"pane_id":"w1:p1","rect":{"width":84,"height":48}}]}}}' ;;
   pane:process-info) echo "$HERDR_FAKE_PROCESS_INFO" ;;
   agent:prompt)
@@ -66,6 +67,7 @@ afterEach(() => {
   servers.length = 0;
   delete process.env.HERDR_FAKE_LOG;
   delete process.env.HERDR_FAKE_ADOPT_FAIL;
+  delete process.env.HERDR_FAKE_AGENTS;
   delete process.env.HERDR_FAKE_PROMPT_STALL;
   delete process.env.HERDR_FAKE_PROCESS_INFO;
   rmSync(dir, { recursive: true, force: true });
@@ -138,6 +140,14 @@ describe("HerdrClient.agentStart — WE create the pane, herdr adopts the agent 
     const pane = await new HerdrClient(bin).agentStart({ workspaceId: "w1", cwd: "/wt", argv: ["claude", "P"] });
     expect(pane).toBeNull();
     expect(invocation("pane close")).toEqual(["pane", "close", "w1:p9"]);
+  });
+
+  it("keeps a pane whose agent is already WORKING when the readiness wait times out", async () => {
+    process.env.HERDR_FAKE_ADOPT_FAIL = "1"; // cursor-agent busy on its argv prompt never reports ready
+    process.env.HERDR_FAKE_AGENTS = JSON.stringify({ result: { agents: [{ pane_id: "w1:p9", workspace_id: "w1", agent: "cursor", agent_status: "working" }] } });
+    const pane = await new HerdrClient(bin).agentStart({ workspaceId: "w1", cwd: "/wt", argv: ["cursor-agent", "P"], kind: "cursor" });
+    expect(pane).toBe("w1:p9");
+    expect(invocation("pane close")).toBeUndefined();
   });
 
   it("types the exact argv for a harness it can't adopt (wrapper / absolute path)", async () => {
