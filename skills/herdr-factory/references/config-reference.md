@@ -404,13 +404,16 @@ kind + `agent_args`), so the layout owns the harness for the panes it builds.
 
 ### 3.14 `machine.yml` (host-local, optional — `src/machine.ts`)
 
-A separate file at `<configRoot>/machine.yml`, strict (unknown keys rejected). Absent file, empty file,
-or absent key = no machine gate (byte-identical to not having the feature).
+A separate file at `<configRoot>/machine.yml`, strict (unknown keys rejected — nested objects too).
+Absent file, empty file, or absent key = default behaviour (byte-identical to not having the feature).
+It holds what describes the HOST rather than a repo: admission limits, and the layout hook's view of
+this host's herdr plugins.
 
 | key | constraint | default | meaning |
 |---|---|---|---|
 | `max_active_workspaces` | int ≥ 0 | unset | Ceiling on **occupying** runs across ALL repos in the shared DB (same posture as the repo cap: parked / `waiting_for_human` / idle PR-watch hold no slot). `0` ⇒ this host claims nothing new. Also enforced on manual `claim` |
 | `min_free_memory_mb` | int ≥ 0 | unset | Skip Phase B claims while available memory is below it. Linux `MemAvailable`; macOS `vm_stat` free + inactive + speculative; else `os.freemem()` |
+| `layout_hook.ignore_pane_labels` | string[] | `[Sidebar]` | Pane labels the layout hook's freshness gate treats as plugin furniture, not arrangement. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar` ⇒ a pane labelled `Sidebar`) makes every new workspace 2 panes, which would decline **every** layout build on that host. Matched trimmed + case-insensitively; `[]` discounts none. A pane the USER opened still declines the build |
 
 Errors: `invalid machine config (<path>):\n  <key>: <zod message>` — from `doctor` (row `machine limits
 (machine.yml)` ✗), every `--repo` command, and `serve` cold start (every repo fails to load). A hot

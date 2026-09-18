@@ -213,6 +213,20 @@ export function reapOrphanClaims(): number {
   return reaped;
 }
 
+// ── Plugin-owned panes ──────────────────────────────────────────────────────────────────────────
+// A herdr plugin may add a pane of its own to every new tab (herdr-sidebar's `Sidebar`), so the raw
+// pane count of a brand-new workspace is not 1 on such a host. Only a pane the user/agent could have
+// opened counts as arrangement; the rest is plugin furniture and is ignored.
+
+/** Pane labels ignored when machine.yml says nothing (`layout_hook.ignore_pane_labels`). */
+export const DEFAULT_IGNORED_PANE_LABELS: readonly string[] = ["Sidebar"];
+
+/** The panes that aren't plugin furniture. Labels match case-insensitively, trimmed. */
+export function ownPanes<T extends { label?: string | null }>(panes: readonly T[], ignoredLabels: readonly string[]): T[] {
+  const ignored = new Set(ignoredLabels.map((l) => l.trim().toLowerCase()).filter((l) => l.length > 0));
+  return panes.filter((p) => !ignored.has((p.label ?? "").trim().toLowerCase()));
+}
+
 // ── The handler ─────────────────────────────────────────────────────────────────────────────────
 
 export interface HookResult {
@@ -293,8 +307,16 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
   if (!matched) return done(`no layout matches ${checkoutPath}`);
   const { layout } = matched;
 
-  // Fresh workspace only — never clobber an arranged/restored one.
-  if (info.tabCount !== 1 || info.paneCount !== 1) return done(`workspace ${workspaceId} is not a fresh 1-tab/1-pane workspace; skipping`);
+  // Fresh workspace only — never clobber an arranged/restored one. A pane a herdr PLUGIN put there
+  // is not arrangement: a plugin that adds its own pane (a sidebar) to every new tab would otherwise
+  // make every brand-new workspace look arranged and no layout would ever be built on that host. So
+  // when the raw pane count is off we ask herdr for the actual panes and ignore the plugin-owned
+  // labels; a pane the USER opened still (rightly) declines the build.
+  const ignoredLabels = deps.machine?.layoutHookIgnorePaneLabels ?? DEFAULT_IGNORED_PANE_LABELS;
+  const ownPaneCount = async () => ownPanes(await deps.herdr.listPanes(workspaceId), ignoredLabels).length;
+  if (info.tabCount !== 1 || (info.paneCount !== 1 && (await ownPaneCount()) !== 1)) {
+    return done(`workspace ${workspaceId} is not a fresh 1-tab/1-pane workspace; skipping`);
+  }
 
   if (!claimApply(checkoutPath)) return done(`layout already applied for ${checkoutPath}; skipping`);
 

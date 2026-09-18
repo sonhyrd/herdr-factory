@@ -34,6 +34,16 @@ describe("machine.yml", () => {
     expect(loadMachineConfig()).toEqual({ maxActiveWorkspaces: 1, minFreeMemoryMb: 2048 });
   });
 
+  it("carries the layout hook's ignored pane labels (host-local: which plugins this host runs)", () => {
+    configDir();
+    writeFileSync(machineConfigPath(), "layout_hook:\n  ignore_pane_labels: [Sidebar, Files]\n");
+    expect(loadMachineConfig().layoutHookIgnorePaneLabels).toEqual(["Sidebar", "Files"]);
+    writeFileSync(machineConfigPath(), "layout_hook:\n  ignore_pane_labels: []\n");
+    expect(loadMachineConfig().layoutHookIgnorePaneLabels).toEqual([]); // explicitly ignore none
+    writeFileSync(machineConfigPath(), "layout_hook:\n  ignore_panes: [Sidebar]\n");
+    expect(() => loadMachineConfig()).toThrow(/layout_hook:.*Unrecognized key/s);
+  });
+
   it("rejects unknown keys and bad values with a readable error", () => {
     configDir();
     writeFileSync(machineConfigPath(), "max_active_workspace: 2\n");

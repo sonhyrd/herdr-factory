@@ -339,6 +339,11 @@ One fork of the factory and one config, run on every host:
    min_free_memory_mb: 4096   # stop claiming below this much available memory
    ```
 
+   The same file carries the other host-shaped setting: `layout_hook.ignore_pane_labels` (default
+   `[Sidebar]`) — the pane labels the layout hook discounts when deciding a workspace is fresh, so a
+   herdr plugin that adds its own pane to every new tab on THIS host doesn't stop every layout from
+   building (see [layouts.md](./layouts.md)).
+
    Then `herdr-factory reload`. Neither gate touches running work. `poll_interval_seconds` is shared
    config too, so it can't make one host slower than the others. To make a host (say a laptop) the
    **last resort**, give it a lower cap and a higher memory floor — e.g. `max_active_workspaces: 1`,

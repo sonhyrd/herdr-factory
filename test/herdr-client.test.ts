@@ -17,6 +17,7 @@ case "$1:$2" in
     if [ -n "$HERDR_FAKE_ADOPT_FAIL" ]; then echo 'agent not detected' >&2; exit 1; fi
     echo '{"result":{"agent":{"pane_id":"w1:p9"}}}' ;;
   agent:list) if [ -n "$HERDR_FAKE_AGENTS" ]; then echo "$HERDR_FAKE_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
+  pane:list) echo '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1"},{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1","label":"Sidebar"}]}}' ;;
   pane:layout) echo '{"result":{"layout":{"area":{"width":177,"height":48},"panes":[{"pane_id":"w1:p1","rect":{"width":84,"height":48}}]}}}' ;;
   pane:process-info) echo "$HERDR_FAKE_PROCESS_INFO" ;;
   agent:prompt)
@@ -194,6 +195,14 @@ describe("HerdrClient — the layout runner's queries", () => {
   it("tabArea reports the TAB's cell area, not the pane's own rect", async () => {
     // `pane layout` gives both; the tab area is the region a layout's outermost split divides.
     expect(await new HerdrClient(bin).tabArea("w1:p1")).toEqual({ cols: 177, rows: 48 });
+  });
+
+  it("listPanes carries each pane's label — how the layout hook spots a plugin's pane", async () => {
+    expect(await new HerdrClient(bin).listPanes("w1")).toEqual([
+      { paneId: "w1:p1", tabId: "w1:t1", label: null },
+      { paneId: "w1:p2", tabId: "w1:t1", label: "Sidebar" },
+    ]);
+    expect(invocation("pane list")).toEqual(["pane", "list", "--workspace", "w1"]);
   });
 
   it("paneAtShellPrompt samples `pane process-info`", async () => {
