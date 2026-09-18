@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { run, runJson } from "./exec.ts";
+import { countGithubCall } from "./github-budget.ts";
 import type { PrInfo, PrSnapshot, PrState, ReviewSig } from "../types.ts";
 
 interface ThreadsResp {
@@ -34,11 +35,24 @@ export class GitHubClient {
     this.gh = gh;
   }
 
+  /** Every `gh` invocation goes through these two, so the account's budget has ONE place that
+   *  counts what the CLI transport spent — the REST client's buckets never see these calls, but
+   *  GitHub's per-account limit does. */
+  private run(args: string[], opts: { allowFail?: boolean } = {}) {
+    countGithubCall("cli");
+    return run(this.gh, args, opts);
+  }
+
+  private runJson<T>(args: string[], opts: { allowFail?: boolean } = {}): Promise<T> {
+    countGithubCall("cli");
+    return runJson<T>(this.gh, args, opts);
+  }
+
   /** The authenticated gh user's login (e.g. for the per-user evidence folder). Memoized; returns
    *  null when it can't be determined (gh missing / not authenticated). */
   async currentLogin(): Promise<string | null> {
     if (this.login !== undefined) return this.login;
-    const r = await run(this.gh, ["api", "user", "--jq", ".login"], { allowFail: true });
+    const r = await this.run(["api", "user", "--jq", ".login"], { allowFail: true });
     this.login = r.code === 0 ? r.stdout.trim() || null : null;
     return this.login;
   }
@@ -53,8 +67,7 @@ export class GitHubClient {
    *  (see reconcile's currentPr). */
   async prForBranch(repo: string, branch: string): Promise<PrInfo | null> {
     type Row = { number: number; state: string; url: string; isDraft: boolean; createdAt?: string };
-    const arr = await runJson<Row[]>(
-      this.gh,
+    const arr = await this.runJson<Row[]>(
       ["pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--json", "number,state,url,isDraft,createdAt", "--limit", "1"],
       { allowFail: true },
     ).catch(() => [] as Row[]);
@@ -67,8 +80,7 @@ export class GitHubClient {
   /** Look up a PR by number — the durable identity once a run has adopted one. Unlike `--head`,
    *  this keeps resolving after the head branch is deleted (e.g. GitHub auto-delete-on-merge). */
   async prByNumber(repo: string, prNumber: number): Promise<PrInfo | null> {
-    const pr = await runJson<{ number: number; state: string; url: string; isDraft: boolean }>(
-      this.gh,
+    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean }>(
       ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft"],
       { allowFail: true },
     ).catch(() => null);
@@ -117,8 +129,7 @@ export class GitHubClient {
       }
       // allowFail: a missing PR makes gh exit non-zero while still printing the partial data —
       // use whatever resolved and let absent entries stay absent.
-      const resp = await runJson<{ data?: { repository?: Record<string, BatchPr | null> } }>(
-        this.gh,
+      const resp = await this.runJson<{ data?: { repository?: Record<string, BatchPr | null> } }>(
         ["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`],
         { allowFail: true },
       ).catch(() => ({}) as { data?: { repository?: Record<string, BatchPr | null> } });
@@ -150,8 +161,7 @@ export class GitHubClient {
 
     const query =
       "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved comments(last:1){nodes{id}}}}}}}";
-    const threads = await runJson<ThreadsResp>(
-      this.gh,
+    const threads = await this.runJson<ThreadsResp>(
       ["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `n=${prNumber}`],
       { allowFail: true },
     ).catch(() => ({}) as ThreadsResp);
@@ -159,8 +169,7 @@ export class GitHubClient {
       .filter((t) => t.isResolved === false)
       .map((t) => t.comments?.nodes?.[0]?.id ?? "x");
 
-    const rollup = await runJson<CheckRollup>(
-      this.gh,
+    const rollup = await this.runJson<CheckRollup>(
       ["pr", "view", String(prNumber), "--repo", repo, "--json", "statusCheckRollup"],
       { allowFail: true },
     ).catch(() => ({}) as CheckRollup);

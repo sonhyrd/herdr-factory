@@ -59,7 +59,8 @@ source-agnostic.
 > source and re-notify
 > (§8, §11); **(5)** parallel Phase A + **per-run locks** + heartbeat-extended locks (§7, §12);
 > **(6)** rate limiting — a Jira token bucket + a process-wide GitHub REST budget, both with
-> Retry-After-honoring retries, one batched GitHub
+> Retry-After-honoring retries, a per-source **rate-limit gate** that holds a source until the
+> reset the backend named (the account-wide budget is shared with other hosts), one batched GitHub
 > GraphQL query per tick for all watched PRs, a flat human-reply poll cadence, and per-tick claim
 > admission (§5, §7). Migrations v10–v13 (v14 added the stale two-phase columns — §15).
 
@@ -333,7 +334,8 @@ reverse-engineered during the bash prototype.
   on fiber interruption, so `Effect.timeout` genuinely cancels the in-flight fetch); non-2xx
   becomes a typed `HttpStatusError` carrying status + parsed `Retry-After` (`parseRetryAfter`
   also synthesizes the wait from GitHub's `x-ratelimit-remaining`/`x-ratelimit-reset` pair when
-  the header is absent). `httpWithPolicy` layers shared **`TokenBucket`s** (a token per attempt;
+  the header is absent) **and the raw `x-ratelimit-remaining`**, so a caller can tell an exhausted
+  budget from a merely-throttled or permission-denied 403. `httpWithPolicy` layers shared **`TokenBucket`s** (a token per attempt;
   `HttpPolicy.buckets` chains several — e.g. a per-minute AND a per-hour mutation cap — with the
   wait recorded as `herdr_factory.rate_limit.wait_ms`, and each response's
   `x-ratelimit-remaining` as `herdr_factory.rate_limit.remaining`) and an Effect `Schedule`
@@ -523,7 +525,22 @@ reverse-engineered during the bash prototype.
   `GITHUB_TOKEN` else the gh CLI's token (`gh auth token`, refreshed once on a 401).
   `github-budget.ts` holds the **process-wide** budget buckets (module singletons — every repo
   runtime spends the same authenticated user's budget): reads 5/s sustained; mutations chain a
-  per-minute (~60/min under GitHub's 80/min secondary cap) AND a per-hour (500/hr) bucket.
+  per-minute (~60/min under GitHub's 80/min secondary cap) AND a per-hour (500/hr) bucket. It also
+  holds the **call counters** (`rest` = this client, `cli` = the PR watcher's `gh` invocations,
+  counted per ATTEMPT via `HttpPolicy.onAttempt` so retries show up): `reconcileRepo` logs the
+  delta each pass — `github: N call(s) this tick (R REST, C gh CLI)` — because the 5,000/hr is
+  spent per ACCOUNT and an operator chasing an exhausted budget needs to see who is spending it.
+  **The rate-limit gate** closes the loop the buckets cannot: the budget is shared across belts,
+  repos, hosts and the operator's own `gh`, so it can be gone before any local bucket notices. A
+  403/429 that survives the retries and carries `x-ratelimit-remaining: 0` (primary exhaustion) or
+  a `Retry-After` (a secondary limit still asking) is mapped to `SourceRateLimitedError` carrying
+  the backend's own reset stamp; `noteSourceRateLimited` then **holds the whole source** until that
+  reset (`core/rate-limit-gate.ts` — in-memory, like the auth gate, mirrored to the problem
+  ledger), and the Phase B poll skips it **without stamping `lastPolledAt`**: the hold *is* the
+  cadence, and re-polling an empty budget is what keeps it empty. The hold is extended, never
+  shortened, by a later observation; the gate drops itself at the reset; any successful source call
+  releases it early. A 403 with budget left and no `Retry-After` is deliberately NOT a limit — that
+  is the missing-scope case, and waiting it out would hide it.
   `materialize` renders `task.md` — sanitized title/body + every non-herdr comment + a
   `Closing reference:` line the pr prompt copies into the PR body verbatim — plus the raw
   `issue.json` sidecar and `attachments/` (media downloaded **immediately** from `body_html`'s
@@ -852,7 +869,10 @@ a cause on load. One row per (repo, `key`) where `key` is the CAUSE identity (ma
 `reportProblem` upserts (keeping first-observed `created_at`), `clearProblem` deletes. Reporters
 today: the **auth gate** (`noteSourceAuthFailure` reports `source:<n>`; `noteSourceAuthRecovered`
 clears it UNCONDITIONALLY — the in-memory gate resets on restart, so it alone cannot be trusted to
-clear a persisted row); the **ledger kernel** (an `auth`-classified retry outcome reports the row's
+clear a persisted row); the **rate-limit gate** (`source:<n>:rate-limit`, kind `rate_limit` — a
+distinct key so a backoff can never clear, or be cleared by, an auth problem; it is also how the
+out-of-process `status`/`explain` commands see a hold that lives in the serve process's memory);
+the **ledger kernel** (an `auth`-classified retry outcome reports the row's
 `cause_scope`, a delivery clears it); the **evidence prePass probe** (above); and the server's
 detail-view probes (`?refresh=1`), which write their fresh verdicts to the same keys so opening the
 detail syncs the row's light at once. `/status`'s `problems` array is this ledger plus two derived

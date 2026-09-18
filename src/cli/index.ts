@@ -308,6 +308,10 @@ program
         `    ${r.ticketKey.padEnd(16)} ${(r.belt ?? "?").padEnd(16)} ${(r.phase === "running" && r.step ? r.step : r.phase).padEnd(12)} ${statusCol.padEnd(16)} PR:${(r.prNumber ? `#${r.prNumber}` : "-").padEnd(6)} ${(r.summary ?? "").slice(0, 50)}`;
       console.log(`herdr-factory [${c.repoName}] — cap ${c.limits.maxActiveWorkspaces} workspaces`);
       console.log(`Sources: ${c.sources.map((s) => `${s.name}(${s.type})`).join(" · ")}`);
+      // Rate-limit holds, off the problem ledger (the in-memory gate belongs to the serve process).
+      // Worth its own line rather than buried with the runs: while a source is held, NOTHING it
+      // feeds moves, and the usual "nothing claimed" reading is misleading.
+      for (const p of deps.store.listProblems(c.repoName).filter((x) => x.kind === "rate_limit")) console.log(`  ⏳ ${p.detail}`);
       console.log(
         `Belts (priority order): ${c.belts.map((b) => `${b.name}(${b.beltType}, src:${b.source}, p${b.priority}${b.active ? "" : ", INACTIVE"})`).join(" · ")}`,
       );
@@ -731,6 +735,15 @@ program
     try {
       const deps = await buildDeps(requireRepo());
       const repo = deps.config.repoName;
+      // A rate-limited source is the reason nothing is moving, whatever phase the run reads — and
+      // it's recorded state, not a probe. Read it from the problem ledger: the hold itself lives in
+      // the serve process's memory, which this command has no access to.
+      const rateLimitNotes = () => {
+        for (const p of deps.store.listProblems(repo).filter((x) => x.kind === "rate_limit")) {
+          console.log("");
+          console.log(`note: ${p.detail}`);
+        }
+      };
       const run = resolveActiveRun(deps, key, opts.source); // throws on cross-source ambiguity
       if (!run) {
         const last = deps.store.latestRunForTicket(repo, key);
@@ -743,9 +756,11 @@ program
           console.log(`${key}: no active run — the newest run #${last.id} ${when}.`);
           console.log(`Next: herdr-factory --repo ${repo} timeline ${key}   # its full event history`);
         }
+        rateLimitNotes();
         return;
       }
       for (const line of explainRun({ ob: runObligations(deps, run), repoName: repo, now: deps.now() })) console.log(line);
+      rateLimitNotes();
       // The clocks and retries above only advance when something ticks the repo — say so when
       // nothing does, because "the retry never fires" reads exactly like "the factory is stuck".
       const info = readServerInfo();

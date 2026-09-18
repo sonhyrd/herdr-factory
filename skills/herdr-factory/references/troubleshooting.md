@@ -401,7 +401,7 @@ curl -s '127.0.0.1:8765/repos/<r>/status?refresh=1' | jq '.sources'   # auth: {s
 | Branch | Signature | Fix |
 |---|---|---|
 | Auth paused | log `… pausing its claims + status write-backs until re-authenticated`; `doctor --deep` source row fails | Fix the credential in `<configDir>/repos/<r>/env` (per-repo only; process env is **not** consulted for declared secrets, and an empty value counts as missing). Auto-resumes on the next successful call. Note `doctor`'s shallow `auth <name>` row reports ✓ for a present-but-**rejected** credential — only `--deep` exercises it |
-| Rate limited | HTTP 429/403 + `Retry-After` honoured, retries then backoff | §2.14 |
+| Rate limited | HTTP 429/403 + `Retry-After` honoured, retries then the source is **held until the reset** (`rate limited — holding its polls for <n>s`) | §2.14 |
 | Stale write-backs blocking items | pending `source_transition` rows for those keys | §8; each blocked key logs `skipping claim — a status write-back … is still pending` |
 | Trigger label consumed | github_issues consumes the pickup label at `in_development` | Re-add the label to retry that issue |
 | Item wearing an in-flight state label | github_issues skips it (belt-and-braces over run dedup) | Strip the stale state label |
@@ -424,7 +424,23 @@ curl -s '127.0.0.1:8765/repos/<r>/status?refresh=1' | jq '.sources'   # auth: {s
 Diagnostics: log lines `transition deferred (attempt N, retry in Ms)`; telemetry histogram
 `herdr_factory.rate_limit.wait_ms` labelled by host; `http.retry_after_honored` events. GitHub's
 5,000/hr primary limit is deliberately **not** enforced locally (the `gh` CLI and your own tooling
-spend the same budget) — primary exhaustion shows up as fast failures into the poll/outbox backoffs.
+spend the same budget) — it is handled **reactively** instead, by the rate-limit gate below.
+
+**GitHub 403 `API rate limit exceeded for user ID …`** — the limit is per **account**, so several
+hosts sharing one `gh auth` login share one 5,000/hr budget, and exhausting it breaks `gh`, the
+agents and your own tooling at once. The fix is one `GITHUB_TOKEN` per host in
+`<configDir>/repos/<r>/env`, not a shared login.
+
+| Signal | Meaning |
+|---|---|
+| `<source>: rate limited — holding its polls for <n>s (until the backend's own reset)` | A 403/429 with `x-ratelimit-remaining: 0` (or a `Retry-After`) outlasted the retries. The whole source is held until the reset the response named — re-polling an empty budget is what keeps it empty |
+| `<source>: rate limited — not polling for another <n>s` | Each tick skipped while the hold stands. `status` shows `⏳ <detail>`, `explain` a matching `note:`, and the dashboard's repo light reads the problem-ledger row `source:<name>:rate-limit` (kind `rate_limit`) |
+| `<source>: rate limit cleared — polls resuming` | The hold expired (or a call succeeded). **No operator action is needed** — it releases itself |
+| `github: <n> call(s) this tick (<r> REST, <c> gh CLI)` | The tick's spend against the shared budget. `REST` = the `github_issues` source, `gh CLI` = the PR/review watcher. Compare across hosts to find who is eating it |
+
+Held write-backs stay queued and deliver on recovery; a run waiting on a human reply is rescheduled
+as a normal miss, never escalated. A 403 with budget left and no `Retry-After` is **not** a limit —
+that is a missing scope (`gh auth refresh -s repo`), and it is reported as an ordinary error.
 
 If a whole repo feels slow, check the tick isn't being skipped (§2.11) and that no single step is
 holding all the workspace slots (Q1b).

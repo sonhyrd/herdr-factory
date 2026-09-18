@@ -79,10 +79,10 @@ this command needs a repo: herdr-factory --repo <name> <command>
 
 | command | R | route | prints |
 |---|---|---|---|
-| `status` | yes | in-process DB + one `/health` ping | header, ACTIVE table, FINISHED table, server + supervisor lines (§6 anatomy); with a `machine.yml`, a `machine: cap n/N working across all repos · memory <free> MB available (floor <min> MB)[ — <active gate>]` line after `Runs:` |
+| `status` | yes | in-process DB + one `/health` ping | header, ACTIVE table, FINISHED table, server + supervisor lines (§6 anatomy); with a `machine.yml`, a `machine: cap n/N working across all repos · memory <free> MB available (floor <min> MB)[ — <active gate>]` line after `Runs:`; one `  ⏳ <source>: rate limited — holding polls for <n>s. <detail>` line per rate-limit-held source, right after `Sources:` |
 | `runs [--all]` | yes | in-process DB | one line per run, no header. `--all` = last 100 by `created_at DESC`; default = active only (`ended_at IS NULL`) |
 | `timeline <key>` | yes | in-process DB | events of the ticket's **most recent run only**, `<ISO ts>  <type>  <detail JSON>` |
-| `explain <key> [--source <n>]` | yes | in-process DB + one `/health` ping | the plain-language rendering of the obligations view (§6 anatomy): the run's phase story or park reason, every pending retry with its next attempt time, armed clocks, bounce counters, and ready-made next commands. A key with no run recorded also prints `note: this host is not claiming new work right now — <gate> (machine.yml)` while a machine gate is engaged |
+| `explain <key> [--source <n>]` | yes | in-process DB + one `/health` ping | the plain-language rendering of the obligations view (§6 anatomy): the run's phase story or park reason, every pending retry with its next attempt time, armed clocks, bounce counters, and ready-made next commands. A key with no run recorded also prints `note: this host is not claiming new work right now — <gate> (machine.yml)` while a machine gate is engaged. Either way it ends with a `note: <source>: rate limited — holding polls for <n>s. …` line per rate-limit-held source — the usual reason a run's clocks look frozen |
 | `triage <key> [--source <n>] [--print]` | yes | in-process DB, then an **interactive launch** | writes a briefing (the `explain` narrative + recent events + locations + playbook paths + ground rules) into the run's `.memory/herdr-factory/` (state dir when no worktree), then launches the repo `agent:` **command** (flags dropped — a human is present) in your terminal, cwd = the worktree. `--print` prints the briefing instead. No active run → a one-line pointer, exit 0; a missing harness binary → exit 1 naming it and suggesting `--print` |
 | `eligible` | yes | in-process (hits every source) | `JSON.stringify(out, null, 2)` of `{source, key, summary, type}`; `[]` when nothing is eligible |
 | `logs [n]` | yes | in-process (file) | last `Number(n) || 50` lines of `<stateRoot>/<repo>/logs/<UTC-date>.log`. `logs 0` and `logs abc` both mean 50. Missing file → `no log for today at <path>`, exit 0 |
@@ -252,6 +252,7 @@ Step semantics (what a bounce rewinds, what a cap does) live in [belts-and-steps
 ```
 herdr-factory [reckon-frontend] — cap 15 workspaces
 Sources: core-jira-tickets(jira) · adhoc-pr(local_markdown) · sentry(sentry)
+  ⏳ issues: rate limited — holding polls for 1734s. GitHub rate limit exhausted (x-ratelimit-remaining: 0) on GET /repos/acme/app/issues — HTTP 403; …
 Belts (priority order): fix-core-jira-tickets(work_to_pull_request, src:core-jira-tickets, p1) · sentry-issue-to-jira-ticket(custom, src:sentry, p3, INACTIVE)
 Runs: 2 running (cap 15) · 27 finished
 

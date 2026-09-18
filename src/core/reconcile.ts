@@ -25,6 +25,8 @@ import { wakeResolver } from "./watch.ts";
 import { recordSourceAuthEvent, recordTick, recordTickDuration, recordTickLockSkipped, telemetryEvent, telemetrySpan } from "../telemetry/index.ts";
 import { isSourceUnauthenticated, type SourceUnauthenticatedError } from "../auth/errors.ts";
 import { getAuthFailure, markAuthNotified, recordAuthFailure, recordAuthOk } from "../auth/gate.ts";
+import { clearRateLimit, getRateLimit, isSourceRateLimited, markRateLimitNotified, recordRateLimited, type SourceRateLimitedError } from "./rate-limit-gate.ts";
+import { githubCallCounts } from "../clients/github-budget.ts";
 
 function err(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -80,6 +82,52 @@ function noteSourceAuthRecovered(deps: Deps, source: string): void {
   void deps.herdr.notify(`herdr-factory: ${source} re-authenticated`, `Work source "${source}" is authenticated again — paused work is resuming.`).catch(() => {});
 }
 
+// --- work-source rate-limit gate (back off until the backend's own reset) ---------------------
+// GitHub's primary limit is per ACCOUNT: several hosts sharing one `gh` login spend one 5,000/hr
+// budget, so once the backend answers 403/429 with an exhausted budget, re-polling next tick is
+// both futile and part of what keeps it exhausted. These two helpers hold the source until the
+// reset stamp it named (core/rate-limit-gate.ts — an in-memory hold, like the auth gate) and
+// mirror it onto the PROBLEM LEDGER, which is what `status`/`explain` read out of process.
+
+/** The problem-ledger key for a source's rate-limit hold. Distinct from the auth gate's
+ *  `source:<name>` so a backoff can never clear (or be cleared by) an auth problem. */
+const rateLimitProblemKey = (source: string): string => `source:${source}:rate-limit`;
+
+/** Record + (throttled) notify that a work source is rate-limited until `resetAt`. */
+async function noteSourceRateLimited(deps: Deps, source: string, e: SourceRateLimitedError): Promise<void> {
+  const repo = deps.config.repoName;
+  const now = deps.now();
+  const until = Math.max(now + 1, Math.ceil(e.resetAtMs / 1000));
+  const wasHeld = getRateLimit(repo, source, now) !== undefined;
+  recordRateLimited(repo, source, { until, detail: e.detail, exhausted: e.exhausted, now });
+  const held = getRateLimit(repo, source, now)!;
+  deps.store.reportProblem(repo, rateLimitProblemKey(source), "rate_limit", `${source}: rate limited — holding polls for ${held.until - now}s. ${e.detail}`);
+  if (!wasHeld) {
+    deps.log("warn", `${source}: rate limited — holding its polls for ${held.until - now}s (until the backend's own reset). ${e.detail}`);
+    telemetryEvent("source.rate_limit.held", { "work.source": source, "rate_limit.until": held.until, "rate_limit.exhausted": e.exhausted });
+  }
+  if (notifyDue(held.notifiedAt, deps.config.limits.attentionRenotifySeconds, now)) {
+    await deps.herdr
+      .notify(
+        `herdr-factory: ${source} rate limited`,
+        `Work source "${source}" hit its API rate limit: ${e.detail} Polls and write-backs resume automatically at the reset.`,
+      )
+      .catch(() => {});
+    markRateLimitNotified(repo, source, now);
+  }
+}
+
+/** A source call SUCCEEDED — release any hold. The problem-ledger clear runs UNCONDITIONALLY (a PK
+ *  delete, cheap): the in-memory hold resets on restart, so it alone cannot be trusted to clear a
+ *  persisted row from a previous life. */
+function noteSourceRateLimitCleared(deps: Deps, source: string): void {
+  const repo = deps.config.repoName;
+  deps.store.clearProblem(repo, rateLimitProblemKey(source));
+  if (!clearRateLimit(repo, source)) return; // wasn't held — the common, hot path
+  deps.log("info", `${source}: rate limit cleared — polls resuming`);
+  telemetryEvent("source.rate_limit.cleared", { "work.source": source });
+}
+
 // --- source status write-backs (the transition outbox) -----------------------
 // A transition is an INTENT persisted until the source confirms it, not a one-shot call: run
 // phases advance regardless (a flaky Jira must never wedge the pipeline), and the outbox retries
@@ -114,6 +162,7 @@ async function deliverTransition(deps: Deps, src: SourceRuntime, intent: Transit
     const statusOverride = intent.toStatus || undefined;
     const result = await src.client.transition(intent.ticketKey, intent.toState, pickupLabel, ctx, statusOverride);
     noteSourceAuthRecovered(deps, src.name); // delivery succeeded ⇒ auth is fine (clears any gate)
+    noteSourceRateLimitCleared(deps, src.name); // …and the budget is back (releases the poll hold)
     switch (result.kind) {
       case "applied":
         deps.store.markTransitionDelivered(intent.id);
@@ -155,7 +204,10 @@ async function deliverTransition(deps: Deps, src: SourceRuntime, intent: Transit
     // An auth failure here is a PAUSE, not a lost write-back: record + notify (once) so the operator
     // knows why the status isn't moving. The intent stays queued and re-queues promptly on recovery
     // (retryTransitionsForSource) instead of waiting out its retry interval.
+    // Same posture for a rate limit: the intent stays queued, and recording the hold stops the
+    // poll path from spending what little budget is left before this write-back can land.
     if (isSourceUnauthenticated(e)) await noteSourceAuthFailure(deps, src.name, e);
+    else if (isSourceRateLimited(e)) await noteSourceRateLimited(deps, src.name, e);
     const after = deps.store.recordTransitionAttempt(intent.id, err(e));
     // The attempt that crossed MAX_RETRY_ATTEMPTS suspended the row (the store stamps it): the
     // write-back stops retrying — and keeps vetoing a re-claim of the item — until an operator
@@ -453,7 +505,25 @@ export async function reconcileRepo(deps: Deps): Promise<void> {
   return telemetrySpan("reconcile.repo", { repo: deps.config.repoName }, () => reconcileRepoImpl(deps));
 }
 
+/** One pass, with its GitHub spend reported. The account's rate budget is shared — across belts,
+ *  across repos, and (on one `gh` login) across hosts — so "how many calls did a tick cost, and
+ *  through which transport" is the only number that lets an operator find who is eating it. */
 async function reconcileRepoImpl(deps: Deps): Promise<void> {
+  const before = githubCallCounts();
+  try {
+    await reconcileRepoPhases(deps);
+  } finally {
+    const after = githubCallCounts();
+    const rest = after.rest - before.rest;
+    const cli = after.cli - before.cli;
+    if (rest + cli > 0) {
+      deps.log("info", `github: ${rest + cli} call(s) this tick (${rest} REST, ${cli} gh CLI) — shared with every other host on the same account`);
+      telemetryEvent("github.calls_per_tick", { repo: deps.config.repoName, "github.calls.rest": rest, "github.calls.cli": cli });
+    }
+  }
+}
+
+async function reconcileRepoPhases(deps: Deps): Promise<void> {
   const repo = deps.config.repoName;
   deps.store.upsertRepo(repo, deps.config.repo.path, deps.config.repo.baseRef, deps.ghRepo);
 
@@ -586,6 +656,15 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
         return [];
       }
     }
+    // Rate-limit hold: the backend named a reset stamp, and polling before it can only fail — and
+    // on GitHub's per-account budget, fail while spending someone else's calls too. Skip WITHOUT
+    // stamping lastPolledAt: the hold is the cadence here, and the gate drops itself at the reset.
+    const held = getRateLimit(deps.config.repoName, src.name, deps.now());
+    if (held) {
+      deps.log("info", `${src.name}: rate limited — not polling for another ${held.until - deps.now()}s (${held.detail})`);
+      eligibleCache.set(cacheKey, []);
+      return [];
+    }
     let items: MatchItem[];
     // Stamp the poll BEFORE the call (on the attempt, not just success): a paused/erroring source
     // then backs off to its interval instead of retrying every tick — matching the degrade-to-[]
@@ -594,11 +673,14 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
     try {
       items = await src.client.listEligible(label);
       noteSourceAuthRecovered(deps, src.name); // a successful poll ⇒ auth is fine (clears any gate)
+      noteSourceRateLimitCleared(deps, src.name); // …and that the budget is back
     } catch (e) {
       // A source that can't authenticate is PAUSED, not broken: record + notify (once) and skip its
-      // claims this tick — it auto-resumes when a later poll succeeds. Any other backend hiccup must
-      // still not starve the other sources, so it also degrades to [] (just logged, not gated).
+      // claims this tick — it auto-resumes when a later poll succeeds. A rate-limited source is held
+      // the same way, until the reset it named. Any other backend hiccup must still not starve the
+      // other sources, so it also degrades to [] (just logged, not gated).
       if (isSourceUnauthenticated(e)) await noteSourceAuthFailure(deps, src.name, e);
+      else if (isSourceRateLimited(e)) await noteSourceRateLimited(deps, src.name, e);
       else deps.log("warn", `${src.name}: eligible query failed: ${err(e)}`);
       items = [];
     }
@@ -1661,6 +1743,14 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
       deps.log("warn", `${run.ticketKey}: reply poll for #${q.id} held — ${src.name} not authenticated (next poll in ${held.nextPollAt - deps.now()}s)`);
       return;
     }
+    if (isSourceRateLimited(e)) {
+      // Rate-limit-held, NOT a poll failure — same reasoning as the auth branch above: the human is
+      // still expected to answer, the backend just needs time, so parking the run would be wrong.
+      await noteSourceRateLimited(deps, src.name, e);
+      const held = deps.store.recordHumanPollMiss(q.id);
+      deps.log("warn", `${run.ticketKey}: reply poll for #${q.id} held — ${src.name} rate limited (next poll in ${held.nextPollAt - deps.now()}s)`);
+      return;
+    }
     const errored = deps.store.recordHumanPollError(q.id);
     deps.log("warn", `${run.ticketKey}: reply poll for question #${q.id} failed (${errored.pollErrors} consecutive): ${err(e)}`);
     if (errored.pollErrors >= HUMAN_POLL_ERROR_ESCALATE) {
@@ -1674,6 +1764,7 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
     return;
   }
   noteSourceAuthRecovered(deps, src.name); // the poll call itself succeeded ⇒ auth is fine
+  noteSourceRateLimitCleared(deps, src.name); // …and the budget is back
   if (!reply) {
     const missed = deps.store.recordHumanPollMiss(q.id);
     deps.log("info", `${run.ticketKey}: waiting for human reply to question #${q.id} (next poll in ${missed.nextPollAt - deps.now()}s)`);

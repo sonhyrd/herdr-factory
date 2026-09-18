@@ -119,7 +119,7 @@ Issues elsewhere:
       repo: acme/tracker       # owner/name
 ```
 
-- Credential: **none required.** `GITHUB_TOKEN` in the repo env is optional; unset ⇒ the `gh` CLI login is used (`gh auth token`). A PAT is only needed when the `gh` login lacks `issues:write` on the **polled** repo.
+- Credential: **none required**, but recommended. `GITHUB_TOKEN` in the repo env is optional; unset ⇒ the `gh` CLI login is used (`gh auth token`). A PAT is needed when the `gh` login lacks `issues:write` on the **polled** repo — and is the right answer whenever MORE THAN ONE HOST polls GitHub: the rate limit is counted per account, so hosts sharing one `gh` login share one 5,000/hr budget and exhaust it together. One `GITHUB_TOKEN` per host.
 - Eligible = open, carries the belt's label, is not a PR, and carries none of the in-flight `state_labels` (`herdr:in-development`, `herdr:in-review`, plus any extras). The `herdr:aborted` label deliberately does **not** gate — re-adding the trigger label is the retry gesture.
 - The trigger label must **exist in the repo** or `doctor --deep` fails: `github_issues: trigger label "<label>" does not exist in <repo> — create it (or fix the belt's \`label\`) and add it to issues you want worked`. Create it: `gh label create agent --repo <owner/name>`.
 - Setting `type_labels` **replaces** the whole default map `{bug: Bug, defect: Bug, chore: Chore, task: Chore, enhancement: Feature}` — it does not merge. Leave it alone on day one.
@@ -381,7 +381,7 @@ Format: `KEY=value`, one per line; `#` comments and blank lines skipped; the fir
 |---|---|---|
 | `jira` | `JIRA_EMAIL` (the Atlassian account email, not a username), `JIRA_API_TOKEN` (id.atlassian.com → Security → API tokens) | both |
 | `sentry` | `SENTRY_AUTH_TOKEN` (`event:read` + `event:write`) | yes |
-| `github_issues` | `GITHUB_TOKEN` | **no** — falls back to the `gh` CLI login |
+| `github_issues` | `GITHUB_TOKEN` | **no** — falls back to the `gh` CLI login, but give each host its own token (the rate limit is per account) |
 | `local_markdown` | — | — |
 
 `init` pre-writes this file with the keys **empty** for `jira`/`sentry` (deliberately, so `doctor` flags them) and never touches an existing one. A key present but empty (`JIRA_API_TOKEN=`) counts as missing. Process env is **not** consulted for these keys.
