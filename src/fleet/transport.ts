@@ -26,6 +26,10 @@ export interface MachineTransport {
   endpoint(machine: Machine): Promise<string | null>;
   /** Tear down anything held open (SSH forwards). Safe to call twice. */
   close(): void;
+  /** Why this machine's endpoint could not be resolved last time we tried — ssh's own first line of
+   *  stderr, when there was one. A far better `unverifiable` reason than "could not reach its API",
+   *  which is true of an auth failure, an unknown host and a refused forward alike. */
+  failureDetail?(machine: Machine): string | null;
 }
 
 /** Read the local server's advertised port. Same contract as `tui/api.ts`: an absent or malformed
@@ -91,10 +95,78 @@ interface Forward {
   baseUrl: string;
 }
 
+/** macOS's `sun_path` is 104 bytes — the smallest limit of the platforms we run on, so it is the one
+ *  every ControlPath has to fit. Linux's is 108. */
+export const SUN_PATH_MAX = 104;
+/** ssh does not bind `<ControlPath>` directly: while the master comes up it listens on
+ *  `<ControlPath>.<random>` (~17 chars) and renames it, so the socket it actually binds is longer
+ *  than the path we hand it. Budget for that suffix rather than discovering it as `unix_listener:
+ *  path … too long for Unix domain socket` and an ssh that exits 255 before the forward is up. */
+const CONTROL_PATH_HEADROOM = 20;
+/** `%C` expands to a 40-char hex hash of (local host, remote host, port, user). */
+const CONTROL_HASH_LEN = 40;
+
+/** Does `<dir>/%C` — expanded, plus ssh's own suffix — still fit in a Unix socket path? */
+export function controlPathFits(dir: string): boolean {
+  return Buffer.byteLength(join(dir, "x".repeat(CONTROL_HASH_LEN))) <= SUN_PATH_MAX - CONTROL_PATH_HEADROOM;
+}
+
+/** The short per-user fallback: `/tmp` rather than `$TMPDIR`, because macOS's `$TMPDIR` is itself a
+ *  ~50-byte per-user path under `/var/folders` and would defeat the point. Per-uid and 0700 so one
+ *  user cannot pre-create or read another's control sockets on a shared host. */
+function shortControlDir(): string {
+  return `/tmp/hf-${process.getuid?.() ?? 0}`;
+}
+
+/**
+ * Where this transport's ControlMaster sockets go — or `null` for "do not multiplex".
+ *
+ * The preferred directory (under the state root) is used when it fits; a state root deep enough to
+ * overflow `sun_path` falls back to the short per-user directory, and if even that does not fit
+ * (an absurd uid, or no `/tmp`) the forward runs unmultiplexed. Losing connection reuse costs a
+ * handshake; a ControlPath that overflows costs the whole fleet read.
+ */
+export function resolveControlDir(preferred: string): string | null {
+  if (controlPathFits(preferred)) return preferred;
+  const short = shortControlDir();
+  return controlPathFits(short) ? short : null;
+}
+
+/** The forward's argv. `controlDir` of `null` means no multiplexing at all — the fallback for a
+ *  machine whose ControlPath cannot be made to fit. */
+export function sshForwardArgs(opts: { target: string; localPort: number; connectTimeoutMs: number; controlDir: string | null }): string[] {
+  return [
+    "-N",
+    "-o",
+    "BatchMode=yes", // never prompt: a fleet read is not interactive, and a prompt would hang it
+    "-o",
+    "ExitOnForwardFailure=yes",
+    "-o",
+    `ConnectTimeout=${Math.ceil(opts.connectTimeoutMs / 1000)}`,
+    ...(opts.controlDir === null
+      ? ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
+      : ["-o", "ControlMaster=auto", "-o", `ControlPath=${join(opts.controlDir, "%C")}`, "-o", "ControlPersist=120"]),
+    "-L",
+    `${opts.localPort}:127.0.0.1:${REMOTE_API_PORT}`,
+    opts.target,
+  ];
+}
+
+/** ssh's diagnosis, trimmed to the one line worth putting in a table cell. */
+function firstLine(stderr: string): string {
+  return (
+    stderr
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? ""
+  );
+}
+
 export interface SshTransportOpts {
   /** How long a forward has to come up and answer /health. */
   connectTimeoutMs?: number;
-  /** Where ControlMaster sockets live. Defaults under the factory state root. */
+  /** Preferred home for the ControlMaster sockets. Defaults under the factory state root, and is
+   *  only used when the resulting ControlPath fits `sun_path` (see `resolveControlDir`). */
   controlDir?: string;
 }
 
@@ -108,13 +180,14 @@ export interface SshTransportOpts {
  */
 export class SshForwardTransport implements MachineTransport {
   private readonly forwards = new Map<string, Forward>();
+  private readonly failures = new Map<string, string>();
   private readonly connectTimeoutMs: number;
-  private readonly controlDir: string;
+  private readonly controlDir: string | null;
   private closed = false;
 
   constructor(opts: SshTransportOpts = {}) {
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 10_000;
-    this.controlDir = opts.controlDir ?? join(stateRoot(), "fleet-ssh");
+    this.controlDir = resolveControlDir(opts.controlDir ?? join(stateRoot(), "fleet-ssh"));
   }
 
   async endpoint(machine: Machine): Promise<string | null> {
@@ -133,34 +206,33 @@ export class SshForwardTransport implements MachineTransport {
 
   private async open(name: string, target: string): Promise<string | null> {
     if (this.closed) return null;
+    this.failures.delete(name);
     const port = await freePort().catch(() => 0);
-    if (!port) return null;
-    mkdirSync(this.controlDir, { recursive: true });
-    const args = [
-      "-N",
-      "-o",
-      "BatchMode=yes", // never prompt: a fleet read is not interactive, and a prompt would hang it
-      "-o",
-      "ExitOnForwardFailure=yes",
-      "-o",
-      `ConnectTimeout=${Math.ceil(this.connectTimeoutMs / 1000)}`,
-      "-o",
-      "ControlMaster=auto",
-      "-o",
-      `ControlPath=${join(this.controlDir, "%C")}`,
-      "-o",
-      "ControlPersist=120",
-      "-L",
-      `${port}:127.0.0.1:${REMOTE_API_PORT}`,
-      target,
-    ];
-    const proc = spawn("ssh", args, { stdio: "ignore" });
+    if (!port) return this.failed(name, "could not get a free local port for the forward");
+    if (this.controlDir !== null) mkdirSync(this.controlDir, { recursive: true, mode: 0o700 });
+    const args = sshForwardArgs({ target, localPort: port, connectTimeoutMs: this.connectTimeoutMs, controlDir: this.controlDir });
+    // stderr is kept (stdin/stdout are not): when ssh exits before the forward is up, its first line
+    // is the only thing that says WHY, and it is what the machine's `unverifiable` row reports.
+    const proc = spawn("ssh", args, { stdio: ["ignore", "ignore", "pipe"] });
     proc.unref();
-    proc.on("error", () => undefined); // no ssh on PATH: the health poll below decides
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < 4096) stderr += chunk.toString("utf8");
+    });
+    proc.stderr?.on("error", () => undefined);
+    proc.on("error", (e) => (stderr ||= e.message)); // no ssh on PATH: the health poll below decides
+    const drained = { done: false };
+    proc.once("close", () => (drained.done = true));
     const baseUrl = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + this.connectTimeoutMs;
     while (Date.now() < deadline) {
-      if (proc.exitCode !== null) return null; // ssh gave up (auth, unknown host, forward refused)
+      // ssh gave up (auth, unknown host, refused forward, a ControlPath that does not fit).
+      if (proc.exitCode !== null) {
+        // The last of its stderr can still be in flight when `exitCode` lands; `close` is the point
+        // at which all of it has arrived, and its first line is the whole diagnosis.
+        for (let i = 0; i < 20 && !drained.done; i++) await new Promise((r) => setTimeout(r, 10));
+        return this.failed(name, firstLine(stderr) || `ssh exited ${proc.exitCode}`);
+      }
       if (await answersHealth(baseUrl, 1000)) {
         this.forwards.set(name, { proc, baseUrl });
         return baseUrl;
@@ -168,7 +240,17 @@ export class SshForwardTransport implements MachineTransport {
       await new Promise((r) => setTimeout(r, 100));
     }
     proc.kill("SIGTERM");
+    return this.failed(name, firstLine(stderr) || `the SSH forward did not answer /health within ${this.connectTimeoutMs}ms`);
+  }
+
+  /** Remember why this machine has no endpoint, and answer the transport's "unreachable" = null. */
+  private failed(name: string, detail: string): null {
+    this.failures.set(name, detail);
     return null;
+  }
+
+  failureDetail(machine: Machine): string | null {
+    return this.failures.get(machine.name) ?? null;
   }
 
   close(): void {

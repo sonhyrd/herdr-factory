@@ -81,7 +81,7 @@ error: missing required tool(s): git curl. Install them and re-run (macOS: xcode
 | `HERDR_BRANCH` | `main` | branch to clone and **hard-reset to** on every re-run |
 | `HERDR_APP_DIR` | `~/.local/share/herdr-factory` | the code checkout (also what auto-update resets) |
 | `HERDR_BIN_DIR` | `~/.local/bin` | where the `herdr-factory` / `herdr-factory-tui` symlinks are dropped |
-| `HERDR_FACTORY_STATE_ROOT` | `~/.local/state/herdr-factory` | `runtime/`, `node-path`, the DB, `server.json`, `update-status.json`, `fleet-last-seen.json`, `fleet-ssh/`, `logs/` |
+| `HERDR_FACTORY_STATE_ROOT` | `~/.local/state/herdr-factory` | `runtime/`, `node-path`, the DB, `server.json`, `update-status.json`, `fleet-last-seen.json`, `fleet-ssh/` (only when that path fits a Unix socket's 104 bytes — else `/tmp/hf-<uid>/`), `logs/` |
 | `HERDR_PNPM_VERSION` | `11` | `npm install -g pnpm@<v>` via the vendored Node, only when `runtime/current/bin/pnpm` is absent |
 | `HERDR_DEPLOY_KEY` | — | literal key **content** or a path to a key file; seeds `~/.ssh/herdr-factory_deploy` (`chmod 600`) |
 | `HERDR_SSH_HOST` | — | real hostname behind the repo URL's `Host` alias, written as `HostName` in the ssh block |
