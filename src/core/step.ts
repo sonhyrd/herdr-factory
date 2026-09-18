@@ -342,7 +342,12 @@ async function dispatchToLayoutImpl(
     kind: opts.agent.kind,
     awaitShell: async (paneId) => void (await awaitShellPrompt(deps, paneId)),
   });
-  if (!target) throw new Error(`${opts.ticketKey}: failed to spawn dedicated agent (no tab/pane configured)`);
+  // The spawn itself failed — the pane could not be created, or the harness never reached readiness
+  // and herdr saw no agent in it either (agentStart closes such a pane). Say THAT: the step having
+  // no tab/pane configured is why we are on this path, not why it failed, and reporting it as the
+  // cause sent operators of deliberately dedicated-pane belts hunting a config error that isn't there.
+  if (!target)
+    throw new Error(`${opts.ticketKey}: failed to spawn dedicated agent for step "${opts.step}" — the pane could not be created, or its agent never became ready (spawn timed out)`);
   await showRunPane(deps, target, { key: opts.ticketKey, step: opts.step, state: "running" });
   deps.log("info", `${opts.ticketKey}: no tab/pane configured — spawned dedicated pane ${target}`);
   return { status: "ready", paneId: target };

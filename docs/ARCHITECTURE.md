@@ -1446,6 +1446,23 @@ the machine is already struggling). A respawn therefore requires the absence to 
 a fresh (unmemoized) re-read of the agent list, then a **second confirmed absence ≥45s after the
 first** (`run_steps.absent_at`; a pane seen alive again clears the mark) — long enough to ride
 out a herdr daemon restart, short enough that a genuinely dead pane restarts within ~a tick.
+**A finished step is never re-spawned.** The undispatched-pass spawn branch runs before the
+done-advance, so it is vetoed by `run_steps.done`: a dispatch can FAIL to record (a dedicated spawn
+whose readiness wait timed out throws, leaving `pane_id`/`dispatched_at` unset) while the agent it
+started is alive, does the work and signals `step-done`. Without the veto every later pass started a
+*second* agent on a finished step — and on the belt's **last** step the run could never end, because
+the advance that completes it sits below that branch (issue #6: a dedicated-pane belt whose last
+step's spawn timed out kept re-spawning and the run was eventually torn down `abandoned`). The step's
+work is done: fall through and advance it. The dedicated-spawn failure is also reported as what it
+is — the pane could not be created, or its agent never became ready — not as "no tab/pane
+configured", which is the *path*, not the cause.
+
+**An ended run is never dispatched.** Phase A reconciles a SNAPSHOT of the active runs taken at the
+top of the tick, so a run torn down while it waited its turn (by a nudge, the CLI, or an earlier run
+in the same pass) would otherwise be advanced on a stale `running` phase — spawning an agent into a
+worktree that no longer exists, minutes after teardown. `reconcileRun` re-reads the run under its
+lock and stops if `ended_at` is set.
+
 When the confirmed respawn (or a bounce / forward re-entry's re-dispatch) returns **waiting** —
 the recorded pane is dead and the configured layout pane isn't resolvable — the pass is marked
 undispatched (`dispatched_at` null) with a re-based wait clock, handing the retry to the bounded
