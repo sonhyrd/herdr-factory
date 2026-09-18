@@ -252,7 +252,8 @@ split and spawn — only the transport differs for this one call.
 itself** (absorbed from the workspace-manager plugin). It registers as a herdr plugin
 (`herdr-plugin.toml`) and handles `worktree.created` / `workspace.created` / `workspace.focused`; on
 the event it matches the new worktree's repo root to a repo config, picks the layout (a
-factory-claimed worktree uses its owning run's belt; a hand-created one walks the repo's belts), and
+factory-claimed worktree uses its owning run's belt and *only* that belt — no layout there means no
+layout at all; a hand-created one walks the repo's belts), and
 *builds* it: **one `layout.apply` per tab** hands herdr the tab's whole declarative pane tree
 (`tabTree` — splits, ratios, labels, cwd, env, and each pane's `command` as ARGV) and gets the created
 pane ids back. Applying with a `tab_id` REBUILDS that tab (herdr builds the replacement first, then
