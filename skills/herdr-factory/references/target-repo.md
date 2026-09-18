@@ -33,10 +33,15 @@ better output from the same config.
 
 Notes on each:
 
-- **(2) The factory never runs `git fetch`.** `origin/main` in the main checkout is only as fresh as
-  that checkout's last fetch (whether `herdr worktree create` fetches first is UNVERIFIED — do not
-  rely on it). If runs branch from a stale base, fetch the main checkout on a schedule of your own.
-  Verify the ref by hand: `git -C <repo.path> rev-parse --verify <base_ref>`.
+- **(2) The factory fetches the base ref before each new worktree** — `git fetch --no-tags <remote>
+  <branch>` in `repo.path`, only when `base_ref` has a `<remote>/` prefix and only on the
+  worktree-CREATE path (a reopened worktree is not re-based). It is bounded (30s) and never prompts
+  (`GIT_TERMINAL_PROMPT=0`), so a missing credential fails fast instead of hanging. A **failed fetch
+  does not block the claim**: the worktree is still created from the local ref and the run logs
+  `<KEY>: could not fetch <base_ref> in <path> — cutting the worktree from the local ref (<base_ref>
+  is <age>); the base may be stale`. A `base_ref` with no remote prefix (a purely local branch) is
+  never fetched — keep it fresh yourself. Verify the ref by hand:
+  `git -C <repo.path> rev-parse --verify <base_ref>`.
 - **(3)** On the worktree-**CREATE** path only, the engine deletes a `.memory/herdr-factory` that came
   with the checkout and warns:
   `<KEY>: removed a committed .memory/herdr-factory from the fresh worktree — the repo should not track factory memory (add .memory/ to its .gitignore)`.
@@ -244,7 +249,7 @@ changes output quality.
 |---|---|---|
 | 1 | Add `.memory/` to the repo's `.gitignore`; if a `.memory/herdr-factory` is already tracked, `git rm -r --cached` it and commit | `git -C <repo> check-ignore -v .memory/` prints the rule (exit 0); `git -C <repo> ls-files .memory` prints nothing |
 | 2 | Point `repo.path` at the main checkout | `test -d <repo.path>/.git` (must be a **directory**); `herdr-factory --repo <name> doctor` → ✓ `repo.path is a main git checkout` |
-| 3 | Set `base_ref` to a ref that exists, and keep it fetched | `git -C <repo.path> rev-parse --verify <base_ref>`; check freshness with `git -C <repo.path> log -1 --format=%cr <base_ref>` |
+| 3 | Set `base_ref` to a ref that exists (the factory fetches it before each new worktree; a local, remote-less ref is yours to keep fresh) | `git -C <repo.path> rev-parse --verify <base_ref>`; check freshness with `git -C <repo.path> log -1 --format=%cr <base_ref>` |
 | 4 | Confirm the GitHub repo resolves | `herdr-factory --repo <name> doctor` → ✓ `git origin resolved` shows `owner/name`; else set `repo.github` |
 | 5 | Authenticate `gh` with write access | `gh auth status`; `gh repo view <owner/name> --json viewerPermission -q .viewerPermission` → `WRITE`, `MAINTAIN` or `ADMIN` |
 | 6 | Install the herdr integration for the configured agent harness (per machine) | `herdr integration status` → `<agent>: current (vN)`; anything else ⇒ `herdr integration install <agent>` — [install-and-operate.md](./install-and-operate.md) |

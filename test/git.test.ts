@@ -56,3 +56,38 @@ describe("GitClient.branchDelete", () => {
     expect(existsSync(wt)).toBe(false); // the lingering worktree dir is gone too
   });
 });
+
+describe("GitClient.fetchRef — the base a worktree is cut from", () => {
+  const git = new GitClient();
+
+  it("moves the remote-tracking ref onto the remote's tip (the stale-clone bug)", async () => {
+    const upstream = await tempRepo();
+    const clone = mkdtempSync(join(tmpdir(), "git-clone-"));
+    tmps.push(clone);
+    await run("git", ["clone", "-q", upstream, clone]);
+    const staleTip = (await run("git", ["-C", clone, "rev-parse", "origin/main"], { allowFail: true })).stdout.trim()
+      || (await run("git", ["-C", clone, "rev-parse", "origin/master"])).stdout.trim();
+    const branch = (await run("git", ["-C", upstream, "rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+
+    // The upstream moves on — exactly the four-merges-old case: the clone's origin/<branch> is frozen
+    // at clone time until something fetches it.
+    await run("git", ["-C", upstream, "commit", "-q", "--allow-empty", "-m", "moved on"]);
+    const remoteTip = (await run("git", ["-C", upstream, "rev-parse", "HEAD"])).stdout.trim();
+    expect((await run("git", ["-C", clone, "rev-parse", `origin/${branch}`])).stdout.trim()).toBe(staleTip);
+
+    expect(await git.fetchRef(clone, "origin", branch)).toBe(true);
+    expect((await run("git", ["-C", clone, "rev-parse", `origin/${branch}`])).stdout.trim()).toBe(remoteTip);
+  });
+
+  it("reports failure instead of throwing when the remote is unreachable", async () => {
+    const dir = await tempRepo();
+    await run("git", ["-C", dir, "remote", "add", "origin", join(dir, "no-such-remote.git")]);
+    expect(await git.fetchRef(dir, "origin", "main")).toBe(false);
+  });
+
+  it("reads a ref's age, and answers null for a ref that doesn't resolve", async () => {
+    const dir = await tempRepo();
+    expect(await git.refAge(dir, "HEAD")).toMatch(/ago|now/);
+    expect(await git.refAge(dir, "origin/nope")).toBeNull();
+  });
+});

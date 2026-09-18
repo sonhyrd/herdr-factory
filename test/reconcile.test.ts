@@ -77,6 +77,7 @@ interface FakeState {
   /** Epoch MILLISECONDS the jira source's calls claim its rate limit resets — null ⇒ not limited. */
   rateLimitedUntilMs: number | null;
   itemLabels: Record<string, string[]>; // labels the jira fake attaches per key (default [])
+  fetchOk: boolean; // does the pre-worktree fetch of the base ref succeed?
   promptStalls: boolean; // agentSend reports the submission never moved the agent (herdr's stalled verdict)
 }
 
@@ -132,7 +133,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -146,6 +147,7 @@ function build(opts: { multi?: boolean } = {}) {
     workspaceClose: [] as string[],
     rmrf: [] as string[],
     branchDelete: [] as string[],
+    fetchRef: [] as [string, string, string][],
     humanAsk: [] as HumanAskInput[],
     humanPoll: [] as HumanPollInput[],
     postNotes: [] as [string, string][],
@@ -281,6 +283,11 @@ function build(opts: { multi?: boolean } = {}) {
   };
   const git: GitApi = {
     branchExists: async (_cwd, b) => state.existingBranches.has(b),
+    fetchRef: async (cwd, remote, b) => {
+      calls.fetchRef.push([cwd, remote, b]);
+      return state.fetchOk;
+    },
+    refAge: async () => "9 days ago",
     // The worktree answers with the simulated rename (state.worktreeBranch), the main checkout with
     // its own branch — that split is what the protected-branch guard keys on.
     currentBranch: async (cwd) => (cwd === "/main-checkout" ? state.mainBranch : (state.worktreeBranch === undefined ? null : state.worktreeBranch)),
@@ -3323,6 +3330,44 @@ describe("fresh-worktree memory scrub — a committed .memory can't supplant the
     state.eligible = [ticket("CATS-1")];
     await reconcileRepo(deps);
     expect(readFileSync(join(mem, "handoff-fix.md"), "utf8")).toBe("live handoff");
+  });
+});
+
+// Nothing else in the factory fetches the target checkout, so a clone that is only read keeps the
+// origin/main it was cloned with and every run is cut from a base that is merges old.
+describe("base-ref fetch — a worktree is cut from the remote's tip, not a stale clone", () => {
+  it("fetches the base ref's remote branch before creating the worktree", async () => {
+    const { deps, state, calls } = build();
+    state.eligible = [ticket("CATS-1")];
+    await reconcileRepo(deps);
+    expect(calls.fetchRef).toEqual([["/main-checkout", "origin", "master"]]); // base_ref = origin/master
+  });
+
+  it("logs the base's age and still creates the worktree when the fetch fails", async () => {
+    const { deps, state, store } = build();
+    state.fetchOk = false;
+    const warnings: string[] = [];
+    deps.log = (level, msg) => { if (level === "warn") warnings.push(msg); };
+    state.eligible = [ticket("CATS-1")];
+    await reconcileRepo(deps);
+    expect(warnings.some((w) => w.includes("could not fetch origin/master") && w.includes("9 days ago"))).toBe(true);
+    expect(store.getRun(store.activeRuns("demo")[0]!.id)!.workspaceId).toBe("w1"); // the claim went through
+  });
+
+  it("never fetches on the worktree-REOPEN path — that checkout already exists", async () => {
+    const { deps, state, calls } = build();
+    deps.git = { ...deps.git, branchExists: async () => true };
+    state.eligible = [ticket("CATS-1")];
+    await reconcileRepo(deps);
+    expect(calls.fetchRef).toEqual([]);
+  });
+
+  it("skips a LOCAL base ref — no fetch moves a branch the checkout holds itself", async () => {
+    const { deps, state, calls } = build();
+    deps.config.repo.baseRef = "master";
+    state.eligible = [ticket("CATS-1")];
+    await reconcileRepo(deps);
+    expect(calls.fetchRef).toEqual([]);
   });
 });
 
