@@ -15,7 +15,7 @@
 // source queries (a Jira poll, a GitHub search) are slow and may fail on their own, and folding them
 // into the machine's own budget would make one lagging source turn a healthy machine `unverifiable`.
 import { buildFleet, type Fleet, type MachineClient } from "../fleet/index.ts";
-import { DEFAULT_MACHINE_TIMEOUT_MS, fileLastSeenStore, readMachines, repoNamesFor, type LastSeenStore, type MachineRead } from "../fleet/read.ts";
+import { fileLastSeenStore, readMachines, repoNamesFor, type LastSeenStore, type MachineRead } from "../fleet/read.ts";
 import type { EligibleItem, RepoStatus } from "../fleet/shapes.ts";
 import type { ListMachinesOpts } from "../fleet/machines.ts";
 import type { MachineTransport } from "../fleet/transport.ts";
@@ -282,7 +282,9 @@ export function createFleetSource(opts: FleetSourceOpts = {}): FleetSource {
           const statuses = await Promise.all(names.map((name) => client.status(name)));
           return { uptimeSec: health.uptimeSec, repos: names.map((repo, i) => ({ repo, status: statuses[i] ?? null })) };
         },
-        { timeoutMs: opts.timeoutMs ?? DEFAULT_MACHINE_TIMEOUT_MS, lastSeen, now: opts.now },
+        // No default of its own: `readMachines` picks per machine (a remote's budget has to cover bringing
+        // its forward up), and pinning the local default here would hold every remote to a loopback number.
+        { timeoutMs: opts.timeoutMs, lastSeen, now: opts.now },
       );
       if (cancelled()) return;
       const machines = quick.machines.map((m) => mergeMachine(m, lastGood, eligibleCache));
