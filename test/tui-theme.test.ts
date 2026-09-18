@@ -7,7 +7,7 @@
 //
 // The palettes: every one of them is text on a background, so each ships measured contrast rather
 // than hand-waved "looks fine in my terminal". The floors below are WCAG's, per role tier.
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -214,6 +214,20 @@ describe("palettes", () => {
       status: { good: "#3e8024", warn: "#a16400", bad: "#d13e23", info: "#0075c4" },
       accent: "#325cc0",
     });
+  });
+
+  it("is the only module in src/tui that names a color", () => {
+    // A hex literal anywhere else is a view that stays light while the rest of the TUI follows
+    // herdr — the exact bug this feature fixes, reintroduced one component at a time.
+    const dir = join(import.meta.dirname, "..", "src", "tui");
+    const offenders = readdirSync(dir)
+      .filter((f) => f.endsWith(".ts") && f !== "theme.ts")
+      .flatMap((f) =>
+        readFileSync(join(dir, f), "utf8")
+          .split("\n")
+          .flatMap((line, i) => (/#[0-9a-fA-F]{3,8}\b/.test(line) ? [`${f}:${i + 1}: ${line.trim()}`] : [])),
+      );
+    expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
   it("builds the same token set from every palette", () => {

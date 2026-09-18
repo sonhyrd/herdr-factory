@@ -1721,6 +1721,17 @@ upload shows even while its `evidence` step reads _done_. It's computed server-s
 (`/status` `active[].problem`, from `undeliveredEvidenceUploadsForRun` where a failure has been
 recorded) so any `/status` reader sees it; the needs-a-human red (attention/failed) still outranks it.
 
+**Theme.** `src/tui/theme.ts` is the only module in `src/tui` that names a color, and it resolves
+which palette to build at **module import** — i.e. once, on the TUI's startup path, before the
+renderer exists: `HERDR_FACTORY_THEME`, else `[theme] name` from herdr's own `config.toml`
+(`$XDG_CONFIG_HOME`/`$HOME`-resolved, read rather than stat'd so a symlinked config works), else the
+light palette the TUI shipped with. Resolution is a `readFileSync` and a scan for one scalar — no
+TOML dependency, nothing async, and nothing that can throw: an unreadable or unknown-theme config
+falls back to the nearest palette rather than failing the boot, which is what keeps it safe to run
+where it does. Because the resolver cannot print (stdout belongs to the renderer), the outcome is
+**reported** instead: as a `This TUI:` row in the Doctor tab, and as `theme`/`theme_source` on the
+`HERDR_FACTORY_TUI_TIMING` startup record — which is also what the `tui-theme` e2e scenario asserts.
+
 **Server routing.** The mutating + nudge commands (`tick`, `step-done`, `ask-human`, `bounce`,
 `resume`, `claim`, `teardown`) route through the running server (`POST /repos/:repo/…`) when it's
 up — a warm, in-process reconcile in ~ms — and **fall back to direct in-process execution** when

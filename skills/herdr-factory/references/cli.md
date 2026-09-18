@@ -413,7 +413,8 @@ Sequence for a first repo: `init` → `doctor --repo <r> --deep` → `run --foll
 | `HERDR_FROM_INSTALLER` | set ⇒ `install` suppresses its onboarding pointer line | unset |
 | `HERDR_FACTORY_LAYOUT_STATE_DIR` | overrides the layout-hook idempotency dir (claims, the decided cache, setup status files) | `<stateRoot>/layout-hook` |
 | `HERDR_FACTORY_FOCUS_HOOK` | `0` drops the `workspace.focused` layout trigger entirely — for a herdr build whose in-app worktree creation does emit `worktree.created` (see [layouts.md](./layouts.md)) | enabled |
-| `HERDR_FACTORY_TUI_TIMING` | `1` appends startup timings to `/tmp/herdr-factory-tui-startup.log` | unset |
+| `HERDR_FACTORY_TUI_TIMING` | `1` appends startup timings — plus the resolved `theme`/`theme_source` — to `/tmp/herdr-factory-tui-startup.log` | unset |
+| `HERDR_FACTORY_THEME` | TUI palette: a herdr theme name, or `dark`/`light`. Overrides herdr's `[theme] name` (see [install-and-operate.md](./install-and-operate.md#theming-the-tui-follows-herdr)) | follows herdr, else `light` |
 | `OPENTUI_LIBC` | auto-set to `musl` when musl is detected | unset |
 | `HERDR_PLUGIN_EVENT_JSON` · `HERDR_PLUGIN_EVENT` | the layout hook's only input (herdr sets these) | — |
 | `HERDR_SOCKET_PATH` | where the factory finds herdr's socket for `layout.apply` (herdr injects it into every plugin command); falls back to `$XDG_CONFIG_HOME/herdr[/sessions/$HERDR_SESSION]/herdr.sock` | injected by herdr |
