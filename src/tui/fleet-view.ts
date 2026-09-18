@@ -134,15 +134,19 @@ function where(m: MachineView): string {
  */
 export function machineHeader(m: MachineView, readAt: number): { text: string; tone: "accent" | "bad" }[] {
   if (m.state === "unverifiable") {
-    const rows = m.repos.length ? " — rows below are last known, NOT known to be gone" : "";
+    // Short lines, each led by the thing that matters most: a pane is often 50 columns, and the
+    // half an operator must not miss is that the machine is silent and its runs are NOT gone.
     return [
-      { text: `✗ ${m.name} (${where(m)}) — unverifiable · last seen ${ago(readAt, m.lastSeenAt)}`, tone: "bad" },
-      { text: `    ${m.detail ?? "no answer"}${rows}`, tone: "bad" },
+      { text: `✗ ${m.name} (${where(m)}) — unverifiable`, tone: "bad" },
+      { text: `    last seen ${ago(readAt, m.lastSeenAt)} · NOT known to be gone`, tone: "bad" },
+      { text: `    ${m.detail ?? "no answer"}`, tone: "bad" },
     ];
   }
   const running = m.repos.reduce((n, r) => n + (r.status?.active.length ?? 0), 0);
-  const head = `✓ ${m.name} (${where(m)}) — v${m.version ?? "?"} · ${m.repos.length} repo${m.repos.length === 1 ? "" : "s"} · ${running} running · read ${ago(readAt, m.lastSeenAt)}`;
-  const lines: { text: string; tone: "accent" | "bad" }[] = [{ text: head, tone: "accent" }];
+  const lines: { text: string; tone: "accent" | "bad" }[] = [
+    { text: `✓ ${m.name} (${where(m)}) — v${m.version ?? "?"} · ${running} running`, tone: "accent" },
+    { text: `    ${m.repos.length} repo${m.repos.length === 1 ? "" : "s"} · read ${ago(readAt, m.lastSeenAt)}`, tone: "accent" },
+  ];
   // The host-local gate (cap occupancy, free memory) is the machine's own line, and long enough to
   // deserve its own row.
   if (m.machineLine) lines.push({ text: `    ${m.machineLine.replace(/^machine: /, "")}`, tone: "accent" });
@@ -150,9 +154,10 @@ export function machineHeader(m: MachineView, readAt: number): { text: string; t
 }
 
 /** A run on an unverifiable machine: no card (a card would claim to be live), one line saying what
- *  it was doing when the machine last answered. */
+ *  it was doing when the machine last answered. Short, because it sits under a header that already
+ *  spells out what `unverifiable` means for the rows below it. */
 export function staleRunLine(run: { ticketKey: string; belt: string | null; step: string | null; phase: string }): string {
-  return `${run.ticketKey}   ${run.belt ?? "-"}/${run.step ?? run.phase}   unverifiable — last known`;
+  return `${run.ticketKey}   ${run.belt ?? "-"}/${run.step ?? run.phase}   unverifiable`;
 }
 
 /** Remotes whose server is on another version than this machine's, in words. This is the fleet half
@@ -232,8 +237,6 @@ export interface FleetSource {
   poll(onView: (view: FleetView) => void, cancelled?: () => boolean): Promise<void>;
   /** The client for `machine`, or undefined if it is not in the fleet — the only route to a server. */
   clientFor(machine: string): MachineClient | undefined;
-  /** Every machine's name, in fleet order (this machine first). Empty before the first poll. */
-  machineNames(): string[];
   /** Warnings raised while discovering the fleet (a herdr that could not be asked). */
   warnings(): string[];
   close(): void;
@@ -309,9 +312,6 @@ export function createFleetSource(opts: FleetSourceOpts = {}): FleetSource {
       onView({ readAt: quick.readAt, machines: folded });
     },
     clientFor,
-    machineNames() {
-      return fleet?.clients.map((c) => c.machine.name) ?? [];
-    },
     warnings() {
       return [...warn];
     },

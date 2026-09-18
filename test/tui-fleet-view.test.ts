@@ -221,16 +221,16 @@ describe("what the operator reads", () => {
       machineLine: "machine: cap 2/4 working across all repos · memory ok",
       repos: [{ repo: "api", status: repoStatus("api", [activeRun(), activeRun({ id: 2 })]), eligible: [] }],
     });
-    const [head, gate] = machineHeader(m, 1000);
+    const [head, load, gate] = machineHeader(m, 1000);
     expect(head!.tone).toBe("accent");
     expect(head!.text).toContain("✓ build-box (user@build)");
     expect(head!.text).toContain("v1.2.3");
-    expect(head!.text).toContain("1 repo ");
     expect(head!.text).toContain("2 running");
-    expect(head!.text).toContain("read 1m ago");
+    expect(load!.text).toContain("1 repo");
+    expect(load!.text).toContain("read 1m ago");
     // The host gate gets its own line: on the head it would be the part a narrow pane clips.
     expect(gate!.text).toContain("cap 2/4 working across all repos");
-    expect(head!.text.length, "the head line fits a narrow pane").toBeLessThan(80);
+    for (const line of [head!, load!]) expect(line.text.length, `"${line.text}" fits a narrow pane`).toBeLessThan(50);
   });
 
   it("an unverifiable machine's header leads with how long it has been silent, and says its runs are not gone", () => {
@@ -244,21 +244,22 @@ describe("what the operator reads", () => {
       stale: true,
       repos: [{ repo: "api", status: repoStatus("api", [activeRun()]), eligible: [] }],
     });
-    const [head, why] = machineHeader(m, 1000);
+    const [head, seen, why] = machineHeader(m, 1000);
     expect(head!.tone).toBe("bad");
     expect(head!.text).toContain("unverifiable");
-    expect(head!.text).toContain("last seen 5m ago");
+    expect(seen!.text).toContain("last seen 5m ago");
+    expect(seen!.text, "the half an operator must not miss").toContain("NOT known to be gone");
     expect(why!.text).toContain("no answer within 2000ms");
-    expect(why!.text).toContain("NOT known to be gone");
-    for (const line of machineHeader(m, 1000)) expect(line.text.length, `"${line.text}" fits a narrow pane`).toBeLessThan(80);
+    // A herdr pane is routinely ~50 columns; a fact that falls off the right edge is not reported.
+    for (const line of machineHeader(m, 1000)) expect(line.text.length, `"${line.text}" fits a narrow pane`).toBeLessThan(50);
   });
 
   it("a machine that has never answered says so instead of claiming a last-seen time", () => {
-    expect(machineHeader(machineView({ state: "unverifiable", lastSeenAt: null }), 1000)[0]!.text).toContain("never seen");
+    expect(machineHeader(machineView({ state: "unverifiable", lastSeenAt: null }), 1000)[1]!.text).toContain("never seen");
   });
 
   it("a last-known run renders as a line that admits what it is, not as a live card", () => {
-    expect(staleRunLine({ ticketKey: "HF-2", belt: "ship", step: "review", phase: "running" })).toBe("HF-2   ship/review   unverifiable — last known");
+    expect(staleRunLine({ ticketKey: "HF-2", belt: "ship", step: "review", phase: "running" })).toBe("HF-2   ship/review   unverifiable");
   });
 
   it("one machine's status line reads exactly as it always has", () => {

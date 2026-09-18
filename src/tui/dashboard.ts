@@ -189,6 +189,7 @@ export function createDashboard(
   let lastWidth = 0;
   // Which machine the board is narrowed to; null = the whole fleet. Driven by `m`.
   let machineFilter: string | null = null;
+  let warnedAboutFleet = false;
 
   const rowKey = (t: Target) => `${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
   const beltsKey = (machine: string, repo: string) => `${machine}|${repo}`;
@@ -546,6 +547,13 @@ export function createDashboard(
       // in. `timer === null` means the tab was left mid-flight — drop the paint rather than writing
       // onto another tab.
       await source.poll(renderView, () => timer === null);
+      // A herdr that could not be asked silently shrinks the fleet to this machine — said once, so
+      // an operator who expected to see another box knows why they don't.
+      const warning = source.warnings()[0];
+      if (warning && !warnedAboutFleet) {
+        warnedAboutFleet = true;
+        setAction(`⚠ ${warning}`, theme.status.warn);
+      }
     } catch (e) {
       if (timer !== null) setAction(`✗ could not read the fleet: ${e instanceof Error ? e.message : String(e)}`, theme.status.bad);
     } finally {

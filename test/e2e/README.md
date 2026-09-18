@@ -49,10 +49,11 @@ scenario({ name: "...", briefs: {...}, config: (p) => ({...}), agent: {...} }, a
 - **`fleetMachines`** declares extra `serve` processes in the same world — each another MACHINE of the
   fleet, with its own config dir, state root, port, DB and briefs folder over the same target
   checkout, and its repo named after the machine. The world writes the fleet's transport override
-  (`HERDR_FACTORY_FLEET_ENDPOINTS`) and seeds the fake herdr's `machine list`, so `herdr-factory
-  fleet` reaches them with no SSH — the only part of the transport a container cannot have. Fake lane
-  only (a real herdr's saved machines are the operator's). `w.machine(name)` is that factory:
-  its `cli()`, its `api()`, and `stop()` for the "a machine goes away" half of a fleet assertion.
+  (`HERDR_FACTORY_FLEET_ENDPOINTS`) and answers `herdr machine list` from a file of its own — on the
+  real lane through the world's `herdr` wrapper, so a scenario's fleet never touches the operator's
+  saved machines — and the fleet reaches them with no SSH, the only part of the transport a container
+  cannot have. `w.machine(name)` is that factory: its `cli()`, its `api()`, and `stop()` for the
+  "a machine goes away" half of a fleet assertion.
 - **Assertions** rank: `w.db.run()/events()/steps()/intents()` → `expectTimeline` /
   `expectParked` / `expectNoPendingIntents` → `w.factory.repoApi("GET", "obligations?key=…")` →
   filesystem (`w.branchExists`, `w.humanInbox`, `w.factory.evidence`) → argv traces
@@ -103,6 +104,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `perf-call-budgets` | 12 watched PRs cost **one** batched GraphQL query per pass — no per-run `pr view`, no re-discovery by `pr list` |
 | `perf-tick-latency` | p50/p95 of a full pass with 20 active runs, and that one slow `gh` costs its own call rather than the loop |
 | `tui-boot` | the real launcher in a real PTY: opentui's FFI resolves, `app_ready` inside its budget, no stack trace on screen |
+| `tui-fleet` | the fleet in the terminal: the real TUI over two factory servers — both machines' headers and runs on screen, `x` on a key BOTH machines are working tearing down only the one on the machine the card belongs to (its own server serves it; the twin here is untouched), and a machine that stops answering turning its rows `unverifiable` with its last-seen time rather than blanking them |
 | `tui-theme` | the TUI follows herdr's theme, read from a real `config.toml` at launch: `tokyo-night`, `HERDR_FACTORY_THEME` overriding it, an unknown name falling back, and no herdr theme still light |
 | `ds4-w2pr` | *(tier ds4)* a real local model, the **shipped** prompts, no harness hints: does the work reach a PR? |
 | `perf-resource-soak` | ~900 passes (six full lifecycles, then a long idle tail): RSS, FDs, DB and worktrees stay flat, and the server is still healthy |

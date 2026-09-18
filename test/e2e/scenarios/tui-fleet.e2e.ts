@@ -115,41 +115,33 @@ scenario(
     for (const bad of ["requires Node >= 26", "Cannot find", "ERR_DLOPEN", "experimental-ffi", "Error:", "at Module"]) {
       expect(board, `the TUI screen shows no "${bad}"`).not.toContain(bad);
     }
-    // A header per machine, each answering the questions the fleet view exists to answer: is it
-    // reachable, what is it running, and how loaded is it.
+    // A header per machine, each saying whether it answered. (What the head line CARRIES — version,
+    // repo count, occupancy — is pinned in test/tui-fleet-view.test.ts; a pane is ~50 columns wide
+    // here, so asserting the tail of the line would only be asserting this pane's width.)
     expect(board, "this machine has a header").toMatch(/✓ local \(this machine\)/);
-    expect(board, "and so does the other one").toMatch(/✓ build-box/);
-    expect(board, "carrying its server version").toMatch(/✓ build-box[^\n]*v\d/);
-    expect(board, "and the repos it serves").toMatch(/✓ build-box[^\n]*repo/);
+    expect(board, "and so does the other one").toMatch(/✓ build-box \(harness@build-box\)/);
     // The work itself: both machines' repos, each badged with the machine that owns it.
     expect(board, "this machine's repo row").toContain(`${w.repoName}  @local`);
     expect(board, "the other machine's repo row").toContain("build-box  @build-box");
-    // The status line counts the fleet rather than one server.
-    expect(board).toMatch(/fleet 2\/2 machines/);
+    // The status line counts the fleet rather than one server (clipped to the pane's width).
+    expect(board, "the shell's status line counts machines, not one server").toMatch(/fleet 2\/2/);
 
     // ── a key-driven action goes to the owning machine, and only there ─────────────────────────
-    // Walk to the other machine's run card and tear it down: ↓ to the first focusable, then on
-    // through this machine's rows until the highlight is on a build-box card. The highlight follows
-    // reading order, so "press ↓ until the action line names the build-box run" is the operator's
-    // own gesture, not a harness shortcut.
-    w.herdr.sendKeys(pane!, "down");
-    await delay(500);
-    let onRemote = false;
-    for (let i = 0; i < 12 && !onRemote; i++) {
+    // Walk to build-box's `shared-1` card the way an operator would: ↓ past every row to the last
+    // card on the board (build-box's second run — the highlight clamps there), then ↑ one within
+    // the same column. Both machines are working an item called `shared-1`, so this is the case
+    // where a dashboard that routed on the key alone would tear down the wrong one.
+    for (let i = 0; i < 16; i++) {
       w.herdr.sendKeys(pane!, "down");
-      await delay(400);
-      // `x` asks for confirmation naming the machine — that modal IS the assertion that the
-      // highlighted card belongs to build-box, and it is what an operator reads before saying yes.
-      w.herdr.sendKeys(pane!, "x");
-      await delay(700);
-      const screen = w.herdr.readPane(pane!, 80);
-      onRemote = new RegExp(`Tear down "${KEY}" on build-box`).test(screen);
-      if (!onRemote && /\[y\] yes/.test(screen)) {
-        w.herdr.sendKeys(pane!, "n"); // a card on this machine — back out and keep walking
-        await delay(400);
-      }
+      await delay(120);
     }
-    expect(onRemote, "the teardown confirmation names the machine the card belongs to").toBe(true);
+    w.herdr.sendKeys(pane!, "up");
+    await delay(500);
+    w.herdr.sendKeys(pane!, "x");
+    await delay(800);
+    // The confirmation names the machine it would land on — what an operator reads before saying
+    // yes. Matched on its leading text, since the pane is narrower than the whole sentence.
+    expect(w.herdr.readPane(pane!, 80), "the teardown confirmation names the machine").toContain(`Tear down "${KEY}" on build-b`);
     w.herdr.sendKeys(pane!, "y");
 
     // The run is gone from the machine that owned it…
@@ -161,15 +153,14 @@ scenario(
     // the key alone does not identify a run in a fleet.
     expect(await activeKeys(here), "the same key on this machine is untouched").toEqual([KEY]);
     expect(await activeKeys(there), "and the other run on that machine is untouched too").toEqual([OTHER]);
-    expect(w.machine("build-box").serveLog(200), "the action reached that machine's server").toContain("teardown");
+    expect(w.machine("build-box").serveLog(200), "the action was served by that machine's own server").toMatch(new RegExp(`${KEY}: torn down`));
 
     // ── a machine that goes away is unverifiable, not empty ───────────────────────────────────
     await w.machine("build-box").stop();
     const blind = await screenWith(w, pane!, /unverifiable/, "the board reports the machine it can no longer reach");
-    expect(blind, "it says how long it has been silent").toMatch(/build-box[^\n]*last seen/);
+    expect(blind, "it says when it was last heard from").toMatch(/last seen (just now|\d)/);
     expect(blind, "and that its runs are not known to be gone").toContain("NOT known to be gone");
-    expect(blind, "its last known run is still on the board").toContain(OTHER);
-    expect(blind, "marked for what it is").toContain("last known");
+    expect(blind, "its last known run is still on the board, marked for what it is").toMatch(new RegExp(`${OTHER}[^\\n]*unverifiable`));
     // This machine's own work is untouched by the other's silence.
     expect(await activeKeys(here)).toEqual([KEY]);
     expect(blind, "and its board is still live").toContain(`${w.repoName}  @local`);

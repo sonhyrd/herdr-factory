@@ -1841,7 +1841,8 @@ the TUI's fleet dashboard is the next.
 | `fleet/transport.ts` | **How a machine's API is reached.** Local: `server.json`, as `tui/api.ts` has always read it. Remote: an SSH local forward (`ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:8765 <target>`) with ControlMaster reuse, so every server keeps binding `127.0.0.1` only and nothing is exposed. `HERDR_FACTORY_FLEET_ENDPOINTS` overrides a machine's base URL by name — the seam the e2e suite substitutes for SSH, and the escape hatch for a host off the default port. |
 | `fleet/client.ts` | **`MachineClient`** — the same calls `tui/api.ts` makes (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. |
 | `fleet/shapes.ts` | The API response shapes, as a zero-import leaf. There are now two readers of the same HTTP API (the TUI's and the fleet's) and they must not drift, so the shapes moved out of `tui/api.ts`, which re-exports them. |
-| `fleet/read.ts` | The **merged view** (`readFleet`) and the **routing rule** (`routeRun`). |
+| `fleet/read.ts` | The **merged view** (`readFleet`), the **routing rule** (`routeRun`), and the primitive both the CLI and the TUI read through: `readMachines(clients, read)` — every machine in parallel under its own budget, each answering `ok` with whatever the caller went there for, or `unverifiable` with the time it last answered. WHAT is read differs per surface (the CLI wants statuses, the TUI also wants eligible work); the timeout, the verdict and the last-seen memo must not, or one surface will eventually report a machine it could not reach as a machine with nothing on it. |
+| `tui/fleet-view.ts` | The **TUI's** window onto the fleet: the merged per-machine view the Dashboard renders (repos, runs, eligible work), the carry-forward that keeps an unverifiable machine's last known rows on screen, the header/status formatting, and `clientFor` — the one route an action may take. Eligible work is read in a second phase, as the single-machine dashboard always has, so a lagging source query can never turn a healthy machine `unverifiable`. |
 
 Two invariants carry `read.ts`, and both exist because the alternative misleads an operator:
 
@@ -1857,7 +1858,15 @@ Two invariants carry `read.ts`, and both exist because the alternative misleads 
 
 Tested with a fake transport over throwaway loopback servers (`test/fleet.test.ts` — merged view,
 disabled machine excluded, unverifiable + last-seen, the timeout, and an action that hits only its
-own machine) and end to end against **two real `serve` processes** (`fleet-cli`, §13).
+own machine; `test/tui-fleet-view.test.ts` — the same for the TUI's view, plus the carried-forward
+rows and the header lines) and end to end against **two real `serve` processes** — at the CLI
+(`fleet-cli`) and through the real TUI in a real PTY (`tui-fleet`, where `x` on a key BOTH machines
+are working may only tear down the one the card belongs to), §13.
+
+The TUI's chrome for all this appears **only when there is a fleet**: with one machine the dashboard
+renders exactly as it did before this layer existed, which is what keeps a single-machine install
+from paying for a feature it has no use for. The config editor stays local on purpose — config lives
+on each host, and editing another machine's would be a write across a link the factory does not have.
 
 ---
 
