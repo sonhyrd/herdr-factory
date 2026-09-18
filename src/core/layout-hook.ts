@@ -305,7 +305,10 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
   const ownerRun = deps.store.activeRunForWorktree(repoName, { path: checkoutPath, branch });
   const matched = resolveHookLayout(deps.config.belts, deps.config.layouts, ownerRun?.belt ?? undefined, branch ?? undefined);
   if (!matched) return done(`no layout matches ${checkoutPath}`);
-  const { layout } = matched;
+  const { layout, prunedTabs } = matched;
+  if (prunedTabs.length > 0) {
+    deps.log("info", `layout "${layout.id}": belt "${matched.belt.name}" targets no step at tab(s) ${prunedTabs.join(", ")} — not building them`);
+  }
 
   // Fresh workspace only — never clobber an arranged/restored one. A pane a herdr PLUGIN put there
   // is not arrangement: a plugin that adds its own pane (a sidebar) to every new tab would otherwise
@@ -371,7 +374,7 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
     repo: repoName,
     ticketKey: ownerRun?.ticketKey ?? null,
     type: "layout_applied",
-    detail: { layout: layout.id, workspaceId, checkoutPath },
+    detail: { layout: layout.id, workspaceId, checkoutPath, ...(prunedTabs.length > 0 ? { prunedTabs } : {}) },
   });
   if (isFocus) markDecided(workspaceId);
   deps.log("info", `layout hook: built "${layout.id}" into ${checkoutPath}`);
