@@ -13,9 +13,20 @@ import { fleetLastSeenPath } from "../config-paths.ts";
 import type { MachineClient } from "./client.ts";
 import type { ActiveRun, Health, RepoStatus } from "./shapes.ts";
 
-/** Default per-machine budget. Generous enough for an SSH forward's first round trip, short enough
- *  that a dead box costs one pause and not a hung command. */
+/** Default budget for THIS machine: one loopback round trip to a server that is either up or is
+ *  not. A remote one gets `DEFAULT_REMOTE_MACHINE_TIMEOUT_MS` — it has a forward to build first. */
 export const DEFAULT_MACHINE_TIMEOUT_MS = 5000;
+
+/**
+ * Default budget for a machine reached over an SSH forward.
+ *
+ * A local read is one loopback round trip; a remote read has to BUILD its transport first — dial
+ * the host (or reuse a master), bring the forward up, then poll it until it answers. That routinely
+ * costs seconds on a distant box, and the local 5000ms budget cut it off mid-connect and reported
+ * `no answer within 5000ms` — hiding whatever ssh or the API was about to say, which is the one
+ * thing the row needed. Matched to the transport's own connect budget (10s) plus a read.
+ */
+export const DEFAULT_REMOTE_MACHINE_TIMEOUT_MS = 15_000;
 
 /** One run, flattened for the fleet table. `machine` is the routing key: it is the ONLY machine an
  *  action on this run may be sent to. */
@@ -109,7 +120,9 @@ export function memoryLastSeenStore(seed: Record<string, number> = {}): LastSeen
 }
 
 export interface ReadFleetOpts {
-  /** Per-machine budget; one machine exceeding it makes that machine unverifiable and nothing else. */
+  /** Per-machine budget; one machine exceeding it makes that machine unverifiable and nothing else.
+   *  Left unset, each machine gets the default for its kind (local / remote) — set it only to
+   *  override BOTH, as `--timeout` does. */
   timeoutMs?: number;
   /** Only these repos (default: every repo each machine's /health reports). */
   repos?: string[];
@@ -187,12 +200,12 @@ export async function readMachines<T>(
   opts: ReadFleetOpts = {},
 ): Promise<{ readAt: number; machines: MachineRead<T>[] }> {
   const now = opts.now?.() ?? Math.floor(Date.now() / 1000);
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_MACHINE_TIMEOUT_MS;
   const lastSeen = opts.lastSeen ?? fileLastSeenStore();
 
   const machines = await Promise.all(
     clients.map(async (client): Promise<MachineRead<T>> => {
       const m = client.machine;
+      const timeoutMs = opts.timeoutMs ?? (m.local ? DEFAULT_MACHINE_TIMEOUT_MS : DEFAULT_REMOTE_MACHINE_TIMEOUT_MS);
       const base = { name: m.name, sshTarget: m.sshTarget, local: m.local };
       const unverifiable = (detail: string): MachineRead<T> => ({
         ...base,

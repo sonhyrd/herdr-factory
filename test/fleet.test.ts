@@ -253,6 +253,32 @@ describe("readFleet", () => {
     expect(snapshot.machines[0]!).toMatchObject({ state: "unverifiable", lastSeenAt: null });
   });
 
+  // ── the fast, reasonless failure (#34) ───────────────────────────────────────────────────────
+  //
+  // A forward came up and the remote API answered — just not inside the 500ms budget written for a
+  // server on 127.0.0.1. The machine read `unverifiable: could not reach its API`, a sentence that
+  // names neither the call nor the budget it missed, while `curl` through the same forward worked.
+
+  it("does not hold a remote machine to a loopback read budget", async () => {
+    const there = await fakeMachine({ name: "build-box", repos: { api: repoStatus("api", [activeRun({ id: 2, ticketKey: "HF-2" })]) } });
+    there.hangMs = 900; // a wide-area round trip: way over 500ms, nowhere near a hung box
+
+    const snapshot = await readFleet(clientsFor([there]), { now: () => 1000, lastSeen: memoryLastSeenStore() });
+
+    expect(snapshot.machines[0]!).toMatchObject({ name: "build-box", state: "ok" });
+    expect(snapshot.runs.map((r) => r.key)).toEqual(["HF-2"]);
+  });
+
+  it("names the HTTP failure when the transport had an endpoint and the API is what did not answer", async () => {
+    const there = await fakeMachine({ name: "build-box", repos: {} });
+    there.down(); // the forward is fine; the server behind it drops the connection
+    const snapshot = await readFleet(clientsFor([there]), { lastSeen: memoryLastSeenStore() });
+
+    const detail = snapshot.machines[0]!.detail!;
+    expect(detail).toContain("/health");
+    expect(detail).not.toContain("could not reach its API");
+  });
+
   it("times a slow machine out on its own budget without holding up the others", async () => {
     const here = await fakeMachine({ name: "local", local: true, repos: { app: repoStatus("app", [activeRun()]) } });
     const slow = await fakeMachine({ name: "build-box", repos: { api: repoStatus("api", []) } });

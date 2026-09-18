@@ -163,6 +163,76 @@ exit 0`);
     expect(command).toContain("ops@build-box");
   });
 
+  // ── a stale ControlMaster ────────────────────────────────────────────────────────────────────
+  //
+  // A master can outlive the connection it multiplexes (the remote server restarted under it, the
+  // network path moved). `ssh -O check` still answers `Master running` — it only pings the LOCAL
+  // socket — and every forward opened through it fails. The pair (master running, forward failed)
+  // is the only available diagnosis, so that pair drops the master and retries once.
+
+  /** A fake `ssh` whose master is a file: while it exists every forward fails, `-O check` says the
+   *  master is running, and `-O exit` removes it. `stale` seeds one. */
+  function fakeStaleMasterSsh(opts: { forwardWorksAfterExit: boolean }): void {
+    const master = join(dir, "master");
+    writeFileSync(master, "");
+    fakeSsh(`
+master="${master}"
+case "$*" in
+  *"-O check"*) [[ -f "$master" ]] && exit 0 || exit 255;;
+  *"-O exit"*)  rm -f "$master"; exit 0;;
+  *"-O cancel"*) printf '%s\\n' "$*" > "${join(dir, "control-command")}"; exit 0;;
+esac
+if [[ -f "$master" ]]; then echo 'mux_client_request_session: session request failed: Session open refused by peer' >&2; exit 255; fi
+${"" /* the master is gone: a fresh connection, and the forward comes up */}
+[[ "${opts.forwardWorksAfterExit}" == "true" ]] || { echo 'ssh: connect to host build-box port 22: Connection refused' >&2; exit 255; }
+port=""
+for a in "$@"; do case "$a" in *:127.0.0.1:8765) port="\${a%%:*}";; esac; done
+[[ -n "$port" ]] || exit 255
+"${process.execPath}" "${fakeForward()}" "$port" >/dev/null 2>&1 &
+exit 0`);
+  }
+
+  it("drops a stale ControlMaster once and comes up on the connection that replaces it", async () => {
+    fakeStaleMasterSsh({ forwardWorksAfterExit: true });
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    expect(await transport.endpoint(remote)).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(transport.failureDetail(remote)).toBeNull();
+    expect(existsSync(join(dir, "master"))).toBe(false); // `-O exit` took it down
+    transport.close();
+  });
+
+  it("reports both attempts when replacing the master did not help", async () => {
+    fakeStaleMasterSsh({ forwardWorksAfterExit: false });
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    expect(await transport.endpoint(remote)).toBeNull();
+    const detail = transport.failureDetail(remote)!;
+    expect(detail).toContain("Connection refused"); // the retry's own reason leads
+    expect(detail).toContain("replacing a stale ControlMaster");
+    expect(detail).toContain("Session open refused by peer"); // …and the first attempt's is kept
+    transport.close();
+  });
+
+  it("does not retry when there is no master to blame", async () => {
+    fakeSsh("echo 'Permission denied (publickey).' >&2\nexit 255"); // `-O check` fails too: no master
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    const detail = (await transport.endpoint(remote), transport.failureDetail(remote)!);
+    expect(detail).toContain("Permission denied (publickey).");
+    expect(detail).not.toContain("stale ControlMaster");
+    transport.close();
+  });
+
+  it("counts the /health attempts it actually made", async () => {
+    fakeSsh('[[ "$*" == *"-O "* ]] && exit 255\nsleep 5'); // ssh never dies and never forwards: the deadline is what ends it
+    const transport = new SshForwardTransport({ connectTimeoutMs: 1000, controlDir: join(dir, "control") });
+
+    expect(await transport.endpoint(remote)).toBeNull();
+    expect(transport.failureDetail(remote)).toMatch(/did not answer \/health in [1-9]\d* attempts over 1000ms/);
+    transport.close();
+  });
+
   it("leaves no control command behind for a forward that failed outright", async () => {
     fakeSsh("echo 'Permission denied (publickey).' >&2\nexit 255");
     const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });

@@ -1400,12 +1400,24 @@ therefore judged by whether its forwarded port answers `/health` — only a **no
 the timeout, makes it `unverifiable`. On the way out the forward is cancelled through the same
 control socket, which leaves the shared connection up for the next `herdr-factory fleet`.
 
+A master can also **outlive the connection it multiplexes** — the remote server restarts under it,
+or the network path moves. `ssh -O check` still answers `Master running` (it only pings the local
+socket) while every forward opened through it fails. That pair — a running master and a forward that
+did not come up — is taken as a stale master: it is dropped with `-O exit` and the forward retried
+**once**, on a fresh connection. If the retry fails too, the row carries both attempts' reasons.
+
 Two properties are worth knowing before you trust the output:
 
-- **Machines are read in parallel, each under its own timeout** (`--timeout`, default 5000ms), so one
-  unreachable box costs you one pause and not the view.
+- **Machines are read in parallel, each under its own timeout** (`--timeout`), so one unreachable box
+  costs you one pause and not the view. The default is **5000ms for this machine** and **15000ms for
+  a remote one**, which has to bring its forward up before it can read anything — holding it to the
+  loopback budget cut it off mid-connect and reported a timeout instead of ssh's own diagnosis.
+  `--timeout` overrides both. Individual reads over a forward likewise get a floor of 2500ms rather
+  than the 500ms a local `/health` is given: a box that is merely far away is not a box that is down.
 - **A machine that does not answer is `unverifiable`, not empty.** Its row says so, and carries the
-  reason (ssh's own first line of stderr, when the forward is what failed) and the
+  reason — ssh's own first line of stderr with its exit code and the number of `/health` attempts
+  that ran when the forward is what failed, and the failing call with the budget it missed when the
+  forward came up and the API is what did not answer — and the
   time it last answered successfully — because "no runs" and "we couldn't ask" are opposite facts,
   and reporting the second as the first is how an operator ends up claiming an item that is already
   being worked somewhere else. Actions (claim, teardown, resume, retry-now, tick) always go to the

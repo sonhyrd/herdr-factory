@@ -225,7 +225,18 @@ export class SshForwardTransport implements MachineTransport {
     return this.open(machine.name, machine.sshTarget);
   }
 
-  private async open(name: string, target: string): Promise<string | null> {
+  /**
+   * Bring one forward up.
+   *
+   * `replaceStaleMaster` is the one retry this transport allows itself: a ControlMaster that
+   * outlived the remote server's restart still answers `-O check` with `Master running`, and ssh
+   * will happily multiplex a new forward onto that dead connection — which then never answers
+   * `/health`. `-O check` alone cannot tell a healthy master from a stale one (it only pings the
+   * local socket), so staleness is diagnosed the only way it can be: a master that is running AND a
+   * forward through it that did not come up. Then `-O exit` drops it and the retry forks a fresh
+   * one. Once, never in a loop — a second failure is the remote's, not the master's.
+   */
+  private async open(name: string, target: string, replaceStaleMaster = true): Promise<string | null> {
     if (this.closed) return null;
     this.failures.delete(name);
     const port = await freePort().catch(() => 0);
@@ -247,6 +258,10 @@ export class SshForwardTransport implements MachineTransport {
     const baseUrl = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + this.connectTimeoutMs;
     let backgrounded = false;
+    // How many times `/health` was actually asked. Without it a fast failure is indistinguishable
+    // from a slow one in the row it produces — "could not reach its API" reads the same whether the
+    // forward was polled thirty times or ssh died before the first attempt.
+    let probes = 0;
     while (Date.now() < deadline) {
       const code = proc.exitCode;
       // ssh gave up (auth, unknown host, refused forward, a ControlPath that does not fit).
@@ -254,12 +269,14 @@ export class SshForwardTransport implements MachineTransport {
         // The last of its stderr can still be in flight when `exitCode` lands; `close` is the point
         // at which all of it has arrived, and its first line is the whole diagnosis.
         for (let i = 0; i < 20 && !drained.done; i++) await new Promise((r) => setTimeout(r, 10));
-        return this.failed(name, firstLine(stderr) || `ssh exited ${code}`);
+        const line = firstLine(stderr);
+        return this.giveUp(name, target, replaceStaleMaster, line ? `${line} (ssh exited ${code}, ${probes} /health ${probes === 1 ? "attempt" : "attempts"})` : `ssh exited ${code} after ${probes} /health ${probes === 1 ? "attempt" : "attempts"}`);
       }
       // Exit 0 is the ControlPersist handshake, not a failure: ssh forked a master into the
       // background and the foreground client returned. The forward is up for as long as that master
       // lives, so only `/health` on the forwarded port — never the client's exit — decides.
       if (code === 0) backgrounded = true;
+      probes++;
       if (await answersHealth(baseUrl, 1000)) {
         this.forwards.set(name, { proc, baseUrl, target, localPort: port, backgrounded });
         return baseUrl;
@@ -267,13 +284,34 @@ export class SshForwardTransport implements MachineTransport {
       await new Promise((r) => setTimeout(r, 100));
     }
     this.tearDown({ proc, baseUrl, target, localPort: port, backgrounded });
-    return this.failed(
-      name,
-      firstLine(stderr) ||
-        (backgrounded
-          ? `ssh backgrounded its forward but it did not answer /health within ${this.connectTimeoutMs}ms`
-          : `the SSH forward did not answer /health within ${this.connectTimeoutMs}ms`),
-    );
+    const why = backgrounded
+      ? `ssh backgrounded its forward but it did not answer /health in ${probes} attempts over ${this.connectTimeoutMs}ms`
+      : `the SSH forward did not answer /health in ${probes} attempts over ${this.connectTimeoutMs}ms`;
+    const line = firstLine(stderr);
+    return this.giveUp(name, target, replaceStaleMaster, line ? `${line} (${why})` : why);
+  }
+
+  /** Is there a ControlMaster for `target` right now? `-O check` exits 0 and prints `Master running`
+   *  when the local control socket answers — which is all it proves, hence the caller's second
+   *  condition (a forward through it that failed). */
+  private masterRunning(target: string): boolean {
+    if (this.controlDir === null) return false;
+    const r = spawnSync("ssh", ["-O", "check", "-o", `ControlPath=${join(this.controlDir, "%C")}`, target], { stdio: "ignore", timeout: 5000 });
+    return r.status === 0;
+  }
+
+  /**
+   * A forward failed. If a ControlMaster is holding the connection it was multiplexed onto, that
+   * master is the suspect — it can outlive the remote server (or the network path) it was opened
+   * over, and every forward through it fails while `ssh -O check` still says `Master running`. Drop
+   * it once and try again on a fresh connection; report the original reason if that fails too.
+   */
+  private async giveUp(name: string, target: string, replaceStaleMaster: boolean, detail: string): Promise<string | null> {
+    if (!replaceStaleMaster || this.closed || !this.masterRunning(target)) return this.failed(name, detail);
+    spawnSync("ssh", ["-O", "exit", "-o", `ControlPath=${join(this.controlDir!, "%C")}`, target], { stdio: "ignore", timeout: 5000 });
+    const retried = await this.open(name, target, false);
+    if (retried) return retried;
+    return this.failed(name, `${this.failures.get(name) ?? detail} (after replacing a stale ControlMaster; first attempt: ${detail})`);
   }
 
   /**

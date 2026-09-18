@@ -45,6 +45,24 @@ export interface MachineClient {
  *  flushes uploads inline), and killing it at a read timeout would abandon it half-done. */
 const ACTION_TIMEOUT_MS = 120_000;
 const READ_TIMEOUT_MS = 2500;
+/**
+ * The floor under every read budget on a machine reached through an SSH forward.
+ *
+ * The short budgets below (500ms for `/health` and a quick status) are loopback numbers: they exist
+ * so a local server that is down costs a blink rather than a stall, and on 127.0.0.1 they are
+ * enormous. A remote machine's every round trip crosses the forward, so on a box that is merely far
+ * away — or whose server has just restarted and is still warming — 500ms expires while the API is
+ * answering perfectly well, and the fleet reports it `unverifiable` seconds after its own forward
+ * came up. The per-machine budget in `readMachines` is the real guard against a hung box; this is
+ * just enough headroom for a wide-area hop.
+ */
+const REMOTE_MIN_READ_TIMEOUT_MS = 2500;
+
+/** What went wrong with one HTTP read, in the words the machine's `unverifiable` row should use. */
+function httpFailure(path: string, timeoutMs: number, e: unknown): string {
+  if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) return `no answer from ${path} within ${timeoutMs}ms`;
+  return `${path}: ${e instanceof Error ? e.message : String(e)}`;
+}
 
 const r = (repo: string) => `/repos/${encodeURIComponent(repo)}`;
 
@@ -52,14 +70,28 @@ const r = (repo: string) => `/repos/${encodeURIComponent(repo)}`;
  *  Resolving per call (rather than at construction) is what makes a machine that comes back during
  *  a long-lived TUI session start answering again without a reconnect dance. */
 export function httpMachineClient(machine: Machine, transport: MachineTransport): MachineClient {
+  /** A read budget this machine can actually meet: as given on loopback, floored for a forward. */
+  const budget = (ms: number) => (machine.local ? ms : Math.max(ms, REMOTE_MIN_READ_TIMEOUT_MS));
+  /** Why the last read failed once the transport HAD an endpoint — a timeout on the forwarded port,
+   *  a 503 from a server still starting. The transport cannot know any of that (its forward came up
+   *  fine), and without it the machine reads `unverifiable: could not reach its API`, which names
+   *  neither the call that failed nor the budget it missed. */
+  let lastHttpFailure: string | null = null;
+
   async function get<T>(path: string, timeoutMs = READ_TIMEOUT_MS): Promise<T | null> {
     const base = await transport.endpoint(machine);
     if (!base) return null;
+    const ms = budget(timeoutMs);
     try {
-      const res = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
-      if (!res.ok) return null;
+      const res = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(ms) });
+      if (!res.ok) {
+        lastHttpFailure = `${path} returned ${res.status}`;
+        return null;
+      }
+      lastHttpFailure = null;
       return (await res.json()) as T;
-    } catch {
+    } catch (e) {
+      lastHttpFailure = httpFailure(path, ms, e);
       return null;
     }
   }
@@ -90,7 +122,7 @@ export function httpMachineClient(machine: Machine, transport: MachineTransport)
 
   return {
     machine,
-    failureDetail: () => transport.failureDetail?.(machine) ?? null,
+    failureDetail: () => transport.failureDetail?.(machine) ?? lastHttpFailure,
     health: () => get<Health>("/health", 500),
     status: (repo, detail = false) => get<RepoStatus>(`${r(repo)}/status${detail ? "?refresh=1" : "?quick=1"}`, detail ? 2500 : 500),
     eligible: (repo) => get<{ eligible: EligibleItem[] }>(`${r(repo)}/eligible`),
