@@ -1,5 +1,15 @@
-// Dashboard tab — per-repo view of the factory that also drives it. Repos come from disk
-// (listConfiguredRepos); live status + eligible items come from the resident server (api.ts).
+// Dashboard tab — per-machine, per-repo view of the factory that also drives it. Live status +
+// eligible items come from the FLEET (fleet-view.ts): this machine's resident server plus every
+// enabled machine herdr knows about, each read under its own budget.
+//
+// A one-machine install renders exactly as it always has — no machine headers, no badges, repos from
+// disk when the server is down. The fleet's chrome appears only when there IS a fleet:
+//   * a header per machine (reachable?, version, occupancy, when it last answered);
+//   * a `@machine` badge on every repo row, and `m` to filter the board to one machine;
+//   * an unverifiable machine keeps the rows of its last successful read, marked as such — blanking
+//     them would say the runs are gone when they are merely unobservable;
+//   * every action is sent through that run's OWN machine client, and names the machine when it asks
+//     for confirmation.
 //
 // Work is shown as a KANBAN BOARD per belt (kanban.ts): the belt's steps are columns, each work item is
 // a card in the column of the step it is currently in, and its state is carried by a colored ICON
@@ -20,8 +30,10 @@ import { BoxRenderable, ScrollBoxRenderable, StyledText, TextRenderable, bg, fg,
 import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";
 import { listConfiguredRepos } from "../config-paths.ts";
-import { fetchEligible, fetchHealth, fetchObligations, fetchStatus, fetchTimeline, postClaim, postResume, postRetryNow, postTeardown, postTick, serverPort, type ActiveRun, type EligibleItem, type RepoStatus } from "./api.ts";
-import { foldEligible, withoutClaimed } from "./eligible-cache.ts";
+import type { ActiveRun } from "./api.ts";
+import { withoutClaimed } from "./eligible-cache.ts";
+import { createFleetSource, filterMachines, fleetStatusLine, machineHeader, staleRunLine, type FleetView, type MachineView } from "./fleet-view.ts";
+import type { MachineClient } from "../fleet/index.ts";
 import { updateWarning } from "../watchers/update-status.ts";
 import { BORDER, theme } from "./theme.ts";
 import type { ChooseFn, ConfirmFn, PromptFn, ShowInfoFn, TabView } from "./types.ts";
@@ -40,17 +52,6 @@ const REFRESH_MS = 3000;
 const BOARD_INDENT = 2;
 /** Floor for the measured board width, so a cold start or a silly-narrow terminal still lays out. */
 const MIN_WIDTH = MIN_COLUMN_WIDTH;
-
-function fmtDuration(sec: number): string {
-  const s = Math.max(0, Math.floor(sec));
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d) return `${d}d ${h}h`;
-  if (h) return `${h}h ${m}m`;
-  if (m) return `${m}m`;
-  return `${s}s`;
-}
 
 /** kanban.ts's semantic tones → theme colors (the board itself never names a color); exported for
  *  the shell's footer icon legend (index.ts), which shares this mapping. */
@@ -98,8 +99,10 @@ function runNote(run: ActiveRun): { text: string; tone: Tone } | undefined {
   return undefined;
 }
 
-type RowKind = "repo" | "run" | "eligible" | "source";
+type RowKind = "repo" | "run" | "eligible" | "source" | "machine";
 interface Target {
+  /** The machine that owns this row — the ONLY machine an action on it may be sent to. */
+  machine: string;
   repo: string;
   kind: RowKind;
   key?: string;
@@ -110,6 +113,10 @@ interface Target {
   phase?: string;
   /** A detail too long for a card; surfaced on the action line when the card is highlighted. */
   note?: { text: string; tone: Tone };
+  /** Set on a row carried forward from an unverifiable machine: it is last-known state, so nothing
+   *  may be acted on through it (the machine is not answering — the action would fail anyway, but
+   *  saying so up front is the difference between "refused" and "maybe it worked"). */
+  stale?: boolean;
 }
 
 /** Desired state of one line (built in memory, then reconciled onto the rendered nodes): either a plain
@@ -164,9 +171,9 @@ export function createDashboard(
   root.add(list);
   root.add(actionLine);
 
+  const source = createFleetSource();
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
-  let serverUp = false;
   let lines: LineNode[] = [];
   let rows: Focus[] = []; // focusable cells/lines, in reading order
   let byLine = new Map<number, Focus[]>(); // line index -> its focusables, ordered by x
@@ -174,16 +181,22 @@ export function createDashboard(
   // True while the action line is holding a highlighted card's ⚠ note, so moving off it clears the note
   // without wiping a real action result.
   let showingNote = false;
+  // Belts per `<machine>|<repo>` — a claim has to pick a belt from the OWNING machine's config.
   const statusBelts = new Map<string, { name: string; beltType: string; source: string }[]>();
-  // Last SUCCESSFUL eligible result per repo, carried into the quick paint and across a failed
-  // fold-in so the eligible rows never blink out for a frame (see eligible-cache.ts).
-  const eligibleCache = new Map<string, { eligible: EligibleItem[] }>();
-  // The last rendered payload, so a terminal resize can re-lay the board (its column count is a
+  // The last rendered view, so a terminal resize can re-lay the board (its column count is a
   // function of width) without waiting for the next poll.
-  let lastPaint: Parameters<typeof renderStatus> | null = null;
+  let lastView: FleetView | null = null;
   let lastWidth = 0;
+  // Which machine the board is narrowed to; null = the whole fleet. Driven by `m`.
+  let machineFilter: string | null = null;
 
-  const rowKey = (t: Target) => `${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
+  const rowKey = (t: Target) => `${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
+  const beltsKey = (machine: string, repo: string) => `${machine}|${repo}`;
+  /** The machine as this view last saw it — how an action learns whether its target is answering. */
+  const machineOf = (name: string): MachineView | undefined => lastView?.machines.find((m) => m.name === name);
+  /** True once this install has a fleet: more than one machine. Everything machine-shaped in the
+   *  render is gated on it, so a single-machine dashboard looks exactly as it always has. */
+  const fleetMode = () => (lastView?.machines.length ?? 0) > 1;
   const setAction = (msg: string, fg: string) => {
     actionLine.content = msg;
     actionLine.fg = fg;
@@ -395,24 +408,8 @@ export function createDashboard(
     return cell < 0 ? undefined : candidates.find((c) => c.cell === cell);
   }
 
-  function renderStatus(
-    health: NonNullable<Awaited<ReturnType<typeof fetchHealth>>>,
-    repos: string[],
-    data: { name: string; st: RepoStatus | null; el: { eligible: EligibleItem[] } | null }[],
-  ): void {
-    serverUp = true;
-    lastPaint = [health, repos, data];
-    lastWidth = boardWidth();
-    statusBelts.clear();
-    // A warn-worthy last auto-update (failed / dirty-skip / behind its channel target) rides on the
-    // shell's status text in amber — the same signal the Doctor tab paints, surfaced up top too.
-    const updateNote = updateWarning();
-    setStatus(
-      `● server up · v${health.version} · uptime ${fmtDuration(health.uptimeSec)}${updateNote ? ` · ⚠ ${updateNote}` : ""}`,
-      updateNote ? theme.status.warn : theme.status.good,
-    );
-    const nowSec = Date.now() / 1000;
-    const specs: LineSpec[] = [];
+  /** One machine's repos, belts and boards. Emits into `specs`; returns nothing. */
+  function pushMachine(m: MachineView, specs: LineSpec[], nowSec: number, badge: boolean): void {
     const blank = () => specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
     /** Lay a set of lanes out and emit one board line per rendered row, carrying each card's target. */
     const pushBoard = (lanes: ReturnType<typeof buildLanes>, resolve: (card: { kind: string; key: string }) => Target | undefined) => {
@@ -424,8 +421,9 @@ export function createDashboard(
         });
       }
     };
-    for (const { name, st, el } of data) {
-      if (st) statusBelts.set(name, st.belts);
+    const suffix = badge ? `  @${m.name}` : "";
+    for (const { repo: name, status: st, eligible: cached } of m.repos) {
+      if (st) statusBelts.set(beltsKey(m.name, name), st.belts);
       const active = st?.active ?? [];
       // Repo-level problems (parked runs, suspended jobs, AWS creds, source auth) light the repo
       // row with a compact red ⚠ icon + count; the full detail is one keypress away — on the
@@ -434,11 +432,13 @@ export function createDashboard(
       const problems = st?.problems ?? [];
       specs.push({
         kind: "text",
-        content: `${name}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}${st?.machine ? `   ${st.machine}` : ""}`,
+        content: `${name}${suffix}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}${st?.machine ? `   ${st.machine}` : ""}`,
         fg: theme.accent,
         target: {
+          machine: m.name,
           repo: name,
           kind: "repo",
+          stale: m.stale,
           note: problems.length ? { text: `⚠ ${name}: ${problems.map((p) => p.detail).join(" · ")}`, tone: "bad" } : undefined,
         },
         problem: problems.length ? `⚠ ${problems.length} problem${problems.length === 1 ? "" : "s"} — press d` : undefined,
@@ -447,9 +447,24 @@ export function createDashboard(
         specs.push({ kind: "text", content: "  (status unavailable)", fg: theme.text.tertiary });
         continue;
       }
+      // An unverifiable machine's runs are LAST KNOWN, so they get plain rows rather than cards: a
+      // card carries a live state icon and a ticking age, and both would be a claim this read
+      // cannot make. The rows stay — that is the whole point — but they say what they are.
+      if (m.stale) {
+        for (const run of active) {
+          specs.push({
+            kind: "text",
+            content: `  ${staleRunLine(run)}`,
+            fg: theme.text.tertiary,
+            target: { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, stale: true },
+          });
+        }
+        if (active.length === 0) specs.push({ kind: "text", content: "  (no runs when it last answered)", fg: theme.text.tertiary });
+        continue;
+      }
       // Filter carried-forward eligible items against current runs: one may have been claimed since
       // the last successful fold-in, and would otherwise show as both a running and an eligible row.
-      const eligible = withoutClaimed(el?.eligible ?? [], active);
+      const eligible = withoutClaimed(cached, active);
       let boards = 0;
       for (const belt of st.belts) {
         const beltRuns = active.filter((r) => r.belt === belt.name);
@@ -461,10 +476,10 @@ export function createDashboard(
         pushBoard(lanes, (card) => {
           if (card.kind === "ready") {
             const item = beltEligible.find((i) => i.key === card.key);
-            return item && { repo: name, kind: "eligible", key: item.key, source: item.source, belt: item.belt };
+            return item && { machine: m.name, repo: name, kind: "eligible", key: item.key, source: item.source, belt: item.belt };
           }
           const run = beltRuns.find((r) => r.ticketKey === card.key);
-          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
+          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
         });
       }
       // Runs whose belt is no longer configured have no steps to make columns from — one full-width lane.
@@ -473,11 +488,51 @@ export function createDashboard(
         if (boards++) blank();
         pushBoard([looseLane("unassigned (no belt)", unassigned.map(toBoardRun), nowSec)], (card) => {
           const run = unassigned.find((r) => r.ticketKey === card.key);
-          return run && { repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
+          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
         });
       }
     }
-    if (repos.length === 0) specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });
+  }
+
+  function renderView(view: FleetView): void {
+    lastView = view;
+    lastWidth = boardWidth();
+    statusBelts.clear();
+    // A warn-worthy last auto-update (failed / dirty-skip / behind its channel target) rides on the
+    // shell's status text in amber — the same signal the Doctor tab paints, surfaced up top too.
+    // With a fleet, each remote's own `/health` summary rides there with it (fleetStatusLine).
+    const status = fleetStatusLine(view, updateWarning() ?? null);
+    setStatus(status.text, status.tone === "warn" ? theme.status.warn : theme.status.good);
+
+    const fleet = view.machines.length > 1;
+    const shown = filterMachines(view, machineFilter);
+    const nowSec = Date.now() / 1000;
+    const specs: LineSpec[] = [];
+    for (const m of shown) {
+      if (fleet) {
+        const header = machineHeader(m, view.readAt);
+        if (specs.length) specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
+        specs.push({
+          kind: "text",
+          content: header.text,
+          fg: toneColor(header.tone),
+          target: { machine: m.name, repo: "", kind: "machine", stale: m.stale },
+        });
+      }
+      // The local machine with no server and nothing remembered: list what IS configured here, as
+      // the single-machine dashboard always has — a repo list with a hint beats an empty screen.
+      if (m.local && m.state === "unverifiable" && m.repos.length === 0) {
+        for (const name of listConfiguredRepos()) {
+          specs.push({ kind: "text", content: `${name}   (server down)`, fg: theme.text.tertiary, target: { machine: m.name, repo: name, kind: "repo", stale: true } });
+        }
+        continue;
+      }
+      pushMachine(m, specs, nowSec, fleet);
+    }
+    if (specs.length === 0) {
+      specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });
+    }
+    if (machineFilter) specs.push({ kind: "text", content: `  (showing ${machineFilter} only — press m for all machines)`, fg: theme.text.tertiary });
     reconcile(specs);
   }
 
@@ -485,69 +540,88 @@ export function createDashboard(
     if (inFlight) return;
     inFlight = true;
     try {
-      const health = await fetchHealth();
-      if (timer === null) return; // deactivated mid-flight
-      const repos = listConfiguredRepos();
-      if (!health) {
-        serverUp = false;
-        lastPaint = null;
-        statusBelts.clear();
-        const specs: LineSpec[] = [];
-        setStatus("⚠ server not running — start it with `herdr-factory serve`", theme.status.warn);
-        if (repos.length === 0) specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });
-        for (const name of repos) specs.push({ kind: "text", content: `${name}   (server down)`, fg: theme.text.tertiary, target: { repo: name, kind: "repo" } });
-        reconcile(specs);
-        return;
-      }
-
-      // Start all repo and source requests together. Status is intentionally quick (no auth/AWS or
-      // worker probes), so the hierarchy paints as soon as it arrives; slower eligible queries fold
-      // in afterward without holding the first useful frame.
-      const eligibleRequests = repos.map((name) => fetchEligible(name));
-      const statuses = await Promise.all(repos.map((name) => fetchStatus(name)));
-      if (timer === null) return;
-      // Quick paint carries the last good eligible items (eligibleCache) rather than blanking them, so
-      // the rows survive the phase-1 gap before the fold-in — the flicker in the recording.
-      renderStatus(health, repos, repos.map((name, i) => ({ name, st: statuses[i] ?? null, el: eligibleCache.get(name) ?? null })));
-
-      const eligible = await Promise.all(eligibleRequests);
-      if (timer === null) return;
-      // Fold fresh results in (keeping the last good value where a query failed/timed out), then paint.
-      foldEligible(eligibleCache, repos, eligible);
-      renderStatus(health, repos, repos.map((name, i) => ({ name, st: statuses[i] ?? null, el: eligibleCache.get(name) ?? null })));
+      // The source paints twice: the quick status view, then the same view with eligible work folded
+      // in. `timer === null` means the tab was left mid-flight — drop the paint rather than writing
+      // onto another tab.
+      await source.poll(renderView, () => timer === null);
+    } catch (e) {
+      if (timer !== null) setAction(`✗ could not read the fleet: ${e instanceof Error ? e.message : String(e)}`, theme.status.bad);
     } finally {
       inFlight = false;
     }
   }
 
-  // A resize changes how many columns fit, so re-lay the last payload instead of waiting out the poll.
+  // The fleet holds an SSH forward per remote machine for the life of the session — released when
+  // the TUI itself goes, not on a tab switch (which would re-handshake every time you came back).
+  renderer.on("destroy", () => source.close());
+
+  // A resize changes how many columns fit, so re-lay the last view instead of waiting out the poll.
   renderer.on("resize", () => {
-    if (timer === null || !lastPaint || boardWidth() === lastWidth) return;
-    renderStatus(...lastPaint);
+    if (timer === null || !lastView || boardWidth() === lastWidth) return;
+    renderView(lastView);
   });
 
   // ── actions (each confirmed; result shown on actionLine; then refresh) ────────────────────────
-  async function doTick(repo: string): Promise<void> {
-    if (!serverUp) return setAction("server not running", theme.status.warn);
-    if (!(await confirm(`Run a reconcile tick on "${repo}"?`))) return;
-    setAction(`ticking ${repo}…`, theme.text.secondary);
-    const r = await postTick(repo);
-    setAction(r.ok ? `✓ tick ran on "${repo}"` : `✗ tick failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
+
+  /**
+   * The ONE client an action on `t` may use: the machine that owns the run. Everything mutating
+   * goes through here, so acting on the wrong machine — tearing down a stranger's worktree because
+   * two boxes carry the same key — is not something this file can express.
+   *
+   * Null means refused, with the reason already on the action line: a machine that is not answering
+   * cannot be acted on, and a row carried forward from one is last-known state, not a live run.
+   */
+  function route(t: Target): MachineClient | null {
+    if (t.kind === "machine") {
+      setAction("a machine header is not actionable — pick one of its repos or cards", theme.text.secondary);
+      return null;
+    }
+    const m = machineOf(t.machine);
+    if (!m || m.state === "unverifiable" || t.stale) {
+      setAction(
+        fleetMode() ? `✗ ${t.machine} is unverifiable — it cannot be acted on until it answers again` : "server not running",
+        theme.status.warn,
+      );
+      return null;
+    }
+    const client = source.clientFor(t.machine);
+    if (!client) {
+      setAction(`✗ ${t.machine} is no longer in the fleet`, theme.status.warn);
+      return null;
+    }
+    return client;
+  }
+
+  /** " on <machine>" — appended to a confirmation so a destructive key names where it lands. Empty
+   *  on a one-machine install, where there is nowhere else it could go. */
+  const on = (t: Target) => (fleetMode() ? ` on ${t.machine}` : "");
+
+  async function doTick(t: Target): Promise<void> {
+    const client = route(t);
+    if (!client) return;
+    if (!(await confirm(`Run a reconcile tick on "${t.repo}"${on(t)}?`))) return;
+    setAction(`ticking ${t.repo}…`, theme.text.secondary);
+    const r = await client.tick(t.repo);
+    setAction(r.ok ? `✓ tick ran on "${t.repo}"${on(t)}` : `✗ tick failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
     void refresh();
   }
 
   async function doTeardown(t: Target): Promise<void> {
-    if (!serverUp || !t.key) return;
-    if (!(await confirm(`Tear down "${t.key}" (removes its worktree)?`))) return;
+    if (!t.key) return;
+    const client = route(t);
+    if (!client) return;
+    if (!(await confirm(`Tear down "${t.key}"${on(t)} (removes its worktree)?`))) return;
     setAction(`tearing down ${t.key}…`, theme.text.secondary);
-    const r = await postTeardown(t.repo, t.key, t.source);
-    setAction(r.ok ? `✓ torn down "${t.key}"` : `✗ teardown failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
+    const r = await client.teardown(t.repo, t.key, t.source);
+    setAction(r.ok ? `✓ torn down "${t.key}"${on(t)}` : `✗ teardown failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
     void refresh();
   }
 
   async function doClaim(t: Target): Promise<void> {
-    if (!serverUp || !t.key) return;
-    const belts = (statusBelts.get(t.repo) ?? []).filter((b) => b.source === t.source);
+    if (!t.key) return;
+    const client = route(t);
+    if (!client) return;
+    const belts = (statusBelts.get(beltsKey(t.machine, t.repo)) ?? []).filter((b) => b.source === t.source);
     let belt: string;
     if (t.belt) {
       belt = t.belt;
@@ -560,10 +634,10 @@ export function createDashboard(
       if (!pick) return;
       belt = pick;
     }
-    if (!(await confirm(`Claim "${t.key}" onto belt "${belt}"?`))) return;
+    if (!(await confirm(`Claim "${t.key}" onto belt "${belt}"${on(t)}?`))) return;
     setAction(`claiming ${t.key}…`, theme.text.secondary);
-    const r = await postClaim(t.repo, t.key, belt);
-    setAction(r.ok ? `✓ claimed "${t.key}" onto "${belt}"` : `✗ claim failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
+    const r = await client.claim(t.repo, t.key, belt);
+    setAction(r.ok ? `✓ claimed "${t.key}" onto "${belt}"${on(t)}` : `✗ claim failed: ${r.error}`, r.ok ? theme.status.good : theme.status.bad);
     void refresh();
   }
 
@@ -585,22 +659,23 @@ export function createDashboard(
    * else suspends after 10 flat 30s retries and waits for this key (or `retry-now` on the CLI).
    */
   async function doResumeOrRetry(t: Target): Promise<void> {
-    if (!serverUp) return setAction("server not running", theme.status.warn);
+    const client = route(t);
+    if (!client) return;
     if (t.kind === "run" && t.key && t.phase === "attention") {
-      if (!(await confirm(`Resume "${t.key}" (un-park it and pick up where it left off)?`))) return;
+      if (!(await confirm(`Resume "${t.key}"${on(t)} (un-park it and pick up where it left off)?`))) return;
       setAction(`resuming ${t.key}…`, theme.text.secondary);
-      const r = await postResume(t.repo, t.key, t.source);
+      const r = await client.resume(t.repo, t.key, t.source);
       if (!r.ok) setAction(`✗ resume failed: ${r.error}`, theme.status.bad);
       else if (!r.body.ok) setAction(`✗ ${t.key}: ${r.body.message ?? "could not be resumed"}`, theme.status.warn);
-      else setAction(`✓ resumed "${t.key}" → ${r.body.phase ?? "running"}`, theme.status.good);
+      else setAction(`✓ resumed "${t.key}"${on(t)} → ${r.body.phase ?? "running"}`, theme.status.good);
       void refresh();
       return;
     }
     const perRun = t.kind === "run" && t.key != null;
     const scope = perRun ? `"${t.key}"` : `"${t.repo}"`;
-    if (!(await confirm(`Clear ${scope}'s suspended background jobs and retry them now (uploads, source write-backs)?`))) return;
+    if (!(await confirm(`Clear ${scope}'s suspended background jobs${on(t)} and retry them now (uploads, source write-backs)?`))) return;
     setAction(`retrying ${perRun ? t.key : t.repo}…`, theme.text.secondary);
-    const r = await postRetryNow(t.repo, perRun ? t.key : undefined, t.source);
+    const r = await client.retryNow(t.repo, perRun ? t.key : undefined, t.source);
     if (!r.ok) setAction(`✗ retry failed: ${r.error}`, theme.status.bad);
     else if (!r.body.ok) setAction(`✗ ${r.body.message ?? "nothing to retry"}`, theme.status.warn);
     else if ((r.body.requeued ?? 0) === 0) setAction(`${scope}: no suspended or waiting jobs`, theme.text.secondary);
@@ -618,11 +693,13 @@ export function createDashboard(
    *  entries that light the repo row's ⚠), then every failing diagnostic — a healthy line stays
    *  green/plain. */
   async function openDetail(t: Target): Promise<void> {
-    if (!serverUp) return setAction("server not running", theme.status.warn);
-    const modal = showInfo(`${t.repo} — Detail`, ["Loading repository detail and running diagnostics…"]);
-    const [st, eligibleResult] = await Promise.all([fetchStatus(t.repo, true), fetchEligible(t.repo)]);
+    const client = route(t);
+    if (!client) return;
+    const title = `${t.repo}${on(t)} — Detail`;
+    const modal = showInfo(title, ["Loading repository detail and running diagnostics…"]);
+    const [st, eligibleResult] = await Promise.all([client.status(t.repo, true), client.eligible(t.repo)]);
     if (!st) {
-      modal.update(`${t.repo} — Detail`, [{ text: "✗ Could not load repository detail. The server did not return repo status.", tone: "bad" }]);
+      modal.update(title, [{ text: "✗ Could not load repository detail. The server did not return repo status.", tone: "bad" }]);
       return;
     }
     type Line = Parameters<typeof modal.update>[1][number];
@@ -665,32 +742,36 @@ export function createDashboard(
       output.push("");
     }
     if (st.belts.length === 0) output.push(dim("  (none configured)"));
-    modal.update(`${t.repo} — Detail`, output);
+    modal.update(title, output);
   }
 
   const timelineLine = (e: { ts: number; type: string; detail: string | null }) =>
     `${fmtTime(e.ts)}  ${e.type}${e.detail ? "  " + e.detail : ""}`;
 
   async function openTimeline(t: Target): Promise<void> {
-    if (!serverUp || !t.key) return;
+    if (!t.key) return;
+    const client = route(t);
+    if (!client) return;
     setAction(`loading timeline for ${t.key}…`, theme.text.secondary);
-    const res = await fetchTimeline(t.repo, t.key);
+    const res = await client.timeline(t.repo, t.key);
     if (!res) return setAction(`✗ could not load timeline for ${t.key}`, theme.status.bad);
     setAction("", theme.text.tertiary);
-    showInfo(`${t.key} — timeline`, res.timeline.map(timelineLine));
+    showInfo(`${t.key}${on(t)} — timeline`, res.timeline.map(timelineLine));
   }
 
   /** Full read-only detail for one active work item: overview + belt step progress + timeline. Pulls a
    *  fresh detailed status (so the live worker/pane state is populated, unlike the quick refresh loop)
    *  alongside the timeline; degrades to just the timeline if the run has ended in the meantime. */
   async function openWorkItemDetail(t: Target): Promise<void> {
-    if (!serverUp || !t.key) return;
-    const title = `${t.key} — detail`;
+    if (!t.key) return;
+    const client = route(t);
+    if (!client) return;
+    const title = `${t.key}${on(t)} — detail`;
     const modal = showInfo(title, ["Loading work item detail…"]);
     const [st, tl, ob] = await Promise.all([
-      fetchStatus(t.repo, true),
-      fetchTimeline(t.repo, t.key),
-      fetchObligations(t.repo, t.key, t.source ?? undefined),
+      client.status(t.repo, true),
+      client.timeline(t.repo, t.key),
+      client.obligations(t.repo, t.key, t.source ?? undefined),
     ]);
     const timelineLines = (tl?.timeline ?? []).map(timelineLine);
     const run = st?.active.find((r) => r.ticketKey === t.key && (!t.source || r.workSource === t.source));
@@ -732,6 +813,21 @@ export function createDashboard(
     ));
   }
 
+  /** `m` — narrow the board to one machine, or widen it back to the whole fleet. A one-machine
+   *  install says so rather than opening a picker with a single entry. */
+  async function pickMachine(): Promise<void> {
+    const view = lastView;
+    if (!view || view.machines.length <= 1) return setAction("this is the only machine in the fleet", theme.text.secondary);
+    const pick = await choose("Show which machine?", [
+      { label: "all machines", value: "" },
+      ...view.machines.map((m) => ({ label: `${m.name}${m.state === "unverifiable" ? " (unverifiable)" : ""}`, value: m.name })),
+    ]);
+    if (pick === null) return;
+    machineFilter = pick || null;
+    setAction(machineFilter ? `showing ${machineFilter} only` : "showing every machine", theme.text.secondary);
+    renderView(view);
+  }
+
   list.onKeyDown = (key: KeyEvent) => {
     if (rows.length === 0) return;
     const t = rows[hi]?.target;
@@ -758,7 +854,11 @@ export function createDashboard(
         key.preventDefault();
         break;
       case "t":
-        if (t) void doTick(t.repo);
+        if (t) void doTick(t);
+        key.preventDefault();
+        break;
+      case "m":
+        void pickMachine();
         key.preventDefault();
         break;
       case "x":
@@ -806,3 +906,4 @@ export function createDashboard(
     },
   };
 }
+

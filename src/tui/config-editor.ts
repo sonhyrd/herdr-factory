@@ -509,7 +509,10 @@ export function createConfigEditor(renderer: CliRenderer, modals: EditorModals):
     border: true,
     borderStyle: BORDER,
     borderColor: theme.border.inactive,
-    title: sectionTitle(1, "repos"),
+    // Named for the machine it edits: the dashboard spans the fleet, this tab does not. Config
+    // lives on each host (`~/.config/herdr-factory/repos`), and editing another machine's from here
+    // would be a write across a link the factory deliberately does not have.
+    title: `${sectionTitle(1, "repos")}(this machine) `,
     titleColor: theme.focusText.unfocused,
   });
   const repoSelect = new SelectRenderable(renderer, {

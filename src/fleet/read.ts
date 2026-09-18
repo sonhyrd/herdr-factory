@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { fleetLastSeenPath } from "../config-paths.ts";
 import type { MachineClient } from "./client.ts";
-import type { ActiveRun, RepoStatus } from "./shapes.ts";
+import type { ActiveRun, Health, RepoStatus } from "./shapes.ts";
 
 /** Default per-machine budget. Generous enough for an SSH forward's first round trip, short enough
  *  that a dead box costs one pause and not a hung command. */
@@ -158,25 +158,76 @@ function flatten(machine: string, status: RepoStatus, now: number): FleetRun[] {
   }));
 }
 
-/** Read ONE machine: /health for its version and repo list, then each repo's status. Answers a
- *  reachable machine's whole picture, or null if the machine never answered /health. */
-async function readMachine(client: MachineClient, repos: string[] | undefined, now: number): Promise<Omit<FleetMachine, "lastSeenAt"> | null> {
-  const health = await client.health();
-  if (!health) return null;
-  const names = (repos ?? health.repos.map((r) => r.name)).filter((name) => repos === undefined || health.repos.some((r) => r.name === name));
-  const statuses = (await Promise.all(names.map((name) => client.status(name)))).filter((s): s is RepoStatus => s !== null);
-  const m = client.machine;
-  return {
-    name: m.name,
-    sshTarget: m.sshTarget,
-    local: m.local,
-    state: "ok",
-    version: health.version,
-    machineLine: statuses.find((s) => s.machine)?.machine,
-    repos: names,
-    runs: statuses.flatMap((s) => flatten(m.name, s, now)),
-    problems: statuses.flatMap((s) => (s.problems ?? []).map((p) => ({ repo: s.repo, kind: p.kind, detail: p.detail }))),
-  };
+/** One machine's verdict, whatever the caller went there to read. `payload` is null exactly when
+ *  `state` is `unverifiable` — the machine did not answer, so nothing it owns is known. */
+export interface MachineRead<T> {
+  name: string;
+  sshTarget: string | null;
+  local: boolean;
+  state: "ok" | "unverifiable";
+  version: string | null;
+  lastSeenAt: number | null;
+  detail?: string;
+  payload: T | null;
+}
+
+/**
+ * Read every machine in parallel, each under its own budget, and turn silence into `unverifiable`
+ * rather than emptiness. WHAT is read is the caller's: `readFleet` wants each repo's status, the
+ * TUI also wants its eligible items — but the timeout, the verdict and the last-seen memo are the
+ * fleet's and must not be reimplemented per surface, or one of them will report a machine it could
+ * not reach as a machine with nothing on it.
+ *
+ * `read` is called only for a machine that answered `/health`, and is handed that health so it
+ * needn't ask twice.
+ */
+export async function readMachines<T>(
+  clients: MachineClient[],
+  read: (client: MachineClient, health: Health) => Promise<T>,
+  opts: ReadFleetOpts = {},
+): Promise<{ readAt: number; machines: MachineRead<T>[] }> {
+  const now = opts.now?.() ?? Math.floor(Date.now() / 1000);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_MACHINE_TIMEOUT_MS;
+  const lastSeen = opts.lastSeen ?? fileLastSeenStore();
+
+  const machines = await Promise.all(
+    clients.map(async (client): Promise<MachineRead<T>> => {
+      const m = client.machine;
+      const base = { name: m.name, sshTarget: m.sshTarget, local: m.local };
+      const unverifiable = (detail: string): MachineRead<T> => ({
+        ...base,
+        state: "unverifiable",
+        version: null,
+        lastSeenAt: lastSeen.get(m.name),
+        detail,
+        payload: null,
+      });
+      let got: { health: Health; payload: T } | null | typeof TIMED_OUT;
+      try {
+        got = await withTimeout(
+          (async () => {
+            const health = await client.health();
+            return health && { health, payload: await read(client, health) };
+          })(),
+          timeoutMs,
+        );
+      } catch (e) {
+        return unverifiable(e instanceof Error ? e.message : String(e));
+      }
+      if (got === TIMED_OUT) return unverifiable(`no answer within ${timeoutMs}ms`);
+      if (got === null) return unverifiable(m.local ? "no server running here" : "could not reach its API");
+      lastSeen.set(m.name, now);
+      return { ...base, state: "ok", version: got.health.version, lastSeenAt: now, payload: got.payload };
+    }),
+  );
+  return { readAt: now, machines };
+}
+
+/** The repos of `health` this read is interested in — every one, or the asked-for subset a machine
+ *  actually serves. */
+export function repoNamesFor(health: Health, repos: string[] | undefined): string[] {
+  if (repos === undefined) return health.repos.map((r) => r.name);
+  return repos.filter((name) => health.repos.some((r) => r.name === name));
 }
 
 /**
@@ -184,39 +235,28 @@ async function readMachine(client: MachineClient, repos: string[] | undefined, n
  * clients' order (the local machine first, then herdr's), so the table is stable between reads.
  */
 export async function readFleet(clients: MachineClient[], opts: ReadFleetOpts = {}): Promise<FleetSnapshot> {
-  const now = opts.now?.() ?? Math.floor(Date.now() / 1000);
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_MACHINE_TIMEOUT_MS;
-  const lastSeen = opts.lastSeen ?? fileLastSeenStore();
-
-  const machines = await Promise.all(
-    clients.map(async (client): Promise<FleetMachine> => {
-      const m = client.machine;
-      const unverifiable = (detail: string): FleetMachine => ({
-        name: m.name,
-        sshTarget: m.sshTarget,
-        local: m.local,
-        state: "unverifiable",
-        version: null,
-        lastSeenAt: lastSeen.get(m.name),
-        detail,
-        repos: [],
-        runs: [],
-        problems: [],
-      });
-      let read: Awaited<ReturnType<typeof readMachine>> | typeof TIMED_OUT;
-      try {
-        read = await withTimeout(readMachine(client, opts.repos, now), timeoutMs);
-      } catch (e) {
-        return unverifiable(e instanceof Error ? e.message : String(e));
-      }
-      if (read === TIMED_OUT) return unverifiable(`no answer within ${timeoutMs}ms`);
-      if (read === null) return unverifiable(m.local ? "no server running here" : "could not reach its API");
-      lastSeen.set(m.name, now);
-      return { ...read, lastSeenAt: now };
-    }),
+  const read = await readMachines(
+    clients,
+    async (client, health) => {
+      const names = repoNamesFor(health, opts.repos);
+      return { names, statuses: (await Promise.all(names.map((name) => client.status(name)))).filter((s): s is RepoStatus => s !== null) };
+    },
+    opts,
   );
-
-  return { readAt: now, machines, runs: machines.flatMap((m) => m.runs) };
+  const machines = read.machines.map((m): FleetMachine => {
+    const common = { name: m.name, sshTarget: m.sshTarget, local: m.local, version: m.version, lastSeenAt: m.lastSeenAt };
+    if (!m.payload) return { ...common, state: "unverifiable", detail: m.detail, repos: [], runs: [], problems: [] };
+    const { names, statuses } = m.payload;
+    return {
+      ...common,
+      state: "ok",
+      machineLine: statuses.find((s) => s.machine)?.machine,
+      repos: names,
+      runs: statuses.flatMap((s) => flatten(m.name, s, read.readAt)),
+      problems: statuses.flatMap((s) => (s.problems ?? []).map((p) => ({ repo: s.repo, kind: p.kind, detail: p.detail }))),
+    };
+  });
+  return { readAt: read.readAt, machines, runs: machines.flatMap((m) => m.runs) };
 }
 
 /** An action's target: the one machine that owns the run, and the run itself. */

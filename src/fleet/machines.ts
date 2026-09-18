@@ -6,7 +6,16 @@
 // A herdr that cannot answer (not installed, no server, an older CLI without `machine list`) leaves
 // the fleet as the local machine alone, which is exactly the single-machine behaviour that shipped
 // before: the fleet view of a one-machine install must never be worse than `status` was.
-import { run } from "../clients/exec.ts";
+//
+// The one subprocess here is spawned with node's own `execFile` rather than `clients/exec.ts`: the
+// TUI's eagerly-built Dashboard reads the fleet, and `clients/exec.ts` pulls the Effect + OTel
+// telemetry stack (~2s of cold module load) onto the startup path — the pull that
+// `test/tui-startup-graph.test.ts` exists to catch. Same posture as `watchers/update-status.ts`:
+// a telemetry-free leaf for the readers, the instrumented path for the engine.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const pexecFile = promisify(execFile);
 
 /** The fleet's name for the machine the command runs on. Not a herdr profile — there is no SSH
  *  target and no forward; its API is read through server.json like the TUI has always done. */
@@ -72,10 +81,14 @@ export interface ListMachinesOpts {
 
 async function readProfilesViaHerdr(): Promise<unknown> {
   // Short budget: fleet discovery runs ahead of every fleet read, and a wedged herdr must not hold
-  // the whole view. `allowFail` because an older herdr answers non-zero for an unknown subcommand.
-  const r = await run(process.env.HERDR_BIN_PATH ?? "herdr", ["machine", "list", "--json"], { allowFail: true, timeoutMs: 5000 });
-  if (r.code !== 0) throw new Error(`herdr machine list failed (code ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 200)}`);
-  return JSON.parse(r.stdout || "[]");
+  // the whole view. A non-zero exit (an older herdr has no `machine list`) is a reason, not a crash.
+  try {
+    const { stdout } = await pexecFile(process.env.HERDR_BIN_PATH ?? "herdr", ["machine", "list", "--json"], { timeout: 5000, encoding: "utf8" });
+    return JSON.parse(stdout || "[]");
+  } catch (e) {
+    const err = e as { stderr?: string; stdout?: string; message?: string };
+    throw new Error(`herdr machine list failed: ${(err.stderr || err.stdout || err.message || "").trim().slice(0, 200)}`);
+  }
 }
 
 /** The fleet: the local machine first, then herdr's enabled saved machines in herdr's own order. */
