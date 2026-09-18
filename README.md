@@ -1619,6 +1619,12 @@ unchanged.
   verifies the vendored Node starts and names the missing system package if not.
 - **Windows** — not yet; the service seam is one scheduled `ensure-up` command.
 
+A host with no service manager (`HERDR_SKIP_SERVICE=1`) is supervised by a shell loop,
+`while :; do herdr-factory ensure-up; sleep 60; done` — that loop is also what runs auto-update there.
+The updater's git never prompts on the loop's terminal and is killed after 120s, so a stuck fetch
+can't freeze it; `doctor` warns `auto-update stalled — last check <age>` if no attempt is recorded
+for 30 minutes, and `herdr-factory fleet` marks a machine running a different build.
+
 Running one fork and one config on several machines (fork install, config dir as a private git
 clone, `HERDR_SKIP_SERVICE=1` hosts, `claim_guard`): see
 [`skills/herdr-factory/references/install-and-operate.md`](skills/herdr-factory/references/install-and-operate.md#several-machines).
