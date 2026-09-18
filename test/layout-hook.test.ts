@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseEventPayload, claimApply, releaseApply, alreadyApplied, isDecided, markDecided, reapOrphanClaims, runLayoutStartup, ownPanes, DEFAULT_IGNORED_PANE_LABELS } from "../src/core/layout-hook.ts";
 import { resolveHookLayout } from "../src/core/layout-match.ts";
-import type { BeltConfig, LayoutConfig } from "../src/config.ts";
+import type { BeltConfig, LayoutConfig, LayoutPane, StepConfig } from "../src/config.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -150,6 +150,9 @@ describe("resolveHookLayout — factory-owned vs manual worktree", () => {
     { id: "hot", tabs: [{ panes: [{ persist: true, env: {}, setup: false }] }] },
   ];
   const belt = (over: Partial<BeltConfig>): BeltConfig => ({ name: "b", beltType: "custom", source: "s", priority: 100, active: true, steps: [], watchPr: false, ...over });
+  // Terse literals: only the fields resolveHookLayout/pruneLayoutToBelt read matter.
+  const stepAt = (name: string, tab?: string, pane?: string): StepConfig => ({ name, type: name, tab, pane }) as StepConfig;
+  const agentPane = (title: string): LayoutPane => ({ title, agent: { kind: "claude", args: [] }, persist: true, env: {}, setup: false });
 
   it("uses the owning run's belt when the worktree is factory-owned", () => {
     const belts = [belt({ name: "a", priority: 1, defaultLayout: "web" }), belt({ name: "b", priority: 2, defaultLayout: "hot" })];
@@ -170,5 +173,82 @@ describe("resolveHookLayout — factory-owned vs manual worktree", () => {
   });
   it("undefined when no belt yields a layout", () => {
     expect(resolveHookLayout([belt({})], layouts, undefined, "any-branch")).toBeUndefined();
+  });
+
+  // #29: layouts are a shared library — a short belt reusing a long belt's layout must not come up
+  // with tabs (and agents) for steps it never dispatches.
+  describe("a factory-owned run only gets the tabs its belt uses", () => {
+    // The four-tab ship layout of the issue: work / evidence (+ an SSR server pane) / review / pr.
+    const ship: LayoutConfig = {
+      id: "ship",
+      tabs: [
+        { title: "work", panes: [agentPane("agent")] },
+        { title: "evidence", panes: [agentPane("agent"), { title: "server", command: "pnpm dev", persist: true, env: {}, setup: false }] },
+        { title: "review", panes: [agentPane("agent")] },
+        { title: "pr", panes: [agentPane("agent")] },
+      ],
+    };
+    const quick = belt({ name: "quick", defaultLayout: "ship", steps: [stepAt("work", "work", "agent"), stepAt("pr", "pr", "agent")] });
+
+    it("builds only the tabs a step targets, and names what it dropped", () => {
+      const got = resolveHookLayout([quick], [ship], "quick", "feature/x");
+      expect(got?.layout.tabs.map((t) => t.title)).toEqual(["work", "pr"]);
+      expect(got?.prunedTabs).toEqual(["evidence", "review"]);
+      expect(ship.tabs).toHaveLength(4); // the config's layout library is not mutated
+    });
+
+    it("a belt that uses every tab gets the layout untouched", () => {
+      const full = belt({
+        name: "ship",
+        defaultLayout: "ship",
+        steps: [stepAt("work", "work", "agent"), stepAt("evidence", "evidence", "agent"), stepAt("review", "review", "agent"), stepAt("pr", "pr", "agent")],
+      });
+      const got = resolveHookLayout([full], [ship], "ship", "feature/x");
+      expect(got?.layout).toBe(ship);
+      expect(got?.prunedTabs).toEqual([]);
+    });
+
+    it("a hand-created worktree (no owning run) still gets every tab", () => {
+      const got = resolveHookLayout([quick], [ship], undefined, "feature/x");
+      expect(got?.layout).toBe(ship);
+      expect(got?.prunedTabs).toEqual([]);
+    });
+
+    it("keeps an untargeted tab that hosts the layout's setup pane", () => {
+      const withSetup: LayoutConfig = {
+        id: "ship",
+        setup: { command: "pnpm install", blocking: true },
+        tabs: [
+          { title: "work", panes: [agentPane("agent")] },
+          { title: "evidence", panes: [{ title: "server", command: "pnpm dev", persist: true, env: {}, setup: true }] },
+          { title: "pr", panes: [agentPane("agent")] },
+        ],
+      };
+      const got = resolveHookLayout([quick], [withSetup], "quick", "feature/x");
+      expect(got?.layout.tabs.map((t) => t.title)).toEqual(["work", "evidence", "pr"]);
+    });
+
+    it("keeps an untargeted tab whose pane carries its own prompt", () => {
+      const withPrompt: LayoutConfig = {
+        id: "ship",
+        tabs: [
+          { title: "work", panes: [agentPane("agent")] },
+          { title: "scratch", panes: [{ ...agentPane("agent"), agent: { kind: "claude", args: [], prompt: "watch the logs" } }] },
+          { title: "pr", panes: [agentPane("agent")] },
+        ],
+      };
+      const got = resolveHookLayout([quick], [withPrompt], "quick", "feature/x");
+      expect(got?.layout.tabs.map((t) => t.title)).toEqual(["work", "scratch", "pr"]);
+    });
+
+    it("a belt whose steps target no pane at all leaves the layout whole (never an empty build)", () => {
+      const dedicated = belt({ name: "quick", defaultLayout: "ship", steps: [stepAt("work"), stepAt("pr")] });
+      expect(resolveHookLayout([dedicated], [ship], "quick", "feature/x")?.layout).toBe(ship);
+    });
+
+    it("tab titles that match nothing in the layout leave it whole (the step's layout wait reports it)", () => {
+      const elsewhere = belt({ name: "quick", defaultLayout: "ship", steps: [stepAt("work", "dev", "agent")] });
+      expect(resolveHookLayout([elsewhere], [ship], "quick", "feature/x")?.layout).toBe(ship);
+    });
   });
 });

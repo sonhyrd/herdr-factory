@@ -1134,6 +1134,14 @@ belt:
   none, never another belt's. Only a hand-created worktree (no owning run) resolves by walking the
   repo's belts. Layouts are keyed to the repo by the config file (one config = one repo), so no
   repo path is restated.
+- **Only the tabs the belt uses** — a layout is a shared library entry, usually written for the
+  longest belt that uses it, so a factory-claimed worktree gets only the tabs **this** belt's steps
+  target by title. A `work`→`pr` belt pointing at a four-tab ship layout comes up with two tabs; no
+  terminal and no agent is started for a step that will never dispatch. A tab with work of its own
+  survives being untargeted: the one hosting the `setup: true` pane, and one whose pane carries its
+  own `prompt`. Nothing is pruned when the belt's steps target no layout pane at all, when no step's
+  `tab` matches any tab in the layout (a mismatch the step's layout wait reports), or for a
+  hand-created worktree — no belt dispatches into that one, so nothing in it is unused.
 - **Idempotent** — applied exactly once per worktree, and only to a **fresh** (1-tab/1-pane) linked
   worktree, so it never clobbers an arranged or restored workspace. Panes a herdr **plugin** adds to
   every new tab (a sidebar) are not arrangement: labels listed in `machine.yml`'s

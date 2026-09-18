@@ -301,6 +301,21 @@ are the HOST's; default `[Sidebar]`, matched case-insensitively, `[]` to discoun
 remaining own pane ⇒ fresh. `tab_count` is still checked raw, and a pane the user opened himself
 still declines the build (that's the case the guard exists for).
 
+**A factory-owned run builds only the tabs its belt uses.** Layouts are a shared LIBRARY: the same
+entry commonly serves several belts and is written for the longest of them, so applying it whole gave
+a short belt idle terminals — and idle agents — for steps it never dispatches (a `work`→`pr` belt on a
+four-tab ship layout came up with four tabs, two of them running Cursor for nobody). `pruneLayoutToBelt`
+(`layout-match.ts`, pure) keeps the tabs whose title some step on the OWNING belt targets, plus the
+tabs with work of their own: the one hosting the `setup: true` pane (the setup command runs nowhere
+else) and any tab with a pane carrying its own `prompt` (the documented way to put agent work in a
+pane no step targets — §4/README). The pruning is deliberately narrow: it applies only where a belt is
+actually dispatching (an owned run — a hand-created worktree gets the layout as written), it is a
+no-op when the belt targets no layout pane at all, and it never reduces a layout to nothing — a belt
+whose `tab` titles match none of the layout's leaves it whole, so the mismatch still surfaces as the
+step's own `layout_wait` rather than as an empty build. What was dropped is logged and recorded on the
+`layout_applied` event (`detail.prunedTabs`). It is the other half of the rule above that a layout-LESS
+belt inherits no neighbour's layout: a belt that *has* one still doesn't build the half it never uses.
+
 A belt step then simply *targets* a resulting pane via its own `tab`/`pane` (from its `steps[]`
 entry); that pane declares its own agent (`agent: claude` + `agent_args`) so the build brings one up
 there (config-load rejects a step whose target pane starts no agent at all, and a `default_layout`
