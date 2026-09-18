@@ -67,6 +67,7 @@ herdr.killAgent(paneId);                  // genuinely kill it — nothing is ly
 herdr.failSubcommand("agent start");      // adoption fails
 herdr.stallPrompt(paneId);                // the submission is dropped
 herdr.latency(700, ["agent list"]);       // slow herdr, scoped
+herdr.setMachines([{ label: "build-box", target: "ops@build", enabled: true }]); // the fleet's machine list
 herdr.resetInjection();
 await herdr.stop();
 ```
@@ -101,6 +102,7 @@ tokens.
 | `agent prompt` | `TARGET "<text>" [--wait --until S… --timeout MS]` | delivers one line to the agent's stdin (`TARGET` = pane id or agent name). With `--wait`, blocks until the status file **changes** into one of the `--until` states, else exit 1 `agent_prompt_stalled` (no `--until` ⇒ herdr's default `idle`/`done`/`blocked`) |
 | `agent focus` | `P` | focus bookkeeping (`pane list`'s `focused`, the workspace's `active_tab_id`) |
 | `agent read` | `TARGET [--lines N] [--format text]` | like `pane read`; served for completeness — the engine never calls it |
+| `machine list` | `[--json]` | the saved SSH machines a scenario seeded with `FakeHerdr.setMachines()` — `[{label,target,session,enabled}]` with `--json`, a TSV line each without. `[]` by default, which is the single-machine world every other scenario runs in. This is where the factory's **fleet** comes from (`src/fleet/machines.ts`) |
 | `notification show` | `TITLE --body B --sound request` | `{result:{shown:false,reason:"disabled"}}` — the same degradation the real lane shows in a container. `notifications()` asserts through the argv log |
 | `plugin link` \| `plugin list` \| `plugin log` | | success, and **nothing happens** (see the blind spots) |
 | `--version` / `version` | | `herdr 0.7.5 (herdr-factory e2e fake)` — clears `doctor`'s 0.7.5 floor |

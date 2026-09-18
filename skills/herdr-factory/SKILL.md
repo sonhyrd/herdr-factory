@@ -42,6 +42,7 @@ Load **one** reference file, not the whole bundle. Each is self-contained.
 | to write or override a step prompt | [references/prompts.md](references/prompts.md) |
 | a working config to copy | [references/recipes.md](references/recipes.md) |
 | a command, flag, or output explained | [references/cli.md](references/cli.md) |
+| what is running across **several machines** | [references/cli.md](references/cli.md) — `herdr-factory fleet` (`--json`); the fleet is this machine plus every *enabled* `herdr machine list` entry |
 | **something is broken or stuck** | [references/troubleshooting.md](references/troubleshooting.md) |
 | to know *why* the engine did something | [references/architecture.md](references/architecture.md) |
 | better results out of the agents | [references/target-repo.md](references/target-repo.md) |
@@ -184,6 +185,7 @@ The values asked for most often. Everything else is in
 | code | `~/.local/share/herdr-factory/` (hard-reset by auto-update — never edit it) |
 | credentials | per-repo `env`, `chmod 600`: `JIRA_EMAIL`+`JIRA_API_TOKEN` · `SENTRY_AUTH_TOKEN` · `GITHUB_TOKEN` (optional; `gh` login otherwise). No global secrets file. |
 | server | `127.0.0.1:8765` (`HERDR_FACTORY_PORT`), OpenAPI at `/doc`, Swagger UI at `/ui` |
+| several machines | `herdr-factory fleet [--json]` — every run on every machine, read in parallel over an SSH forward per remote box (nothing to configure: it is this machine plus every *enabled* `herdr machine list` entry). A machine that does not answer reads **`unverifiable` with the time it last answered**, never as having no runs — so never claim an item because it was missing from a read where its machine was unverifiable |
 | default pipeline | `steps: [{ type: work }, { type: review }, { type: pr }]` |
 | step budgets | `work` 5400s · `evidence` 2400s · `review` 1800s · `pr` 3600s; fallback `limits.step_budget_seconds` 3600 |
 | key defaults | `max_active_workspaces` 3 (per source: 2) · `max_bounces` 6 · `tick_interval_seconds` 60 · `stall_seconds` 2700 · `layout_wait_seconds` 600 · `max_capture_attempts` 5 |

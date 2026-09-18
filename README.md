@@ -1292,6 +1292,9 @@ herdr-factory [--repo <name>] init [--source jira|github_issues|local_markdown|s
 herdr-factory --repo <name> prompts eject [--step <name>] [--force]  # copy the shipped prompt pack into repos/<name>/prompts/ to edit
 herdr-factory skill install [--into <dir>] [--copy|--symlink] [--force]  # install the agent skill (see The agent skill)
 
+# the whole fleet — every run on every machine (no --repo; pass one to narrow it)
+herdr-factory fleet [--json] [--timeout <ms>]
+
 # the machine-wide server + supervisor (no --repo)
 herdr-factory serve | ensure-up [--restart] | restart | reload | update | provision-node
 herdr-factory install | uninstall | start | stop
@@ -1353,6 +1356,35 @@ is no browser login.
 `serve` binds `127.0.0.1:8765` (override with `HERDR_FACTORY_PORT`) with the OpenAPI spec at
 `/doc` and Swagger UI at `/ui`. `update` pulls the latest code (hard reset to the branch's
 upstream) and restarts onto it — the supervisor does the same automatically every ~60s.
+
+### `fleet` — every run on every machine
+
+If you run the factory on more than one box, `fleet` is the one view of all of them: machine · repo ·
+key · belt · step · phase · age · problems, with a line per machine for whether it answered, its
+version, its cap occupancy and its memory gate.
+
+**There is nothing to configure.** The fleet is *this* machine plus every **enabled** entry of
+`herdr machine list` — the same saved SSH machines the herdr sidebar shows. Adding a box to the fleet
+is `herdr machine add`; taking one out is `herdr machine disable`. A disabled machine is excluded
+entirely, and a machine with no saved machines at all sees exactly what it always saw.
+
+A remote machine's API is reached over an **SSH local forward** (`ssh -N -L <free
+port>:127.0.0.1:8765 <target>`, with OpenSSH's ControlMaster reused between calls), so every server
+in the fleet keeps binding `127.0.0.1` only — nothing is exposed to the network. The local machine is
+still read directly from `server.json`.
+
+Two properties are worth knowing before you trust the output:
+
+- **Machines are read in parallel, each under its own timeout** (`--timeout`, default 5000ms), so one
+  unreachable box costs you one pause and not the view.
+- **A machine that does not answer is `unverifiable`, not empty.** Its row says so, and carries the
+  time it last answered successfully — because "no runs" and "we couldn't ask" are opposite facts,
+  and reporting the second as the first is how an operator ends up claiming an item that is already
+  being worked somewhere else. Actions (claim, teardown, resume, retry-now, tick) always go to the
+  one machine that owns the run; a key that is active on two machines is refused rather than guessed.
+
+`--json` emits the whole snapshot — every machine with its state, version, last-seen time and repos,
+plus the flattened run list — which is the shape to script against.
 
 ## The TUI
 
@@ -1469,6 +1501,8 @@ harness with no skill mechanism can be pointed at the folder directly.
 ~/.config/herdr-factory/         config.schema.json · repos/<name>/{config.yml, env, guidelines-prompt.md, …}
 ~/.local/state/herdr-factory/    herdr-factory.db · runtime/<node>/ · node-path · server.json
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
+                                 fleet-last-seen.json (when each fleet machine last answered)
+                                 fleet-ssh/ (ControlMaster sockets for the fleet's SSH forwards)
                                  logs/ (supervisor + server) · <repo>/logs/<date>.log (per-repo)
 <worktree>/.memory/herdr-factory/   per-run working memory: prompts · handoffs · work doc · evidence
 ```
@@ -1484,6 +1518,7 @@ harness with no skill mechanism can be pointed at the folder directly.
 | `HERDR_CHANNEL`             | update channel: `main` (default, tracks upstream) or `stable` (follows the latest release tag) |
 | `HERDR_FACTORY_TELEMETRY`   | `1` enables OpenTelemetry (plus the standard `OTEL_*` vars) |
 | `HERDR_BIN_PATH`            | path to the `herdr` binary (default: `herdr` on PATH)       |
+| `HERDR_FACTORY_FLEET_ENDPOINTS` | JSON file of `{"<machine>": "http://host:port"}` overrides for [`fleet`](#fleet--every-run-on-every-machine) — names a machine's API directly instead of forwarding over SSH (a host that moved its port off 8765; the e2e suite's second server) |
 
 `HERDR_FACTORY_AUTO_UPDATE` and `HERDR_CHANNEL` are captured into the launchd/systemd **service
 environment at install time** — set them and re-run `herdr-factory install` (or the installer) to
@@ -1541,9 +1576,9 @@ scripts/e2e --no-build -- --reporter=verbose  # iterate without rebuilding
 scripts/e2e --lane fake                       # only the no-herdr lane (failure injection + scale)
 ```
 
-29 scenarios, ~6 minutes in the container: the core belts, layouts, every attention park and the human
+30 scenarios, ~6 minutes in the container: the core belts, layouts, every attention park and the human
 loop, the evidence station, the PR lifecycle, source parity for Jira and Sentry, belt/config breadth, a
-herdr outage, a live TUI boot in a real PTY — and four performance measures that record real numbers
+herdr outage, a two-machine fleet, a live TUI boot in a real PTY — and four performance measures that record real numbers
 into each scenario's `metrics.json` (external-call budget, throughput at 60 items, per-pass latency
 under load, and a ~900-pass resource soak). A second lane swaps herdr for a shim, which is how an
 unreachable herdr and 60 concurrent runs get tested without 60 PTYs.

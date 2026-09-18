@@ -53,6 +53,7 @@ this command needs a repo: herdr-factory --repo <name> <command>
 |---|---|
 | Is the install healthy? | `herdr-factory doctor`, then `herdr-factory --repo <r> doctor --deep` |
 | What's in flight right now? | `herdr-factory --repo <r> status` (add `runs --all` for history) |
+| What's in flight on **every machine**? | `herdr-factory fleet` (`--json` to script it) — this machine plus every enabled `herdr machine list` entry |
 | Why is *this* run stuck? | `herdr-factory --repo <r> explain <KEY>` (the narrative), then `--repo <r> timeline <KEY>` and `--repo <r> logs 200`; raw JSON: `curl -s 127.0.0.1:8765/repos/<r>/obligations?key=<KEY>` (§10) |
 | Hand the diagnosis to an agent | `herdr-factory --repo <r> triage <KEY>` — launches the operator's agent CLI pre-briefed (`--print` to just emit the briefing) |
 | What happened to this item? | `herdr-factory --repo <r> timeline <KEY>` |
@@ -88,6 +89,7 @@ this command needs a repo: herdr-factory --repo <name> <command>
 | `logs [n]` | yes | in-process (file) | last `Number(n) || 50` lines of `<stateRoot>/<repo>/logs/<UTC-date>.log`. `logs 0` and `logs abc` both mean 50. Missing file → `no log for today at <path>`, exit 0 |
 | `auth status` | yes | in-process (env only, **no network**) | one line per source; presence of each source's declared secrets |
 | `doctor [--deep]` | optional (adds a repo group) | in-process; `--deep` adds network | grouped `✓ / ⚠ / ✗` checks + one `Next:` hint. `process.exitCode = 1` iff any `✗`; `⚠` never fails it |
+| `fleet [--json] [--timeout <ms>]` | **no** (a `--repo` narrows it to that repo) | HTTP to every machine's `/health` + `/repos/*/status`, in parallel | a line per machine then the run table (§6 anatomy). `--json` = the whole snapshot. Never non-zero for an unreachable machine — that is reported, not raised |
 
 Notes:
 - `runs`/`status` pad columns with `padEnd` and never truncate them — long keys just push columns right (`status`'s trailing summary is the one exception: it is cut at 50 chars). Parse by splitting on whitespace, not fixed offsets.
@@ -376,6 +378,32 @@ Semantics worth knowing:
 - The attention note a park posts to the work source ends with both ready-made commands: `resume <KEY>` and `triage <KEY>`.
 - Note for an agent reading this: if YOU are the harness the operator launched via `triage`, the briefing file named in your opening prompt is your starting context — read it before running anything.
 
+### `fleet`
+
+Every run on every machine, plus a line per machine. The fleet is **this machine plus every *enabled*
+entry of `herdr machine list`** — no config key, nothing to register. `herdr machine disable <p>`
+takes a box out; a machine with no saved machines prints exactly what a single-machine install always
+saw.
+
+```
+herdr-factory fleet — 2 machines (1 reachable, 1 unverifiable) · 2 runs
+
+  ✓ local (this machine) — v0.1.0 · 1 repo · 1 running · cap 1/4 working across all repos · memory 7412 MB available (floor 1024 MB)
+  ✗ build-box (ops@build-box) — unverifiable: no answer within 5000ms · last seen 4m ago · its runs are NOT known to be gone
+
+  MACHINE  REPO  KEY     BELT         STEP  PHASE    AGE  PROBLEMS
+  local    app   HF-101  ship-gh      work  running  12m  -
+```
+
+Semantics worth knowing:
+
+- **A remote machine's API is reached over an SSH local forward** (`ssh -N -L <free port>:127.0.0.1:8765 <target>`, ControlMaster reused), so every server keeps binding `127.0.0.1` only. The local machine is read from `server.json`, as the TUI always has.
+- **`unverifiable` ≠ empty.** A machine that times out or refuses reports `unverifiable` with the time it last answered (remembered in `<stateRoot>/fleet-last-seen.json`). Its runs are **unknown, not gone** — do not claim an item because it did not appear in a fleet read where its machine was unverifiable.
+- **Machines are read in parallel**, each under `--timeout` (default 5000ms), so one dead box costs one pause and not the view.
+- **Actions route to the owning machine only.** A key active on two machines is refused rather than guessed (`… is active on more than one machine (…) — narrow it with --machine or --repo`), and a key found nowhere names the machines that read as unverifiable.
+- `--json` emits `{readAt, machines[], runs[]}`: every machine with `state`, `version`, `lastSeenAt`, `detail`, `repos`, `machineLine`, `problems`, and the flattened run list (`machine`, `repo`, `key`, `source`, `belt`, `step`, `phase`, `ageSeconds`, `prNumber`, `problems`). Script against this, not the table.
+- Exit code is 0 for an unreachable machine — that is data. `--timeout` with a non-number exits 1.
+
 ---
 
 ## 7. `run` vs `serve` vs `start`
@@ -400,9 +428,10 @@ Sequence for a first repo: `init` → `doctor --repo <r> --deep` → `run --foll
 | var | effect | default |
 |---|---|---|
 | `HERDR_FACTORY_CONFIG_DIR` | config root: `repos/<name>/{config.yml,env,prompts/}` + `config.schema.json` | `~/.config/herdr-factory` |
-| `HERDR_FACTORY_STATE_ROOT` | state root: `herdr-factory.db`, `server.json`, `update-status.json`, `node-path`, `runtime/`, `logs/`, `<repo>/logs/` | `~/.local/state/herdr-factory` |
+| `HERDR_FACTORY_STATE_ROOT` | state root: `herdr-factory.db`, `server.json`, `update-status.json`, `fleet-last-seen.json`, `fleet-ssh/`, `node-path`, `runtime/`, `logs/`, `<repo>/logs/` | `~/.local/state/herdr-factory` |
 | `HERDR_FACTORY_PORT` | server TCP port on 127.0.0.1 | `8765` |
 | `HERDR_BIN_PATH` | path to the `herdr` binary | `herdr` (on PATH) |
+| `HERDR_FACTORY_FLEET_ENDPOINTS` | path to a JSON file of `{"<machine name>": "http://host:port"}`; a named machine is dialled at that URL instead of being forwarded over SSH (a host whose server is off 8765 — and the seam the e2e suite uses in place of real SSH). Absent/unreadable file = no overrides | unset |
 | `HERDR_FACTORY_AUTO_UPDATE` | `0`/`false`/`no`/`off` disables the supervised self-update; **anything else, including unset, enables it** | enabled |
 | `HERDR_CHANNEL` | exactly `stable` (case-insensitive) → newest release tag; anything else → branch upstream | `main` |
 | `HERDR_FACTORY_TELEMETRY` | `1|true|yes|on` enables OTel traces + metrics | off |
