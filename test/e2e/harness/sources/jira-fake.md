@@ -73,7 +73,7 @@ and `src/clients/jira-source.ts`.
 | `GET /rest/api/3/issue/<key>?fields=summary,description,issuetype,status,labels,attachment,comment` | the `JiraIssue` the materializer writes to `ticket.json`. Key lookup is case-insensitive (and accepts the numeric id) and the answer carries the **canonical** key |
 | `GET /rest/api/3/issue/<key>/transitions` | `{transitions:[{id,name,to:{id,name,statusCategory}}]}` — one per reachable status |
 | `POST /rest/api/3/issue/<key>/transitions` `{"transition":{"id":"…"}}` | applies it, appends to `statusHistory`, answers **204 with an empty body** (the engine sends this one through `send()`, not a JSON-parsing helper — a JSON body here would hide a regression). An id that isn't currently offered ⇒ 400 |
-| `GET /rest/api/3/issue/<key>/comment?orderBy=created&maxResults=100` | `{startAt,maxResults,total,comments:[…]}`, oldest first (`orderBy=-created` reverses) |
+| `GET /rest/api/3/issue/<key>/comment?orderBy=created&startAt=0&maxResults=100` | `{startAt,maxResults,total,comments:[…]}`, oldest first (`orderBy=-created` reverses). **Paged**: the slice starts at `startAt`, so a >100-comment thread takes as many calls as the client walks |
 | `POST /rest/api/3/issue/<key>/comment` `{"body":<ADF>}` | **201** with the created comment (`id`, `created`, `author`, the ADF stored verbatim). A v2-style string body ⇒ 400 |
 | `GET /rest/api/3/attachment/content/<id>` | the attachment bytes. The `content` URL the issue advertises is **absolute**, as Jira sends it — `downloadAttachments` fetches it directly rather than joining it onto the auth base |
 

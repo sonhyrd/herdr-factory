@@ -146,6 +146,50 @@ describe("claim ledger — arbitrateClaim", () => {
     expect(t.comments("K-1")).toHaveLength(1); // no claim/release noise, and the dead claim stays open
   });
 
+  it("our OWN stale claim (the run is gone locally) is released, and the item re-claimed", async () => {
+    const t = fakeTracker();
+    t.post("K-1", claimMarker({ runId: 7, host: "mac" })); // a crashed run of ours — no such row here
+    const f = factory(t, "mac");
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toBeNull();
+    expect(f.store.getRun(run.id)).toBeTruthy();
+    expect(t.comments("K-1").map((c) => c.body)).toEqual([
+      claimMarker({ runId: 7, host: "mac" }),
+      releaseMarker({ runId: 7, host: "mac" }),
+      claimMarker({ runId: run.id, host: "mac" }),
+    ]);
+    expect(f.logs.some((l) => l.includes("released our own stale claim (run 7"))).toBe(true);
+  });
+
+  it("our own claim for an ENDED run is stale too (a teardown whose release never landed)", async () => {
+    const t = fakeTracker();
+    const f = factory(t, "mac");
+    const dead = f.newRun("K-1");
+    f.store.endRun(dead.id, "merged");
+    t.post("K-1", claimMarker({ runId: dead.id, host: "mac" }));
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toBeNull();
+    expect(t.comments("K-1").map((c) => c.body)).toContain(releaseMarker({ runId: dead.id, host: "mac" }));
+  });
+
+  it("our own claim for a LIVE run still fences the item (only stale ones are released)", async () => {
+    const t = fakeTracker();
+    const f = factory(t, "mac");
+    const live = f.newRun("K-1");
+    t.post("K-1", claimMarker({ runId: live.id, host: "mac" }));
+    const run = f.newRun("K-2"); // a second row; the ledger read is what matters
+    expect(await arbitrateClaim(f.deps, f.src, { ...run, ticketKey: "K-1" })).toMatchObject({ runId: live.id, host: "mac" });
+    expect(t.comments("K-1")).toHaveLength(1); // untouched
+  });
+
+  it("another host's stale claim is never released for it (fence, never reap)", async () => {
+    const t = fakeTracker();
+    t.post("K-1", claimMarker({ runId: 7, host: "other" }));
+    const f = factory(t, "mac");
+    expect(await arbitrateClaim(f.deps, f.src, f.newRun("K-1"))).toMatchObject({ host: "other" });
+    expect(t.comments("K-1")).toHaveLength(1);
+  });
+
   it("a human-posted release frees a stale claim", async () => {
     const t = fakeTracker();
     t.post("K-1", claimMarker({ runId: 42, host: "dead-host" }));

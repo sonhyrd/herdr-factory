@@ -1012,8 +1012,13 @@ matching `[herdr-factory release id=<run> host=<host>]`) with the LOWEST server 
 loser posts its release, deletes its still-pristine `claiming` row (`deleteClaimingRun`), logs
 `claimed elsewhere by <host>`, and records a run-less `claimed_elsewhere` event (once per distinct
 winner); it is not a claim failure. A backend error releases (if it posted) and deletes the row, then
-throws — the next pass retries. `teardownImpl` posts the release (best-effort, loud on failure). A dead
-winner is FENCED, never reaped: only a human-posted release frees the item. Both markers carry
+throws — the next pass retries. `teardownImpl` posts the release (best-effort, loud on failure). Each ledger
+read first releases this host's OWN stale claims — an open claim whose `host` is ours and whose run row is
+gone or already ended (`claimIsLive`) — so a crashed or half-torn-down factory stops fencing the item, for
+itself and every other host; this factory is the only one that can see that row is gone. Another host's dead
+winner is FENCED, never reaped: only a human-posted release frees the item. `JiraClient.listComments` pages
+the whole thread (`startAt` walked in 100s until the server's `total`), so an old claim comment is never
+missed — and neither is askHuman's own question on a busy ticket. Both markers carry
 `HERDR_MARKER`, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
 **Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
 ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
@@ -2210,8 +2215,9 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
 - **INV-10: one factory per source backend, unless the source's claim guard is enabled.** The local
   store is the claim arbiter; labels and statuses are projections, not locks. Several factories with
   separate DBs may share a backend only through `claim_guard` (§7 Phase B, *Claim ledger*): the
-  guard runs before any side effect of the claim, the lowest open claim comment id wins, and a dead
-  winner's claim is never cleared automatically (fence, never reap).
+  guard runs before any side effect of the claim, the lowest open claim comment id wins, and ANOTHER
+  host's dead claim is never cleared automatically (fence, never reap) — a factory releases only its
+  own claims whose runs no longer exist locally.
 - **At most one ACTIVE run per (repo, source, key) — enforced by the DB, not just checked.** Both
   claim paths are check-then-create with a network call between the dedup check and the insert
   (Phase B's `listEligible`, the manual claim's `describe()`), and the manual `claim` holds no

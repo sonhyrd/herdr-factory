@@ -163,12 +163,21 @@ export class JiraClient {
     return this.postJson<JiraComment>(`/rest/api/3/issue/${key}/comment`, { body: adfDoc(text) });
   }
 
-  /** The first 100 comments, oldest first — or the NEWEST 100 with `newestFirst` (the claim ledger). */
+  /** EVERY comment, oldest first — or newest first with `newestFirst` (the claim ledger). Paged in
+   *  100s until the server's own `total` is reached: callers assume completeness (the claim ledger
+   *  must see an old claim comment; askHuman's idempotency scan must see its own question), so this
+   *  never truncates. */
   async listComments(key: string, newestFirst = false): Promise<JiraComment[]> {
-    const data = await this.getJson<{ comments?: JiraComment[] }>(
-      `/rest/api/3/issue/${key}/comment?orderBy=${newestFirst ? "-created" : "created"}&maxResults=100`,
-    );
-    return data.comments ?? [];
+    const out: JiraComment[] = [];
+    for (;;) {
+      const data = await this.getJson<{ comments?: JiraComment[]; total?: number }>(
+        `/rest/api/3/issue/${key}/comment?orderBy=${newestFirst ? "-created" : "created"}&startAt=${out.length}&maxResults=100`,
+      );
+      const page = data.comments ?? [];
+      out.push(...page);
+      // Stop on a short/empty page (also the guard against a server whose `total` never settles).
+      if (page.length < 100 || out.length >= (data.total ?? 0)) return out;
+    }
   }
 
   /** Idempotent, case-insensitive transition. Returns false if already in target. */

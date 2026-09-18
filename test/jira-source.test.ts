@@ -154,6 +154,26 @@ describe("JiraSource", () => {
     expect(posted).toContain("parked for attention");
   });
 
+  // The claim ledger (INV-10) must see an OLD claim comment on a busy ticket — one 100-comment page
+  // would miss it, so listClaimComments pages the whole thread.
+  it("listClaimComments pages past 100 comments (walks startAt until total)", async () => {
+    const total = 250;
+    const all = Array.from({ length: total }, (_, i) => ({ id: String(1000 + i), body: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `c${i}` }] }] } }));
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      fetchCalls.push({ url: u.pathname + u.search, method: "GET" });
+      const startAt = Number(u.searchParams.get("startAt") ?? "0");
+      const max = Number(u.searchParams.get("maxResults") ?? "100");
+      const body = { startAt, maxResults: max, total, comments: all.slice(startAt, startAt + max) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), headers: new Headers() } as Response;
+    }) as typeof fetch;
+    const comments = await src().listClaimComments("RWR-1");
+    expect(comments.length).toBe(total);
+    expect(comments[0]!.body).toBe("c0");
+    expect(comments.at(-1)!.body).toBe("c249");
+    expect(fetchCalls.map((c) => new URL(c.url, "https://x").searchParams.get("startAt"))).toEqual(["0", "100", "200"]);
+  });
+
   it("describe maps a Jira issue to a Ticket", async () => {
     const t = await src().describe("RWR-1");
     expect(t).toEqual({ key: "RWR-1", summary: "s", type: "Bug" });
