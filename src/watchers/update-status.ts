@@ -29,6 +29,26 @@ export function updateChannel(): UpdateChannel {
  *  the checkout first goes dirty-and-behind). */
 export const DIRTY_RENOTIFY_MS = 6 * 60 * 60 * 1000; // 6h
 
+/** How old the last recorded attempt may get before the updater counts as STALLED. Every `ensure-up`
+ *  tick (60s) records one, so 30 missed ticks means nothing is running it — no scheduler, or a
+ *  scheduler stuck on a hung tick (issue #35) — and the box is silently falling behind. */
+export const UPDATE_STALL_MS = 30 * 60_000;
+
+/** A compact "3m ago" / "2h ago" / "5d ago" for an epoch-ms timestamp (relative to `now`). */
+export function ago(at: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 90) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+/** The last attempt is older than {@link UPDATE_STALL_MS} while auto-update is on. */
+export function updateStalled(status: UpdateStatus, now = Date.now()): boolean {
+  return autoUpdateEnabled() && now - status.at > UPDATE_STALL_MS;
+}
+
 export interface UpdateResult {
   updated: boolean;
   reason?: string; // why it didn't update (when updated === false)
@@ -68,7 +88,8 @@ export function readUpdateStatusAt(path: string): UpdateStatus | null {
 }
 
 /** A short amber note for a warn-worthy last update — the box failed to update, skipped a reset over
- *  a dirty checkout, is behind its channel target, or updated but a post-step (deps/Node) failed —
+ *  a dirty checkout, is behind its channel target, has STALLED (no attempt recorded for
+ *  {@link UPDATE_STALL_MS}), or updated but a post-step (deps/Node) failed —
  *  or null when the last attempt is clean or unrecorded. Shared by the `doctor` check and the TUI
  *  dashboard banner so both agree on when the update state wants attention. */
 export function updateWarning(status: UpdateStatus | null = readUpdateStatus()): string | null {
@@ -77,6 +98,7 @@ export function updateWarning(status: UpdateStatus | null = readUpdateStatus()):
   if (status.outcome === "failed") return `auto-update failed (${status.channel}): ${status.reason ?? "unknown"}`;
   if (status.dirtySkip) return `auto-update skipped (${status.channel}): checkout has uncommitted changes`;
   if (status.behind) return `${status.channel} channel behind ${target}`;
+  if (updateStalled(status)) return `auto-update stalled — last check ${ago(status.at)}`;
   if (status.warning) return `updated (${status.channel}) but ${status.warning}`;
   return null;
 }

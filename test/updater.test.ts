@@ -117,6 +117,22 @@ describe("runUpdate — main channel", () => {
     expect(readStatus(o.statusPath)).toMatchObject({ outcome: "failed", behind: true });
   });
 
+  // Issue #35: on a no-service host a `while :; do herdr-factory ensure-up; sleep 60; done` loop is
+  // the only scheduler, so a fetch that never returns froze auto-update for hours. The fetch must be
+  // bounded: the tick ends, records a fresh `failed` attempt, and the next tick retries.
+  it("a hung fetch is killed at the budget and recorded as `failed` (the tick ends)", async () => {
+    const { local } = await setup();
+    await git(local, "config", "protocol.ext.allow", "always");
+    await git(local, "remote", "set-url", "origin", "ext::sleep 30"); // a remote that never answers
+    const o = opts({ cwd: local, gitTimeoutMs: 500 });
+    const started = Date.now();
+    const res = await runUpdate(noopLog, o);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(res.updated).toBe(false);
+    expect(readStatus(o.statusPath)).toMatchObject({ outcome: "failed", behind: true });
+    expect(readStatus(o.statusPath).reason).toMatch(/timed out/);
+  });
+
   it("not a git checkout → `skipped`", async () => {
     const dir = mkTmp("upd-nogit-");
     const o = opts({ cwd: dir });
@@ -222,7 +238,7 @@ describe("runUpdate — dirty-checkout guard", () => {
 });
 
 describe("updateWarning", () => {
-  const clean: UpdateStatus = { channel: "main", at: 0, outcome: "up_to_date", behind: false, targetRef: "origin/main" };
+  const clean: UpdateStatus = { channel: "main", at: Date.now(), outcome: "up_to_date", behind: false, targetRef: "origin/main" };
   it("is null when the last attempt is clean or unrecorded", () => {
     expect(updateWarning(null)).toBeNull();
     expect(updateWarning(clean)).toBeNull();
@@ -233,6 +249,10 @@ describe("updateWarning", () => {
     expect(updateWarning({ ...clean, outcome: "skipped", behind: true, dirtySkip: true })).toMatch(/uncommitted changes/);
     expect(updateWarning({ channel: "stable", at: 0, outcome: "skipped", behind: true, targetRef: "v1.2.0" })).toMatch(/stable.*behind.*v1\.2\.0/);
     expect(updateWarning({ ...clean, outcome: "updated", warning: "dep install failed" })).toMatch(/but dep install failed/);
+  });
+  it("flags a stalled updater — an `up to date` recorded hours ago is stale news", () => {
+    expect(updateWarning({ ...clean, at: Date.now() - 3 * 3600_000 })).toMatch(/auto-update stalled — last check 3h ago/);
+    expect(updateWarning({ ...clean, at: Date.now() - 5 * 60_000 })).toBeNull(); // a few missed ticks is fine
   });
 });
 

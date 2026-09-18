@@ -15,7 +15,7 @@ import { availableMemoryMb, loadMachineConfig, machineConfigPath } from "./machi
 import type { Deps } from "./core/deps.ts";
 import { pingHealth, readServerInfo } from "./server/client.ts";
 import * as service from "./watchers/service.ts";
-import { readUpdateStatus, updateChannel } from "./watchers/update-status.ts";
+import { ago, readUpdateStatus, updateChannel, updateStalled } from "./watchers/update-status.ts";
 
 /** One check's outcome. `detail` is extra context: a version/path/endpoint on success, or the
  *  failure reason on ✗. `warn` marks an amber (not-a-failure) state — a healthy check that still
@@ -45,15 +45,6 @@ async function attempt(name: string, fn: () => Promise<string | void>): Promise<
   }
 }
 
-/** A compact "3m ago" / "2h ago" / "5d ago" for an epoch-ms timestamp (relative to now). */
-function ago(at: number): string {
-  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (s < 90) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 90) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
-}
 
 /** The auto-update check — channel-aware, and the surface for a skipped/failed/behind update. It
  *  reads the updater's recorded status file (written every supervisor tick) so a dirty-checkout skip
@@ -72,6 +63,9 @@ export async function updateCheck(): Promise<DoctorCheck> {
     if (status.outcome === "failed") return { name, ok: true, warn: true, detail: `${channel}: last update FAILED — ${status.reason ?? "unknown"} (${when})` };
     if (status.dirtySkip) return { name, ok: true, warn: true, detail: `${channel}: reset to ${target} skipped — checkout has uncommitted changes (${when})` };
     if (status.behind) return { name, ok: true, warn: true, detail: `${channel}: behind ${target}${status.reason ? ` — ${status.reason}` : ""} (${when})` };
+    // Nothing has run the updater for many ticks: no scheduler (a HERDR_SKIP_SERVICE host with no
+    // ensure-up loop), or one stuck on a hung tick. The recorded "up to date" is stale news.
+    if (updateStalled(status)) return { name, ok: true, warn: true, detail: `auto-update stalled — last check ${when} (nothing is running \`ensure-up\` every 60s)` };
     if (status.warning) return { name, ok: true, warn: true, detail: `${channel}: updated but ${status.warning} (${when})` };
     const state = status.outcome === "updated" ? `updated (${status.reason ?? "reset"})` : `up to date on ${target}`;
     return { name, ok: true, detail: `${channel}: ${state} (${when})` };
