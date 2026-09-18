@@ -14,7 +14,7 @@
 // Every attempt (updated / up-to-date / skipped / failed) is recorded to a small state file next to
 // server.json so `doctor` and the TUI can surface a failure or a behind-its-target box, rather than
 // it living only in the supervisor log.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -52,12 +52,50 @@ const PKG_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-async function git(args: string[], cwd: string): Promise<string> {
+/** Budget for one git call (a fetch over a slow link included). Past it the call is killed and the
+ *  tick records a `failed` attempt — so the next tick, 60s later, retries instead of never coming. */
+export const GIT_TIMEOUT_MS = 120_000;
+/** Budget for the post-update `pnpm`/`npm install`. */
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+/** Run a command for the updater, bounded and TTY-free (issue #35). `detached` = setsid: the child
+ *  has NO controlling terminal, so an ssh host-key / passphrase or a credential prompt fails fast —
+ *  exactly as it does under launchd/systemd — instead of blocking forever on the terminal of a
+ *  `while :; do herdr-factory ensure-up; sleep 60; done` loop (a hung fetch froze that loop, and
+ *  with it every later update, for hours). Its own process group also lets the timeout kill git AND
+ *  its ssh child, which would otherwise hold our stderr pipe open past git's death. */
+export function execBounded(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+    const timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      reject(new Error(`${cmd} ${args.join(" ")} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out.trim());
+      else reject(new Error(`${cmd} ${args.join(" ")} exited ${code}: ${err.trim().slice(0, 400)}`));
+    });
+  });
+}
+
+async function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<string> {
   const startedAt = Date.now();
   return telemetrySpan("updater.git", { "dependency.name": "git", "process.args.count": args.length }, async () => {
     try {
-      const { stdout } = await execFileP("git", args, { cwd });
-      return stdout.trim();
+      return await execBounded("git", args, cwd, timeoutMs);
     } finally {
       recordDependencyDuration(Date.now() - startedAt, { "dependency.name": "git", "dependency.method": "updater" });
     }
@@ -85,7 +123,7 @@ async function manifestChanges(from: string, to: string, cwd: string): Promise<M
 
 async function have(cmd: string, cwd: string): Promise<boolean> {
   try {
-    await execFileP(cmd, ["--version"], { cwd });
+    await execFileP(cmd, ["--version"], { cwd, timeout: 30_000 });
     return true;
   } catch {
     return false;
@@ -100,10 +138,10 @@ async function installDeps(log: Log, cwd: string): Promise<string | null> {
   try {
     if (await have("pnpm", cwd)) {
       log("info", "self-update: dependencies changed — pnpm install");
-      await execFileP("pnpm", ["install"], { cwd });
+      await execBounded("pnpm", ["install"], cwd, INSTALL_TIMEOUT_MS);
     } else {
       log("info", "self-update: dependencies changed — npm install");
-      await execFileP("npm", ["install", "--no-audit", "--no-fund"], { cwd });
+      await execBounded("npm", ["install", "--no-audit", "--no-fund"], cwd, INSTALL_TIMEOUT_MS);
     }
     return null;
   } catch (e) {
@@ -143,7 +181,7 @@ async function newestReleaseTag(cwd: string): Promise<string | null> {
 async function notifyOperator(title: string, body: string): Promise<void> {
   const bin = process.env.HERDR_BIN_PATH?.trim() || "herdr";
   try {
-    await execFileP(bin, ["notification", "show", title, "--body", body, "--sound", "request"]);
+    await execFileP(bin, ["notification", "show", title, "--body", body, "--sound", "request"], { timeout: 30_000 });
   } catch {
     /* no herdr on PATH / notification failed — the state file still records the skip for doctor */
   }
@@ -156,16 +194,16 @@ interface ChannelTarget {
   sha: string;
   ref: string;
 }
-async function resolveTarget(channel: UpdateChannel, cwd: string): Promise<ChannelTarget> {
+async function resolveTarget(channel: UpdateChannel, cwd: string, timeoutMs?: number): Promise<ChannelTarget> {
   if (channel === "stable") {
-    await git(["fetch", "--tags", "--quiet"], cwd);
+    await git(["fetch", "--tags", "--quiet"], cwd, timeoutMs);
     const tag = await newestReleaseTag(cwd);
     if (!tag) throw new Error("no release tags yet (stable channel)");
     return { sha: await git(["rev-parse", `${tag}^{commit}`], cwd), ref: tag };
   }
   // main: track the branch's configured upstream, exactly as before.
   const upstream = await git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd); // e.g. origin/main
-  await git(["fetch", "--quiet"], cwd);
+  await git(["fetch", "--quiet"], cwd, timeoutMs);
   return { sha: await git(["rev-parse", upstream], cwd), ref: upstream };
 }
 
@@ -183,6 +221,8 @@ export interface RunUpdateOpts {
   channel: UpdateChannel;
   statusPath: string;
   notify: (title: string, body: string) => Promise<void>;
+  /** Per-git-call budget (default {@link GIT_TIMEOUT_MS}); tests shrink it to prove a hung fetch ends the tick. */
+  gitTimeoutMs?: number;
 }
 
 /** The channel-aware update core, injectable for tests (see selfUpdate for the production wiring). */
@@ -205,7 +245,7 @@ export async function runUpdate(log: Log, opts: RunUpdateOpts): Promise<UpdateRe
 
   let target: ChannelTarget;
   try {
-    target = await resolveTarget(channel, cwd);
+    target = await resolveTarget(channel, cwd, opts.gitTimeoutMs);
   } catch (e) {
     // Couldn't resolve where to land. `stable` with no release tags yet is a benign SKIP (you just
     // haven't cut a release); everything else — no upstream on `main`, a failed fetch (network) — is

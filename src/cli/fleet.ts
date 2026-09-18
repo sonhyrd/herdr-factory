@@ -30,7 +30,7 @@ function table(rows: string[][]): string[] {
 /** One machine's own line: is it answering, what version, and what its host-local gate says. The
  *  `unverifiable` line leads with WHEN it last answered — that number is what tells an operator
  *  whether they are looking at a blip or a box that has been gone all morning. */
-function machineLine(m: FleetMachine, readAt: number): string {
+function machineLine(m: FleetMachine, readAt: number, localVersion: string | null): string {
   const where = m.local ? "this machine" : (m.sshTarget ?? "?");
   if (m.state === "unverifiable") {
     const seen = m.lastSeenAt === null ? "never seen" : `last seen ${fmtDur(readAt - m.lastSeenAt)} ago`;
@@ -38,18 +38,21 @@ function machineLine(m: FleetMachine, readAt: number): string {
   }
   const parts = [`v${m.version ?? "?"}`, `${m.repos.length} repo${m.repos.length === 1 ? "" : "s"}`, `${m.runs.length} running`];
   if (m.machineLine) parts.push(m.machineLine.replace(/^machine: /, ""));
+  // A box the updater has not reached is invisible from its own dashboard (issue #35).
+  if (!m.local && localVersion && m.version !== localVersion) parts.push(`⚠ build differs from this machine (v${localVersion})`);
   return `  ✓ ${m.name} (${where}) — ${parts.join(" · ")}`;
 }
 
 export function renderFleet(snapshot: FleetSnapshot): string {
   const reachable = snapshot.machines.filter((m) => m.state === "ok").length;
   const blind = snapshot.machines.length - reachable;
+  const local = snapshot.machines.find((m) => m.local);
   const out: string[] = [
     `herdr-factory fleet — ${snapshot.machines.length} machine${snapshot.machines.length === 1 ? "" : "s"} (${reachable} reachable${
       blind ? `, ${blind} unverifiable` : ""
     }) · ${snapshot.runs.length} run${snapshot.runs.length === 1 ? "" : "s"}`,
     "",
-    ...snapshot.machines.map((m) => machineLine(m, snapshot.readAt)),
+    ...snapshot.machines.map((m) => machineLine(m, snapshot.readAt, local?.state === "ok" ? local.version : null)),
     "",
   ];
   out.push(...(snapshot.runs.length ? table([[...COLUMNS], ...cells(snapshot)]).map((l) => `  ${l}`) : ["  (no runs in flight on any reachable machine)"]));

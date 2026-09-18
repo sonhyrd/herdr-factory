@@ -62,4 +62,11 @@ describe("doctor updateCheck — amber surfacing", () => {
     expect(c).toMatchObject({ ok: true, warn: true });
     expect(c.detail).toMatch(/updated but .*dependency install failed/);
   });
+
+  it("stalled (no attempt recorded for hours) → amber warn with the age", async () => {
+    withStatus({ ...base, at: Date.now() - 5 * 3600_000 });
+    const c = await updateCheck();
+    expect(c).toMatchObject({ ok: true, warn: true });
+    expect(c.detail).toMatch(/auto-update stalled — last check 5h ago/);
+  });
 });

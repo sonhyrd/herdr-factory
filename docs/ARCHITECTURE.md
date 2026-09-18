@@ -1995,7 +1995,14 @@ lock heartbeat so its locks expire.
   then, when `.node-version` changed, **re-provisions the vendored Node** (download + SHA-256
   verify + atomic `current` flip — a Node bump also forces the dep re-install); and a
   `pnpm`/`npm install` when `package.json`/`pnpm-lock.yaml` changed.
-  Best-effort: any git/network failure logs and is skipped, never breaking the tick. When the reset
+  Best-effort: any git/network failure logs and is skipped, never breaking the tick. **Every git
+  call is bounded and TTY-free** (`execBounded`): spawned `detached` (setsid — no controlling
+  terminal, exactly as under launchd/systemd) with `GIT_TERMINAL_PROMPT=0`, and killed — its whole
+  process group, so an ssh child can't hold the pipe open — after 120s (installs: 10min). On a
+  `HERDR_SKIP_SERVICE=1` host the scheduler is a `while :; do herdr-factory ensure-up; sleep 60; done`
+  shell loop; before this, a fetch blocked on an ssh/credential prompt on that loop's terminal hung
+  `ensure-up` forever and auto-update stopped for hours (#35). A hung call now records `failed` and
+  the next tick retries. When the reset
   lands new code, ensure-up **forces a restart** (the running process's `VERSION` was read at start, so
   it can't rely on the version compare). Independently, `VERSION` = package version + git HEAD sha, so
   *any* code change also trips the version-mismatch restart on the next tick. `herdr-factory restart`
@@ -2021,8 +2028,11 @@ lock heartbeat so its locks expire.
   to `update-status.json` next to `server.json` (channel, current-vs-target sha, reason, `behind`
   flag). `doctor` and the TUI Doctor tab read it and paint an **amber** `auto-update` line when the
   last attempt **failed** (network / reset / `pnpm` / Node provision), was **skipped** (dirty
-  checkout, or `stable` with no tag yet), or the box is **behind its target** — so a failure is
-  visible, not buried in the supervisor log. A warn is not a `doctor` exit-code failure.
+  checkout, or `stable` with no tag yet), the box is **behind its target**, or the updater has
+  **stalled** — no attempt recorded for 30min (`UPDATE_STALL_MS`, 30 ticks) while auto-update is on,
+  i.e. nothing is running `ensure-up`: `⚠ auto-update stalled — last check <age>` — so a failure is
+  visible, not buried in the supervisor log. `herdr-factory fleet` marks a remote whose `/health`
+  version differs from this machine's (`⚠ build differs from this machine`), as the dashboard does. A warn is not a `doctor` exit-code failure.
 
 ---
 

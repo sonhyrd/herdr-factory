@@ -326,6 +326,12 @@ One fork of the factory and one config, run on every host:
    while :; do herdr-factory ensure-up; sleep 60; done
    ```
 
+   That loop is the **only** thing running the auto-updater on such a host (each `ensure-up` updates
+   first). The updater's git runs with no controlling terminal and `GIT_TERMINAL_PROMPT=0`, so an ssh
+   host-key/passphrase or credential prompt fails the tick instead of blocking the loop, and every git
+   call is killed after 120s (installs after 10min) — a hung fetch records `failed` and the next tick
+   retries. If the loop dies, `doctor` shows `⚠ auto-update stalled — last check <age>` after 30min.
+
 5. **Before a second host polls a tracker source, enable `claim_guard`** on that source in the shared
    config, or both hosts claim the same item — see
    [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard). `local_markdown`
