@@ -16,11 +16,16 @@ case "$1:$2" in
   agent:start)
     if [ -n "$HERDR_FAKE_ADOPT_FAIL" ]; then echo 'agent not detected' >&2; exit 1; fi
     echo '{"result":{"agent":{"pane_id":"w1:p9"}}}' ;;
-  agent:list) if [ -n "$HERDR_FAKE_AGENTS" ]; then echo "$HERDR_FAKE_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
+  agent:list)
+    # HERDR_FAKE_AGENTS_AFTER, when set, is served once a prompt has been submitted — which is how a
+    # test moves a pane's \`revision\` between the client's before/after reads.
+    if [ -n "$HERDR_FAKE_AGENTS_AFTER" ] && [ -f "$HERDR_FAKE_LOG.prompted" ]; then echo "$HERDR_FAKE_AGENTS_AFTER"
+    elif [ -n "$HERDR_FAKE_AGENTS" ]; then echo "$HERDR_FAKE_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
   pane:list) echo '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1"},{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1","label":"Sidebar"}]}}' ;;
   pane:layout) echo '{"result":{"layout":{"area":{"width":177,"height":48},"panes":[{"pane_id":"w1:p1","rect":{"width":84,"height":48}}]}}}' ;;
   pane:process-info) echo "$HERDR_FAKE_PROCESS_INFO" ;;
   agent:prompt)
+    : > "$HERDR_FAKE_LOG.prompted"
     if [ -n "$HERDR_FAKE_PROMPT_STALL" ]; then echo 'agent_prompt_stalled' >&2; exit 1; fi
     echo '{"result":{"type":"ok"}}' ;;
   *) echo '{"result":{"type":"ok"}}' ;;
@@ -69,6 +74,7 @@ afterEach(() => {
   delete process.env.HERDR_FAKE_LOG;
   delete process.env.HERDR_FAKE_ADOPT_FAIL;
   delete process.env.HERDR_FAKE_AGENTS;
+  delete process.env.HERDR_FAKE_AGENTS_AFTER;
   delete process.env.HERDR_FAKE_PROMPT_STALL;
   delete process.env.HERDR_FAKE_PROCESS_INFO;
   rmSync(dir, { recursive: true, force: true });
@@ -254,6 +260,41 @@ describe("HerdrClient.agentSend — atomic prompt submission with an optional ha
 
     process.env.HERDR_FAKE_PROMPT_STALL = "1";
     expect(await client.agentSend("w1:p1", "hi", { confirm: true })).toBe(false);
+  });
+
+  /** One `agent list` payload for w1:p1, idle, at `revision`. */
+  const idleAt = (revision: number) =>
+    JSON.stringify({
+      result: { agents: [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "cursor", agent_status: "idle", cwd: "/wt", revision }] },
+    });
+  const promptCount = () => invocations().filter((a) => a[0] === "agent" && a[1] === "prompt").length;
+
+  // Issue #22: herdr's state detection is per-harness, and cursor-agent on Linux keeps reporting
+  // `idle` while it works — so `--until working` ALWAYS times out and the stalled verdict is a lie.
+  // Believing it re-sent the prompt every tick, and the agent queued each copy as a follow-up.
+  it("under `confirm`, a stalled handshake still counts when the pane's revision advanced", async () => {
+    process.env.HERDR_FAKE_PROMPT_STALL = "1";
+    process.env.HERDR_FAKE_AGENTS = idleAt(4);
+    process.env.HERDR_FAKE_AGENTS_AFTER = idleAt(9); // the agent reacted; herdr just never said so
+    expect(await new HerdrClient(bin).agentSend("w1:p1", "hi", { confirm: true })).toBe(true);
+    expect(promptCount()).toBe(1); // and the prompt was submitted exactly ONCE
+  });
+
+  it("under `confirm`, a stalled handshake on a pane that did nothing stays unconfirmed", async () => {
+    process.env.HERDR_FAKE_PROMPT_STALL = "1";
+    process.env.HERDR_FAKE_AGENTS = idleAt(4);
+    process.env.HERDR_FAKE_AGENTS_AFTER = idleAt(4); // no screen change ⇒ the keystrokes were dropped
+    expect(await new HerdrClient(bin).agentSend("w1:p1", "hi", { confirm: true })).toBe(false);
+  });
+
+  it("keeps herdr's stalled verdict when there is no revision to compare", async () => {
+    process.env.HERDR_FAKE_PROMPT_STALL = "1";
+    // A herdr that doesn't report `revision` (or a pane that is simply gone) leaves no baseline —
+    // without one the probe cannot tell progress from absence, so the verdict stands.
+    process.env.HERDR_FAKE_AGENTS = JSON.stringify({
+      result: { agents: [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "cursor", agent_status: "idle", cwd: "/wt" }] },
+    });
+    expect(await new HerdrClient(bin).agentSend("w1:p1", "hi", { confirm: true })).toBe(false);
   });
 });
 

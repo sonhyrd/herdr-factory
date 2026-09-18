@@ -99,7 +99,9 @@ export interface HerdrApi {
   /** Every pane in a workspace with its label — the hook's freshness re-check ignores plugin panes. */
   listPanes(workspaceId: string): Promise<PaneSummary[]>;
   /** Submit a prompt to a pane's agent (atomic: types + Enter). `confirm` waits for herdr to observe
-   *  the agent react and returns false when the submission stalled — the prompt never landed. */
+   *  the agent react, falling back to the pane's `revision` when herdr's own state detection never
+   *  flips (cursor-agent reports `idle` while it works), and returns false only when the pane showed
+   *  no sign of the submission at all — the prompt never landed. */
   agentSend(paneId: string, text: string, opts?: { confirm?: boolean }): Promise<boolean>;
   agentFocus(paneId: string): Promise<void>;
   focusedPane(): Promise<FocusedPane | null>;

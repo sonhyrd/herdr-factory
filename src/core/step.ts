@@ -290,10 +290,11 @@ async function dispatchToLayoutImpl(
     // under the bounded layout wait until the pane comes back to idle.
     if (reused && state === "working") return { status: "waiting" };
     // No settle sleep and no separate Enter: `agent prompt` is atomic, and `confirm` makes herdr
-    // report whether the submission actually moved the agent. An unconfirmed prompt (a
-    // just-started agent that dropped the keystrokes) is reported as `waiting` — the pass stays
-    // undispatched and retries under the bounded layout wait, instead of starting the step's
-    // budget clock against an agent that never received the work.
+    // report whether the submission actually moved the agent — backed by a pane-revision probe for
+    // the harnesses whose state herdr never flips (see agentSend). An unconfirmed prompt (a
+    // just-started agent that dropped the keystrokes, with a pane that did not react either) is
+    // reported as `waiting` — the pass stays undispatched and retries under the bounded layout wait,
+    // instead of starting the step's budget clock against an agent that never received the work.
     if (!(await deps.herdr.agentSend(target, opts.prompt, { confirm: true }))) {
       deps.log("warn", `${opts.ticketKey}: prompt to layout pane ${target} was not confirmed; will retry`);
       return { status: "waiting" };

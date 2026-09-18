@@ -1142,6 +1142,12 @@ belt:
   is still booting), so a belt with a `default_layout` must target its **first** step at a layout
   pane — validated at config-load, not left to fail at runtime.
 
+A step's prompt is submitted to its pane **once**. herdr is asked to confirm that the submission
+actually moved the agent, and where it can't — some harnesses (`cursor-agent` on Linux) work away
+while herdr still reports the pane `idle` — the factory falls back to whether the pane's screen
+changed. Either way the dispatch counts and no later tick re-sends it, so an agent is never handed
+the same prompt twice; only a pane that showed no sign of the prompt at all is retried.
+
 A step whose `tab`/`pane` names a pane the layout doesn't (yet) provide waits up to
 `limits.layout_wait_seconds`; an expired window is automatically re-armed up to 3 times (a
 transient herdr/layout race self-heals — even from an already-parked run), and only then does the
