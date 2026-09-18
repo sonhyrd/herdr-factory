@@ -246,7 +246,8 @@ export function runLayoutStartup(): { reaped: number; decidedCleared: boolean } 
 }
 
 /** Handle a herdr worktree/workspace event: build the matching layout into a freshly-created, fresh
- *  (1-tab/1-pane) LINKED worktree, exactly once. Mirrors the plugin's cmd_event. Heavy modules are
+ *  (1-tab/1-pane) LINKED worktree — or, for a factory run's worktree, beside whatever is already
+ *  there — exactly once. Mirrors the plugin's cmd_event. Heavy modules are
  *  imported lazily so the already-decided focus path stays cheap. Throws on an apply failure (after
  *  releasing the claim) so herdr surfaces it; returns {skipped}/{applied} otherwise. */
 export async function runLayoutHook(env: Record<string, string | undefined> = process.env): Promise<HookResult> {
@@ -314,14 +315,17 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
   // is not arrangement: a plugin that adds its own pane (a sidebar) to every new tab would otherwise
   // make every brand-new workspace look arranged and no layout would ever be built on that host. So
   // when the raw pane count is off we ask herdr for the actual panes and ignore the plugin-owned
-  // labels; a pane the USER opened still (rightly) declines the build.
+  // labels. A pane/tab the USER opened declines the build of a HAND-created worktree — but not of a
+  // factory run's: that run is waiting on the layout's panes and would otherwise park forever over a
+  // file preview someone glanced at. There the layout goes in as a NEW tab set beside what's there
+  // (tab 0 appended rather than rebuilt), so nothing the user opened is closed.
   const ignoredLabels = deps.machine?.layoutHookIgnorePaneLabels ?? DEFAULT_IGNORED_PANE_LABELS;
   const ownPaneCount = async () => ownPanes(await deps.herdr.listPanes(workspaceId), ignoredLabels).length;
-  if (info.tabCount !== 1 || (info.paneCount !== 1 && (await ownPaneCount()) !== 1)) {
-    return done(`workspace ${workspaceId} is not a fresh 1-tab/1-pane workspace; skipping`);
-  }
+  const fresh = info.tabCount === 1 && (info.paneCount === 1 || (await ownPaneCount()) === 1);
+  if (!fresh && !ownerRun) return done(`workspace ${workspaceId} is not a fresh 1-tab/1-pane workspace; skipping`);
 
   if (!claimApply(checkoutPath)) return done(`layout already applied for ${checkoutPath}; skipping`);
+  if (!fresh) deps.log("info", `layout hook: workspace ${workspaceId} is not fresh — building "${layout.id}" for run ${ownerRun!.ticketKey} as new tabs`);
 
   // Resolve the build target. herdr ids are workspace-prefixed; discard any ambient id that isn't
   // this workspace's and re-resolve from the workspace.
@@ -344,7 +348,7 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
       deps,
       {
         workspaceId,
-        rootTabId,
+        rootTabId: fresh ? rootTabId : undefined,
         rootPaneId,
         cwd: checkoutPath,
         // The work key rides into every pane's shell (it used to reach only the panes the factory
@@ -374,7 +378,7 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
     repo: repoName,
     ticketKey: ownerRun?.ticketKey ?? null,
     type: "layout_applied",
-    detail: { layout: layout.id, workspaceId, checkoutPath, ...(prunedTabs.length > 0 ? { prunedTabs } : {}) },
+    detail: { layout: layout.id, workspaceId, checkoutPath, ...(prunedTabs.length > 0 ? { prunedTabs } : {}), ...(fresh ? {} : { appended: true }) },
   });
   if (isFocus) markDecided(workspaceId);
   deps.log("info", `layout hook: built "${layout.id}" into ${checkoutPath}`);

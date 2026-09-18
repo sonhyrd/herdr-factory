@@ -298,8 +298,18 @@ the run then waited out its whole `layout_wait_seconds` window. So when `pane_co
 asks herdr for the workspace's actual panes (`pane list --workspace`) and discounts those labelled by
 a plugin: `machine.yml`'s `layout_hook.ignore_pane_labels` (host-local, because the installed plugins
 are the HOST's; default `[Sidebar]`, matched case-insensitively, `[]` to discount none — §10). One
-remaining own pane ⇒ fresh. `tab_count` is still checked raw, and a pane the user opened himself
-still declines the build (that's the case the guard exists for).
+remaining own pane ⇒ fresh. `tab_count` is still checked raw, and a pane the user opened in a
+HAND-created worktree still declines the build (that's the case the guard exists for).
+
+**A factory run's worktree is built even when it isn't fresh.** Its run is waiting on the layout's
+panes (`layout_wait`), so a decline there is not "leave the user's arrangement alone" but a run that
+parks after `(1 + 3) × layout_wait_seconds` over a file preview someone glanced at in the first
+seconds after a claim — and, on a focus event, a `decided` marker that makes the skip permanent. So
+when `activeRunForWorktree` finds the owner, a non-fresh workspace gets the layout as a **new tab
+set**: `applyLayout` is called with no `rootTabId`, every tab (tab 0 included) is appended with
+`workspace_id`, and nothing already there is rebuilt or closed. The `layout_applied` event carries
+`detail.appended: true`. The per-path claim still makes it exactly-once, so a restored workspace of a
+run whose layout was already built is untouched.
 
 **A factory-owned run builds only the tabs its belt uses.** Layouts are a shared LIBRARY: the same
 entry commonly serves several belts and is written for the longest of them, so applying it whole gave

@@ -241,6 +241,19 @@ describe("applyLayout", () => {
     agent: { kind: "claude", args: [], ...over },
   });
 
+  it("with no root tab, appends every tab and touches nothing already there", async () => {
+    const rec: string[] = [];
+    const layout: LayoutConfig = {
+      id: "web",
+      tabs: [
+        { title: "main", panes: [{ title: "shell", persist: true, env: {}, setup: false }] },
+        { title: "dev", panes: [{ title: "server", command: "pnpm dev", persist: true, env: {}, setup: false }] },
+      ],
+    };
+    await applyLayout(stubDeps(rec), { workspaceId: "W", cwd: "/work" }, layout);
+    expect(rec).toEqual(["layoutApply tab= ws=W label=main", "layoutApply tab= ws=W label=dev"]);
+  });
+
   it("builds each tab in ONE call: tab 0 rebuilds+relabels, later tabs are appended", async () => {
     const rec: string[] = [];
     const layout: LayoutConfig = {
