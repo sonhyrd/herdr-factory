@@ -1145,7 +1145,10 @@ belt:
 - **Idempotent** — applied exactly once per worktree, and only to a **fresh** (1-tab/1-pane) linked
   worktree, so it never clobbers an arranged or restored workspace. Panes a herdr **plugin** adds to
   every new tab (a sidebar) are not arrangement: labels listed in `machine.yml`'s
-  `layout_hook.ignore_pane_labels` (default `[Sidebar]`) don't count against freshness. That gate loses a race
+  `layout_hook.ignore_pane_labels` (default `[Sidebar]`) don't count against freshness. A **factory
+  run's** worktree is the exception: a pane or tab someone opened in it before the hook ran (a file
+  preview, a split) no longer declines the build — the layout goes in as a new tab set beside it,
+  nothing already open is closed, and the run's steps find their panes. That gate loses a race
   against a step spawning its own pane (a new tab, decided in-process while this out-of-process hook
   is still booting), so a belt with a `default_layout` must target its **first** step at a layout
   pane — validated at config-load, not left to fail at runtime.
