@@ -15,6 +15,8 @@ import { branchName } from "./branch.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
+import { adoptLayoutAgent } from "./layout.ts";
+import { resolveBeltLayout } from "./layout-match.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { reportToPane, showRunPane } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
@@ -1825,6 +1827,37 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
  *  bumped once per consumed wait window and reset on successful dispatch (spawnStep) or human resume. */
 const layoutWaitGuard = (step: StepConfig): GuardSpec | undefined => step.guards.find((g) => g.kind === "layout_wait");
 
+/** Re-attempt the layout's own `agent start` for a step whose configured pane is up but has no agent.
+ *
+ *  The layout hook builds a worktree's panes ONCE and starts their agents once; a start that fails
+ *  (herdr's `agent_not_ready` — Claude Code's folder-trust prompt, a cold harness, a transient race)
+ *  leaves the pane sitting at a shell prompt forever, and every window of the step's layout wait then
+ *  expires against a pane nothing will ever bring an agent to. Re-running the SAME adoption (kind and
+ *  args straight from the layout pane's `agent:` block, trust pre-answered) is the only recovery that
+ *  can work without a human.
+ *
+ *  Deliberately narrow: only a pane that resolves by its configured label AND is at an available shell
+ *  prompt is touched — that state is herdr's own definition of "no agent here" and of a pane `agent
+ *  start` will accept, so this can never interrupt an agent that is merely slow or mid-turn. Answers
+ *  whether an agent was started. Never throws (herdr being unreachable is the wait's problem, not
+ *  this retry's). */
+async function retryLayoutAgent(deps: Deps, run: Run, belt: BeltRuntime, step: StepConfig): Promise<boolean> {
+  if (!run.workspaceId || !step.tab || !step.pane) return false;
+  try {
+    const layout = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
+    const agent = layout?.tabs.find((t) => t.title === step.tab)?.panes.find((p) => p.title === step.pane)?.agent;
+    if (!layout || !agent) return false; // a pane the layout doesn't declare an agent for — nothing to restart
+    const paneId = await deps.herdr.tabPaneByLabel(run.workspaceId, step.tab, step.pane);
+    if (!paneId) return false; // the layout hasn't built the pane yet — wait, don't build it here
+    if (!(await deps.herdr.paneAtShellPrompt(paneId))) return false; // an agent IS there (or the pane is busy)
+    deps.log("warn", `${run.ticketKey}: ${step.tab}/${step.pane} is at a shell prompt with no agent — re-starting ${agent.kind}`);
+    const name = await adoptLayoutAgent(deps, layout.id, agent, paneId, run.workspaceId, { cwd: run.worktreePath ?? undefined });
+    return name != null;
+  } catch {
+    return false; // herdr unreachable / a pane that vanished mid-check — the wait re-arms as before
+  }
+}
+
 /** A step is waiting for its configured layout pane to come up (an idle agent in tab/pane).
  *  Stay put and retry next tick. Once we've waited past `layout_wait_seconds` (measured from the
  *  step row's started_at), consume one of the guard's bounded respawn credits and RE-ARM the wait in
@@ -1846,6 +1879,10 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   const limit = guard?.autoRespawnLimit ?? 0;
   if (guard && deps.store.guardCounter(run.id, step.name, guard.kind) < limit) {
     const attempt = deps.store.bumpGuardCounter(run.id, step.name, guard.kind);
+    // The pane may be up with NO agent in it — the layout's `agent start` failed (a claude stopped at
+    // the folder-trust prompt is the case this was built for). Re-arming alone would then wait out
+    // every remaining window for an agent nothing is bringing up, so re-attempt the adoption first.
+    const restarted = await retryLayoutAgent(deps, run, belt, step);
     // Re-arm: each retry gets a FULL fresh window, so the budget bounds wall-clock at
     // (1 + limit) × layout_wait_seconds rather than being burned in `limit` consecutive ticks.
     deps.store.upsertRunStep(run.id, step.name, { startedAt: deps.now() });
@@ -1854,7 +1891,7 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
       repo: deps.config.repoName,
       ticketKey: run.ticketKey,
       type: "layout_wait_retry",
-      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit },
+      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit, agentRestarted: restarted },
     });
     deps.log("warn", `${run.ticketKey}: ${step.name} layout pane ${where} not up after ${waited}s — re-arming the wait (retry ${attempt}/${limit})`);
     return;

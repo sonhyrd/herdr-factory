@@ -36,6 +36,7 @@ import type { LayoutAgent, LayoutConfig, LayoutPane, LayoutSize, LayoutTab } fro
 import { stateRoot } from "../config-paths.ts";
 import type { LayoutNode, PaneBox } from "../types.ts";
 import type { Deps } from "./deps.ts";
+import { isClaudeAgent, trustWorktreeInClaude } from "./claude-trust.ts";
 import { telemetrySpan } from "../telemetry/index.ts";
 
 // Pure worktree→layout matching lives in the leaf ./layout-match.ts (so the lean event-hook entry
@@ -325,7 +326,7 @@ async function applyLayoutImpl(deps: Deps, target: LayoutTarget, layout: LayoutC
       if (await setupIssued(setupRun)) await awaitSetup(deps, layout, setup.statusPath, paneId);
       setupSettled = true;
     }
-    await startAgent(deps, layout, pane.agent, paneId, target.workspaceId, agentNames);
+    await startAgent(deps, layout, pane.agent, paneId, target.workspaceId, agentNames, target.cwd);
   }
 
   if (setup && !setupSettled) deps.log("info", `layout "${layout.id}": setup is running in ${setupPaneId ?? "its pane"} (not blocking)`);
@@ -358,18 +359,31 @@ function setupIssued(run: Promise<boolean> | null): Promise<boolean> {
   return run === null ? Promise.resolve(true) : run.catch(() => false);
 }
 
-/** Start (and optionally prompt) one pane's agent. Never throws: a failed agent doesn't invalidate
- *  the layout that is already built, so it warns, notifies, and lets the rest of the build stand. */
-async function startAgent(deps: Deps, layout: LayoutConfig, agent: LayoutAgent, paneId: string, workspaceId: string, taken: string[]): Promise<void> {
-  // `agent start` refuses a pane that isn't at an available shell prompt, and a freshly created pane
-  // isn't there yet: the shell is still sourcing rc files (mise/asdf activation, prompt setup), and a
-  // setup pane has to finish its command and exec back to a prompt first. Poll for that state rather
-  // than sleeping a fixed guess.
-  if (!(await awaitShellPrompt(deps, paneId))) {
-    deps.log("warn", `layout "${layout.id}": ${paneId} is not back at a shell prompt after ${SHELL_READY_TIMEOUT_MS}ms; starting ${agent.kind} anyway`);
+/** Bring one layout pane's agent up: pre-answer Claude Code's folder-trust prompt for the worktree,
+ *  adopt the agent, and on failure report WHY — herdr's own error code and message (e.g.
+ *  `agent_not_ready: … blocked during startup`), which is the only thing that distinguishes a trust
+ *  prompt from a missing binary or a busy pane. Answers the agent's name, or null if it didn't start.
+ *
+ *  Shared with the layout wait's retry (core/reconcile.ts), which re-attempts exactly this adoption
+ *  for a configured pane that came up without its agent. Never throws. */
+export async function adoptLayoutAgent(
+  deps: Deps,
+  layoutId: string,
+  agent: LayoutAgent,
+  paneId: string,
+  workspaceId: string,
+  opts: { cwd?: string; taken?: string[] } = {},
+): Promise<string | null> {
+  // Trust the worktree ITSELF, not just its parent: a claude that stops at the folder-trust prompt is
+  // "started" as far as the pane is concerned but never becomes ready, and the step waiting on this
+  // pane then burns its whole layout wait.
+  if (opts.cwd && isClaudeAgent(agent.kind)) {
+    const trust = trustWorktreeInClaude(opts.cwd);
+    if (trust.status === "set") deps.log("info", `layout "${layoutId}": trusted ${opts.cwd} in ${trust.path} for claude`);
+    if (trust.status === "failed") deps.log("warn", `layout "${layoutId}": could not trust ${opts.cwd} in ${trust.path}: ${trust.detail}`);
   }
-  const name = agent.name ?? deriveAgentName(agent.kind, workspaceId, taken);
-  taken.push(name);
+  const name = agent.name ?? deriveAgentName(agent.kind, workspaceId, opts.taken ?? []);
+  opts.taken?.push(name);
   const ok = await deps.herdr.agentAdopt(paneId, {
     name,
     kind: agent.kind,
@@ -377,11 +391,27 @@ async function startAgent(deps: Deps, layout: LayoutConfig, agent: LayoutAgent, 
     timeoutMs: agent.startTimeoutMs ?? AGENT_READY_TIMEOUT_MS,
   });
   if (!ok) {
-    deps.log("warn", `layout "${layout.id}": could not start ${agent.kind} in ${paneId}`);
-    await deps.herdr.notify("herdr-factory: agent did not start", `${agent.kind} in ${paneId} (layout "${layout.id}")`).catch(() => {});
-    return;
+    const why = deps.herdr.lastAgentError ? `: ${deps.herdr.lastAgentError}` : "";
+    deps.log("warn", `layout "${layoutId}": could not start ${agent.kind} in ${paneId}${why}`);
+    await deps.herdr.notify("herdr-factory: agent did not start", `${agent.kind} in ${paneId} (layout "${layoutId}")${why}`).catch(() => {});
+    return null;
   }
-  deps.log("info", `layout "${layout.id}": started ${agent.kind} as "${name}" in ${paneId}`);
+  deps.log("info", `layout "${layoutId}": started ${agent.kind} as "${name}" in ${paneId}`);
+  return name;
+}
+
+/** Start (and optionally prompt) one pane's agent. Never throws: a failed agent doesn't invalidate
+ *  the layout that is already built, so it warns, notifies, and lets the rest of the build stand. */
+async function startAgent(deps: Deps, layout: LayoutConfig, agent: LayoutAgent, paneId: string, workspaceId: string, taken: string[], cwd?: string): Promise<void> {
+  // `agent start` refuses a pane that isn't at an available shell prompt, and a freshly created pane
+  // isn't there yet: the shell is still sourcing rc files (mise/asdf activation, prompt setup), and a
+  // setup pane has to finish its command and exec back to a prompt first. Poll for that state rather
+  // than sleeping a fixed guess.
+  if (!(await awaitShellPrompt(deps, paneId))) {
+    deps.log("warn", `layout "${layout.id}": ${paneId} is not back at a shell prompt after ${SHELL_READY_TIMEOUT_MS}ms; starting ${agent.kind} anyway`);
+  }
+  const name = await adoptLayoutAgent(deps, layout.id, agent, paneId, workspaceId, { cwd, taken });
+  if (!name) return;
 
   if (agent.prompt) {
     // Waiting is opt-in: a prompt timeout means "block until the agent settles or this elapses".

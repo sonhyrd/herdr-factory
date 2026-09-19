@@ -80,6 +80,10 @@ interface FakeState {
   itemLabels: Record<string, string[]>; // labels the jira fake attaches per key (default [])
   fetchOk: boolean; // does the pre-worktree fetch of the base ref succeed?
   promptStalls: boolean; // agentSend reports the submission never moved the agent (herdr's stalled verdict)
+  /** Does `pane at-shell-prompt` say the layout pane is at an available prompt with NO agent in it?
+   *  What the layout wait's agent-restart keys on (issue #44). */
+  atShellPrompt: boolean;
+  adoptFails: boolean; // `agent start` refuses (herdr's agent_not_ready / a pane it can't adopt)
 }
 
 /** A resolved belt step for the fakes. Budgets/heartbeat/opensPr mirror what config.ts derives for
@@ -134,7 +138,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -144,6 +148,8 @@ function build(opts: { multi?: boolean } = {}) {
     // This replaced the pane RENAMES the factory used to convey step/attention state with.
     paneDisplay: [] as [string, string | undefined, string | null][],
     agentFocus: [] as string[],
+    // Layout agent adoptions the engine issued — [paneId, kind, args] (the layout wait's restart).
+    agentAdopt: [] as [string, string, string][],
     worktreeRemove: [] as string[],
     workspaceClose: [] as string[],
     rmrf: [] as string[],
@@ -247,13 +253,16 @@ function build(opts: { multi?: boolean } = {}) {
     agentStart: async () => { calls.agentStart += 1; return "w1:p2"; },
     paneRun: async () => {},
     paneClose: async () => {},
-    agentAdopt: async () => true,
+    agentAdopt: async (paneId, o) => {
+      calls.agentAdopt.push([paneId, o.kind, (o.args ?? []).join(" ")]);
+      return !state.adoptFails;
+    },
     tabCreate: async () => ({ tabId: "w1:t2", paneId: "w1:pN" }),
     tabRename: async () => {},
     layoutApply: async (o) => ({ tabId: "w1:t2", paneIds: ["w1:pN", "w1:pN2", "w1:pN3"].slice(0, countPanes(o.root)) }),
     tabArea: async () => ({ cols: 200, rows: 50 }),
     agentOpenPrompt: async () => true,
-    paneAtShellPrompt: async () => true,
+    paneAtShellPrompt: async () => state.atShellPrompt,
     firstTabId: async () => "w1:t1",
     workspaceInfo: async () => ({ checkoutPath: worktree, repoRoot: "/main-checkout", repoName: "n", isLinkedWorktree: true, tabCount: 1, paneCount: 1, activeTabId: "w1:t1" }),
     worktreeBranch: async () => "fix/K-1",
@@ -1357,6 +1366,63 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(store.getRun(run.id)!.phase).toBe("claiming"); // re-armed, not re-parked
     expect(store.guardCounter(run.id, "fix", "layout_wait")).toBe(1);
+  });
+
+  it("an expired wait RE-STARTS the layout pane's agent when the pane sits at a shell prompt (#44)", async () => {
+    // The layout hook starts a pane's agent ONCE. A claude stopped at Claude Code's folder-trust
+    // prompt never becomes ready, so the pane stays at a bare shell prompt and every wait window
+    // expires against an agent nothing is bringing up (issue #44: ~34–44min lost per run). Each
+    // expiry now re-runs the SAME `agent start` — kind and args straight off the layout pane.
+    const { deps, store, state, calls, setNow, shipBelt } = build();
+    deps.config.layouts.push({
+      id: "L",
+      tabs: [{ title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "claude", args: ["--dangerously-skip-permissions"] } }] }],
+    });
+    shipBelt.defaultLayout = "L";
+    state.eligible = [ticket("W-44")];
+    state.paneState = "working"; // the pane is up, but herdr sees no agent ready for input in it…
+    state.atShellPrompt = true; // …because it is sitting at a bare shell prompt (the trust prompt case)
+    await reconcileRepo(deps); // begins the wait (fix.started_at = 1000)
+    const run = store.activeRunForTicket("demo", "jira", "W-44")!;
+    expect(calls.agentAdopt).toEqual([]); // nothing re-started while the window is still open
+
+    setNow(1601); // past layout_wait_seconds (600)
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentAdopt).toEqual([["w1:p1", "claude", "--dangerously-skip-permissions"]]);
+    expect(store.getRun(run.id)!.phase).toBe("claiming"); // still waiting, re-armed as before
+    const retry = store.timeline("demo", "W-44").find((e) => e.type === "layout_wait_retry")!;
+    expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(true);
+  });
+
+  it("the wait's agent restart leaves a pane that ALREADY has an agent alone", async () => {
+    const { deps, store, state, calls, setNow, shipBelt } = build();
+    deps.config.layouts.push({
+      id: "L",
+      tabs: [{ title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "claude", args: [] } }] }],
+    });
+    shipBelt.defaultLayout = "L";
+    state.eligible = [ticket("W-45")];
+    state.paneState = "working"; // an agent IS there — just mid-turn, or still starting up
+    state.atShellPrompt = false; // herdr refuses the pane: not an available shell prompt
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-45")!;
+    setNow(1601);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentAdopt).toEqual([]); // never interrupts a live agent
+    const retry = store.timeline("demo", "W-45").find((e) => e.type === "layout_wait_retry")!;
+    expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(false);
+  });
+
+  it("with no layout declaring the step's pane, the wait re-arms exactly as before", async () => {
+    const { deps, store, state, calls, setNow } = build(); // config.layouts is empty
+    state.eligible = [ticket("W-46")];
+    state.paneState = "working";
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-46")!;
+    setNow(1601);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentAdopt).toEqual([]); // nothing to re-start — the engine never builds a pane here
+    expect(store.getRunStep(run.id, "fix")!.startedAt).toBe(1601); // window still re-armed
   });
 
   it("a run parked with layout_wait_timeout auto-recovers on a later tick — re-spawns with NO step_done and NO human resume", async () => {
