@@ -587,7 +587,7 @@ is pure data (`herdr-factory reload` picks it up without a restart).
 | `source_poll_interval_seconds` | = `tick_interval_seconds` | how often each work source is polled for new work; a per-source `poll_interval_seconds` overrides it. `≤ tick` polls every tick (unchanged); larger drains that source's backlog at `max_claims_per_tick` per **poll window** |
 | `reconcile_concurrency`      | 8       | active runs reconciled in parallel per tick                     |
 | `max_claims_per_tick`        | 10      | new-claim admission per tick (cold-start smoothing)             |
-| `layout_wait_seconds`        | 600     | wait window for a configured pane; an expired window auto-retries ×3, then attention |
+| `layout_wait_seconds`        | 600     | wait window for a configured pane; an expired window re-starts the pane's agent and auto-retries ×3, then attention |
 
 ### Machine limits — `machine.yml` (host-local, optional)
 
@@ -1167,7 +1167,13 @@ the same prompt twice; only a pane that showed no sign of the prompt at all is r
 A step whose `tab`/`pane` names a pane the layout doesn't (yet) provide waits up to
 `limits.layout_wait_seconds`; an expired window is automatically re-armed up to 3 times (a
 transient herdr/layout race self-heals — even from an already-parked run), and only then does the
-run park for attention. An untargeted first step is no longer one of the causes — config-load
+run park for attention. Each expiry first **re-runs the layout's own `agent start`** for that pane
+(same kind and args) when the pane is sitting at a shell prompt with no agent — the layout hook
+starts a pane's agent once, so an agent that failed to come up would otherwise never be retried.
+Before any `claude` agent is started, in a layout pane or a dedicated one, the factory marks the
+worktree trusted in Claude Code's config (`projects[<worktree>].hasTrustDialogAccepted` in
+`$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`, leaving every other key alone), so a fresh
+worktree can't strand the run on Claude's folder-trust prompt. An untargeted first step is no longer one of the causes — config-load
 refuses that belt — so a park here means the factory plugin isn't linked with herdr, the layout's
 tab/pane titles don't match the step's, or the belt gets its layout **only** from a
 `layout_matching` rule: that shape is exempt from the first-step check (those rules commonly serve

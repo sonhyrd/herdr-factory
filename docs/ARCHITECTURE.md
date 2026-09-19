@@ -266,7 +266,20 @@ exit status to a status FILE the runner polls) and then, per pane, its agent
 (`agent start --kind --pane`, which blocks until herdr has detected the agent and marked it ready for
 input — preceded by polling `pane process-info` until the pane's shell is actually idle, since herdr
 refuses a pane that isn't). A failed setup or agent is reported (log + pane token + notification) but
-never tears down the built layout. **An AGENT pane never carries the setup command as its process**:
+never tears down the built layout; a failed agent reports **herdr's own error code and message**
+(`agent_not_ready: … blocked during startup`), which is what distinguishes a harness stuck on a prompt
+from a missing binary or a busy pane.
+
+**Before a `claude` agent is started — in a layout pane or a dedicated one — the worktree is marked
+trusted in Claude Code's own config** (`core/claude-trust.ts`): `projects[<worktree path>].hasTrustDialogAccepted = true`
+in `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`, written by read → set the one key → temp
+file → rename, so every other key survives and a config that won't parse is reported rather than
+rewritten. Otherwise a fresh worktree can stop `claude` at its folder-trust prompt: herdr never marks
+the agent ready, and the step targeting that pane burns its whole layout-wait budget on an agent
+nobody is bringing up. Trusting the PARENT (`~/.herdr/worktrees`) is not reliable — one host honoured
+it for folders inside it and another did not — so the worktree path itself is trusted, on every start
+(a running claude rewrites this file, so the read sits immediately before the write; a lost update
+costs one re-trust, not a park). **An AGENT pane never carries the setup command as its process**:
 baking it in ends that pane's script with `exec $SHELL -i`, and herdr will not adopt an agent into the
 re-exec'd shell — `agent start` accepts the pane, launches nothing and times out, so every step
 targeting it burns its layout wait and parks (found end-to-end; `test/e2e/scenarios/layout-setup-on-agent-pane.e2e.ts`).
