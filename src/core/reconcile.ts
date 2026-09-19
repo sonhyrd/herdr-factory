@@ -1836,6 +1836,12 @@ const layoutWaitGuard = (step: StepConfig): GuardSpec | undefined => step.guards
  *  args straight from the layout pane's `agent:` block, trust pre-answered) is the only recovery that
  *  can work without a human.
  *
+ *  One ordering note: herdr keeps a starting agent's NAME reserved for as long as its own `agent start`
+ *  is waiting out the pane's readiness timeout, so a re-adopt issued INSIDE that window is refused
+ *  `agent_name_taken` — logged like any other failed start, and retried by the next window. With the
+ *  defaults that cannot happen (a 60s start timeout inside a 600s wait); it only bites where both are
+ *  compressed.
+ *
  *  Deliberately narrow: only a pane that resolves by its configured label AND is at an available shell
  *  prompt is touched — that state is herdr's own definition of "no agent here" and of a pane `agent
  *  start` will accept, so this can never interrupt an agent that is merely slow or mid-turn. Answers
