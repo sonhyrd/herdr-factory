@@ -1454,6 +1454,10 @@ cursor.
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
+  Eligible items come from each machine's **last tick poll**, never a live source query — the
+  dashboard refreshes every few seconds across every machine and repo, and querying the sources on
+  each refresh burned the whole (account-wide) API budget the factory itself claims with. So the list
+  is at most one `poll_interval_seconds` old, and a server that has not ticked yet shows none.
   A repo with a problem — a run parked for attention, suspended jobs, evidence uploads blocked on
   AWS creds, a source that cannot authenticate — carries a **red ⚠ icon and count** on its row, so a
   broken repo is visible at a glance; highlight the row to read the full detail on the action line,

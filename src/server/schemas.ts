@@ -174,7 +174,16 @@ const StatusResponse = z
 const EligibleResponse = z
   .object({
     eligible: z.array(
-      z.object({ source: z.string(), belt: z.string(), key: z.string(), summary: z.string(), type: z.string() }),
+      // `polledAt` = epoch SECONDS of the tick poll this item came from (the endpoint serves that
+      // snapshot, never a live query). Optional: an older server omits it.
+      z.object({
+        source: z.string(),
+        belt: z.string(),
+        key: z.string(),
+        summary: z.string(),
+        type: z.string(),
+        polledAt: z.number().optional(),
+      }),
     ),
   })
   .openapi("Eligible");

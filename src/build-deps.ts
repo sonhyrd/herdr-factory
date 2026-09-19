@@ -8,7 +8,7 @@ import { openDb } from "./db/index.ts";
 import { Store } from "./db/store.ts";
 import { availableMemoryMb, loadMachineConfig } from "./machine.ts";
 import { systemClock } from "./types.ts";
-import type { BeltMatch } from "./types.ts";
+import type { BeltMatch, MatchItem } from "./types.ts";
 import { HerdrClient } from "./clients/herdr.ts";
 import { descriptorFor } from "./sources/registry.ts";
 import { GitHubClient } from "./clients/github.ts";
@@ -71,6 +71,7 @@ export async function buildDeps(repoName: string): Promise<Deps> {
         maxActiveWorkspaces: s.maxActiveWorkspaces,
         claimGuard: s.claimGuard,
         lastPolledAt: new Map<string, number>(),
+        lastEligible: new Map<string, { items: MatchItem[]; at: number }>(),
       };
     });
     const sourceByName = new Map(sources.map((s) => [s.name, s]));

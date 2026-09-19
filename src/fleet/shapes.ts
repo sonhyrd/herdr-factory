@@ -77,6 +77,9 @@ export interface EligibleItem {
   key: string;
   summary: string;
   type: string;
+  /** Epoch SECONDS of the tick poll this item came from — `/eligible` serves the tick's snapshot,
+   *  not a live source query, so a consumer can show the list's age. Absent from older servers. */
+  polledAt?: number;
 }
 
 export interface TimelineEvent {

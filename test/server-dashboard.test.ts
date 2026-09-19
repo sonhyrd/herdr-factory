@@ -29,8 +29,22 @@ describe("dashboard server payloads", () => {
       paneId: "pane-1",
       endedAt: null,
     };
-    const source = { name: "jira", type: "jira", client: { authStatus, health, listEligible } };
-    const pausedSource = { name: "paused-jira", type: "jira", client: { authStatus, health, listEligible: pausedEligible } };
+    // `/eligible` serves the TICK's last poll (src.lastEligible), never a live query — so the fixture
+    // seeds the snapshot the reconciler would have written, and the clients must stay untouched.
+    const source = {
+      name: "jira",
+      type: "jira",
+      client: { authStatus, health, listEligible },
+      lastEligible: new Map([
+        ["pickup", { items: [{ key: "HF-2", summary: "Active item", type: "Task" }, { key: "HF-1", summary: "Fast dashboard", type: "Task" }], at: 1700 }],
+      ]),
+    };
+    const pausedSource = {
+      name: "paused-jira",
+      type: "jira",
+      client: { authStatus, health, listEligible: pausedEligible },
+      lastEligible: new Map([["pickup", { items: [{ key: "HF-9", summary: "Paused work", type: "Task" }], at: 1700 }]]),
+    };
     const runtime = {
       ticking: false,
       deps: {
@@ -48,6 +62,9 @@ describe("dashboard server payloads", () => {
         ],
         store: {
           activeRuns: () => [run],
+          // The snapshot is up to a poll interval old: an item claimed since then is a run, not
+          // eligible work (HF-2 is the active run below, and must not be listed twice).
+          activeRunForTicket: (_repo: string, _source: string, key: string) => (key === "HF-2" ? run : undefined),
           listRuns: () => [],
           runStepsFor: () => [],
           getSourceAuth: () => undefined,
@@ -97,9 +114,10 @@ describe("dashboard server payloads", () => {
     const eligibleResponse = await app.request("/repos/demo/eligible");
     expect(eligibleResponse.status).toBe(200);
     expect(await eligibleResponse.json()).toEqual({
-      eligible: [{ source: "jira", belt: "ship", key: "HF-1", summary: "Fast dashboard", type: "Task" }],
+      eligible: [{ source: "jira", belt: "ship", key: "HF-1", summary: "Fast dashboard", type: "Task", polledAt: 1700 }],
     });
-    // The inactive belt's source is never polled, so its items never reach the dashboard.
+    // Neither source is queried by the endpoint, and the inactive belt's items never reach the board.
+    expect(listEligible).not.toHaveBeenCalled();
     expect(pausedEligible).not.toHaveBeenCalled();
   });
 

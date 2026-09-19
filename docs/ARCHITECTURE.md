@@ -1047,7 +1047,10 @@ unchanged), and between polls the source contributes **no** eligible items — s
 at `max_claims_per_tick` per *poll window*, not per tick (**drain-per-window**). The last-poll time
 is held per `(source, label)` in-memory on the long-lived per-repo runtime (`SourceRuntime.lastPolledAt`),
 stamped on the *attempt* so a paused/erroring source still backs off to its interval; a fresh
-process (a one-shot `tick`) starts empty and polls immediately. An item with
+process (a one-shot `tick`) starts empty and polls immediately. A **successful** poll also stores its
+items under the same key (`SourceRuntime.lastEligible`, with the time it was taken): that snapshot is
+what `GET /repos/:repo/eligible` serves, so the tick's poll is the **only** thing that ever queries a
+source for eligible work (a failed, gated or held poll leaves the last good list standing). An item with
 an **undelivered status write-back is skipped** — its "eligible" listing is known-stale (this is
 what prevents a merged run whose transition never landed from being claimed and re-done). One
 source's backend hiccup is caught per-source and never starves the others. Per-run errors are
@@ -1953,7 +1956,11 @@ what the old per-repo `watch` did, but collapsed into a single process plus a lo
   (the mutating CLI paths — `retry-now` is the bulk operator due-now: clear the repo's, or one
   run's, suspensions, re-queue its waiting pending intents, and flush them under the tick lock, §6) ·
   `GET /repos/:repo/{status,runs,eligible,timeline}` (reads for the
-  web UI) · `GET /repos/:repo/obligations?key=` ("why is this run waiting and what would move
+  web UI — `eligible` answers from the tick's last poll (`SourceRuntime.lastEligible`, each item
+  carrying its `polledAt`), minus anything that already has an active run; it **never** calls a
+  source. It used to query live, and one open TUI refreshing every 3s across every machine and repo
+  spent the whole account-wide GitHub budget and delayed the factory's own claims. Nothing polled
+  yet ⇒ nothing listed) · `GET /repos/:repo/obligations?key=` ("why is this run waiting and what would move
   it": the run's undelivered outbox intents + pending signal/question, and its armed watches —
   the active step's guards with live clocks/counters and rescue class, the engine-universal
   watches, counted bounce caps — all registry-derived, read-only and lock-free;

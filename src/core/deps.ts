@@ -303,6 +303,12 @@ export interface SourceRuntime {
    *  a fresh process (one-shot `tick`) starts empty and polls immediately (harmless). Read/written
    *  by the reconciler's Phase B poll gate. */
   lastPolledAt: Map<string, number>;
+  /** The last SUCCESSFUL poll's items per pickup label (same key as `lastPolledAt`), with the epoch
+   *  SECONDS it was taken. Written by the reconciler's Phase B poll, read by the server's `/eligible`
+   *  — which must never query a source itself: one open TUI polling every 3s would spend the whole
+   *  (account-wide) GitHub budget and starve the tick's own claims. In-memory, so a fresh process
+   *  serves nothing until its first tick. A failed, gated or held poll leaves the last good list. */
+  lastEligible: Map<string, { items: MatchItem[]; at: number }>;
   /** The resolved claim guard (INV-10); undefined ⇒ disabled, claiming is local-store only. */
   claimGuard?: { host: string; settleMs: number };
 }
