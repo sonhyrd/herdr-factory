@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type SourceRuntime } from "./deps.ts";
-import type { StepConfig } from "../config.ts";
+import type { LayoutAgent, StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
@@ -15,8 +15,8 @@ import { branchName } from "./branch.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
-import { adoptLayoutAgent } from "./layout.ts";
-import { resolveBeltLayout } from "./layout-match.ts";
+import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
+import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { reportToPane, showRunPane } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
@@ -1850,18 +1850,54 @@ const layoutWaitGuard = (step: StepConfig): GuardSpec | undefined => step.guards
 async function retryLayoutAgent(deps: Deps, run: Run, belt: BeltRuntime, step: StepConfig): Promise<boolean> {
   if (!run.workspaceId || !step.tab || !step.pane) return false;
   try {
-    const layout = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
-    const agent = layout?.tabs.find((t) => t.title === step.tab)?.panes.find((p) => p.title === step.pane)?.agent;
-    if (!layout || !agent) return false; // a pane the layout doesn't declare an agent for — nothing to restart
+    const target = layoutAgentForStep(deps, run, belt, step);
+    if (!target) return false; // a pane the layout doesn't declare an agent for — nothing to restart
     const paneId = await deps.herdr.tabPaneByLabel(run.workspaceId, step.tab, step.pane);
     if (!paneId) return false; // the layout hasn't built the pane yet — wait, don't build it here
     if (!(await deps.herdr.paneAtShellPrompt(paneId))) return false; // an agent IS there (or the pane is busy)
-    deps.log("warn", `${run.ticketKey}: ${step.tab}/${step.pane} is at a shell prompt with no agent — re-starting ${agent.kind}`);
-    const name = await adoptLayoutAgent(deps, layout.id, agent, paneId, run.workspaceId, { cwd: run.worktreePath ?? undefined });
+    deps.log("warn", `${run.ticketKey}: ${step.tab}/${step.pane} is at a shell prompt with no agent — re-starting ${target.agent.kind}`);
+    const name = await adoptLayoutAgent(deps, target.layoutId, target.agent, paneId, run.workspaceId, {
+      cwd: run.worktreePath ?? undefined,
+      name: target.name,
+    });
     return name != null;
   } catch {
     return false; // herdr unreachable / a pane that vanished mid-check — the wait re-arms as before
   }
+}
+
+/** The layout pane a step dispatches into: its `agent:` block and the herdr agent NAME the layout
+ *  BUILD gave it — which the retry has to reuse exactly.
+ *
+ *  herdr requires an agent name to be unique among LIVE agents, so the build numbers the agent panes
+ *  it walks (`claude-w1`, `claude-w1-2`, …) rather than naming them all after the workspace. A retry
+ *  that asked for the bare base name would therefore be refused `agent_name_taken` for every pane but
+ *  the first whenever an earlier same-kind pane's agent is alive — which is the normal case (this
+ *  repo's own ship layout has four agent panes in one workspace), and it would leave exactly the park
+ *  this retry exists to prevent. So the walk here mirrors `applyLayoutImpl`: the layout PRUNED the way
+ *  the hook prunes it for a factory-owned run (a dropped tab shifts every later pane's number), tabs
+ *  in order, panes in order, accumulating names until the step's own pane. That name is free precisely
+ *  because this pane's agent is the one that is not live. A pane with an explicit `agent_name` keeps
+ *  it, exactly as the build does. */
+function layoutAgentForStep(
+  deps: Deps,
+  run: Run,
+  belt: BeltRuntime,
+  step: StepConfig,
+): { layoutId: string; agent: LayoutAgent; name: string } | undefined {
+  const resolved = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
+  if (!resolved || !run.workspaceId) return undefined;
+  const { layout } = pruneLayoutToBelt(resolved, belt);
+  const taken: string[] = [];
+  for (const tab of layout.tabs) {
+    for (const pane of tab.panes) {
+      if (!pane.agent) continue;
+      const name = pane.agent.name ?? deriveAgentName(pane.agent.kind, run.workspaceId, taken);
+      if (tab.title === step.tab && pane.title === step.pane) return { layoutId: layout.id, agent: pane.agent, name };
+      taken.push(name);
+    }
+  }
+  return undefined;
 }
 
 /** A step is waiting for its configured layout pane to come up (an idle agent in tab/pane).

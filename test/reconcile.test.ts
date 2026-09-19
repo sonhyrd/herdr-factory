@@ -148,8 +148,9 @@ function build(opts: { multi?: boolean } = {}) {
     // This replaced the pane RENAMES the factory used to convey step/attention state with.
     paneDisplay: [] as [string, string | undefined, string | null][],
     agentFocus: [] as string[],
-    // Layout agent adoptions the engine issued — [paneId, kind, args] (the layout wait's restart).
-    agentAdopt: [] as [string, string, string][],
+    // Layout agent adoptions the engine issued — [paneId, name, kind, args] (the layout wait's
+    // restart). The NAME matters: herdr refuses one that a live agent already holds.
+    agentAdopt: [] as [string, string, string, string][],
     worktreeRemove: [] as string[],
     workspaceClose: [] as string[],
     rmrf: [] as string[],
@@ -254,7 +255,7 @@ function build(opts: { multi?: boolean } = {}) {
     paneRun: async () => {},
     paneClose: async () => {},
     agentAdopt: async (paneId, o) => {
-      calls.agentAdopt.push([paneId, o.kind, (o.args ?? []).join(" ")]);
+      calls.agentAdopt.push([paneId, o.name, o.kind, (o.args ?? []).join(" ")]);
       return !state.adoptFails;
     },
     tabCreate: async () => ({ tabId: "w1:t2", paneId: "w1:pN" }),
@@ -1388,7 +1389,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
 
     setNow(1601); // past layout_wait_seconds (600)
     await reconcileRun(deps, store.getRun(run.id)!);
-    expect(calls.agentAdopt).toEqual([["w1:p1", "claude", "--dangerously-skip-permissions"]]);
+    expect(calls.agentAdopt).toEqual([["w1:p1", "claude-w1", "claude", "--dangerously-skip-permissions"]]);
     expect(store.getRun(run.id)!.phase).toBe("claiming"); // still waiting, re-armed as before
     const retry = store.timeline("demo", "W-44").find((e) => e.type === "layout_wait_retry")!;
     expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(true);
@@ -1411,6 +1412,32 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.agentAdopt).toEqual([]); // never interrupts a live agent
     const retry = store.timeline("demo", "W-45").find((e) => e.type === "layout_wait_retry")!;
     expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(false);
+  });
+
+  it("the re-adopt reuses the name the layout BUILD gave that pane, not the base name", async () => {
+    // The build numbers the agent panes it walks (herdr requires a name unique among LIVE agents), so
+    // a retry that asked for `claude-w1` would be refused `agent_name_taken` for every pane but the
+    // first whenever an earlier same-kind pane's agent is alive — and the run would burn its whole
+    // wait budget, which is the park this retry exists to prevent.
+    const { deps, store, state, calls, setNow, shipBelt } = build();
+    deps.config.layouts.push({
+      id: "L",
+      tabs: [
+        // `review` comes FIRST in the layout and is targeted by the belt, so pruning keeps it and its
+        // agent takes the base name — the step under wait (`fix`) is the SECOND same-kind pane.
+        { title: "review", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "claude", args: [] } }] },
+        { title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "claude", args: ["--flag"] } }] },
+      ],
+    });
+    shipBelt.defaultLayout = "L";
+    state.eligible = [ticket("W-47")];
+    state.paneState = "working";
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-47")!;
+
+    setNow(1601);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentAdopt).toEqual([["w1:p1", "claude-w1-2", "claude", "--flag"]]);
   });
 
   it("with no layout declaring the step's pane, the wait re-arms exactly as before", async () => {

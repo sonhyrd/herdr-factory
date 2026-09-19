@@ -14,6 +14,8 @@ const FAKE = `#!/bin/bash
 case "$1:$2" in
   tab:create) echo '{"result":{"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}' ;;
   agent:start)
+    # "silent" fails saying nothing on either stream — a herdr that dies without a message.
+    if [ "$HERDR_FAKE_ADOPT_FAIL" = "silent" ]; then exit 1; fi
     if [ -n "$HERDR_FAKE_ADOPT_FAIL" ]; then echo 'agent not detected' >&2; exit 1; fi
     echo '{"result":{"agent":{"pane_id":"w1:p9"}}}' ;;
   agent:list)
@@ -227,6 +229,23 @@ describe("HerdrClient — the layout runner's queries", () => {
     expect(valueOf(argv, "--pane")).toBe("w1:p1");
     expect(valueOf(argv, "--timeout")).toBe("90000");
     expect(argv.slice(argv.indexOf("--") + 1)).toEqual(["--yolo"]);
+  });
+
+  it("lastAgentError describes the LAST start only — never a previous pane's failure", async () => {
+    // Callers log and notify this as the cause of the start they just issued (core/layout.ts's
+    // adoptLayoutAgent), so a value left standing from an earlier pane would be a confident lie.
+    const client = new HerdrClient(bin);
+    process.env.HERDR_FAKE_ADOPT_FAIL = "1";
+    expect(await client.agentAdopt("w1:p1", { name: "claude-w1", kind: "claude" })).toBe(false);
+    expect(client.lastAgentError).toContain("agent not detected");
+
+    process.env.HERDR_FAKE_ADOPT_FAIL = "silent"; // fails, but says nothing
+    expect(await client.agentAdopt("w1:p2", { name: "claude-w1-2", kind: "claude" })).toBe(false);
+    expect(client.lastAgentError, "no message ⇒ no cause, not the old one").toBeNull();
+
+    delete process.env.HERDR_FAKE_ADOPT_FAIL; // and a start that WORKS leaves nothing behind
+    expect(await client.agentAdopt("w1:p3", { name: "claude-w1-3", kind: "claude" })).toBe(true);
+    expect(client.lastAgentError).toBeNull();
   });
 
   it("agentOpenPrompt waits for the agent to SETTLE only when a timeout is given", async () => {

@@ -372,7 +372,7 @@ export async function adoptLayoutAgent(
   agent: LayoutAgent,
   paneId: string,
   workspaceId: string,
-  opts: { cwd?: string; taken?: string[] } = {},
+  opts: { cwd?: string; taken?: string[]; name?: string } = {},
 ): Promise<string | null> {
   // Trust the worktree ITSELF, not just its parent: a claude that stops at the folder-trust prompt is
   // "started" as far as the pane is concerned but never becomes ready, and the step waiting on this
@@ -382,7 +382,10 @@ export async function adoptLayoutAgent(
     if (trust.status === "set") deps.log("info", `layout "${layoutId}": trusted ${opts.cwd} in ${trust.path} for claude`);
     if (trust.status === "failed") deps.log("warn", `layout "${layoutId}": could not trust ${opts.cwd} in ${trust.path}: ${trust.detail}`);
   }
-  const name = agent.name ?? deriveAgentName(agent.kind, workspaceId, opts.taken ?? []);
+  // `opts.name` is for a caller that knows the name this pane was BUILT under and must reuse it (the
+  // layout wait's retry — see layoutAgentForStep in core/reconcile.ts); the build itself numbers its
+  // panes through `taken`.
+  const name = opts.name ?? agent.name ?? deriveAgentName(agent.kind, workspaceId, opts.taken ?? []);
   opts.taken?.push(name);
   const ok = await deps.herdr.agentAdopt(paneId, {
     name,

@@ -321,17 +321,19 @@ export class HerdrClient {
     const args = ["agent", "start", opts.name, "--kind", opts.kind, "--pane", paneId, "--timeout", String(timeout)];
     if (opts.args?.length) args.push("--", ...opts.args);
     this.agentsMemo = null; // the agent set is about to change — don't serve a pre-spawn snapshot
+    // Cleared per call, not left standing: a caller reads this to report why THIS start failed, and a
+    // later failure that said nothing on either stream would otherwise be reported with an earlier,
+    // unrelated pane's error as its cause.
+    this.lastAgentError = null;
     const r = await run(this.bin, args, { allowFail: true, timeoutMs: timeout + 30_000 });
     this.agentsMemo = null;
-    if (r.code !== 0) {
-      const detail = `${r.stderr || r.stdout}`.trim().slice(0, 200);
-      if (detail) this.lastAgentError = detail;
-    }
+    if (r.code !== 0) this.lastAgentError = `${r.stderr || r.stdout}`.trim().slice(0, 200) || null;
     return r.code === 0;
   }
 
-  /** The last `agent start` failure text, for a caller that wants to log WHY (herdr answers with a
-   *  machine-readable code, e.g. `invalid_agent_name` / `agent_pane_not_found`). */
+  /** Why the last `agent start` failed, for a caller that wants to log it (herdr answers with a
+   *  machine-readable code, e.g. `invalid_agent_name` / `agent_pane_not_found`). Scoped to the MOST
+   *  RECENT call: reset at the top of every `agentAdopt`, so it is never a stale other pane's error. */
   lastAgentError: string | null = null;
 
   /** A LAYOUT pane's opening prompt (`panes[].prompt`), submitted once its agent is ready. Waiting is
