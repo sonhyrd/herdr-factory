@@ -318,7 +318,9 @@ Healthy = rows/events. **Empty output is ambiguous**: no runs, wrong `--repo`, w
 2026-…Z [WARN] issues: eligible query failed: HTTP 404: https://api.github.com/repos/acme/widget/issues?labels=agent&…
 ```
 
-Typical causes: `HTTP 401/403` (bad or expired token), `HTTP 404` (wrong or private repo), a Jira board id that doesn't exist. (The HTTP route returns an extra `belt` field the CLI omits, and it skips INACTIVE belts — the CLI polls them too, so CLI `eligible` can list items the dashboard/`/eligible` will not show and nothing will claim.)
+Typical causes: `HTTP 401/403` (bad or expired token), `HTTP 404` (wrong or private repo), a Jira board id that doesn't exist.
+
+**The CLI and the HTTP route are not the same read.** `eligible` is the only one that queries the sources live — it polls every belt, INACTIVE ones included, so it can list items the dashboard will never show and nothing will claim. `GET /repos/{repo}/eligible` (what the dashboard and the TUI read) **never** calls a source: it answers from the last successful tick poll, adds `belt` and `polledAt` (epoch seconds, so a UI can show the list's age), skips inactive belts and anything that already has an active run. A server that hasn't ticked yet answers `[]`, and a list up to one `poll_interval_seconds` stale is expected. Use the CLI when you need to know what the source says *right now*; the endpoint is deliberately free, because one open TUI polling it live used up the whole (account-wide) GitHub budget.
 
 ### `logs`
 

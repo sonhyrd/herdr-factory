@@ -320,28 +320,36 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
   };
 }
 
-async function eligiblePayload(rt: RepoRuntime): Promise<{ source: string; belt: string; key: string; summary: string; type: string }[]> {
-  const out: { source: string; belt: string; key: string; summary: string; type: string }[] = [];
+type EligibleRow = { source: string; belt: string; key: string; summary: string; type: string; polledAt?: number };
+
+/** Eligible work as of the TICK's last successful poll — this NEVER queries a source. The dashboard
+ *  refreshes every few seconds across every machine and repo; querying live here spent the whole
+ *  (GitHub-account-wide) rate budget and delayed the factory's own claims, so the reconciler's
+ *  Phase B poll is the single reader and this serves its snapshot (`src.lastEligible`). A belt with
+ *  nothing cached yet (fresh process, before its first tick) simply contributes nothing. */
+function eligiblePayload(rt: RepoRuntime): EligibleRow[] {
+  const out: EligibleRow[] = [];
   // Eligibility is per BELT now — each belt polls its source with its own pickup label. Walk belts
   // (not sources) so a label-driven source's items are surfaced under the belt(s) that claim them;
   // dedup by (source, key) since two belts could name the same source (with distinct labels).
   const seen = new Set<string>();
   for (const belt of rt.deps.belts) {
-    // An inactive belt takes on no new work — mirror Phase B and don't poll its source or surface
-    // its items. Otherwise the dashboard shows never-claimable eligible rows for the belt, and since
-    // the quick (eligible-less) paint skips an empty belt while the folded-in paint shows it, the
-    // belt block flickers in/out every refresh cycle.
+    // An inactive belt takes on no new work — mirror Phase B and don't surface its items. Otherwise
+    // the dashboard shows never-claimable eligible rows for the belt, and since the quick
+    // (eligible-less) paint skips an empty belt while the folded-in paint shows it, the belt block
+    // flickers in/out every refresh cycle.
     if (!belt.active) continue;
     const src = rt.deps.resolveSource(belt.source);
     if (!src) continue;
-    try {
-      for (const t of await src.client.listEligible(belt.label)) {
-        if (seen.has(`${src.name} ${t.key}`)) continue;
-        seen.add(`${src.name} ${t.key}`);
-        out.push({ source: src.name, belt: belt.name, key: t.key, summary: t.summary, type: t.type });
-      }
-    } catch (e) {
-      rt.deps.log("warn", `${src.name}: eligible query failed: ${msg(e)}`);
+    const snapshot = src.lastEligible.get(belt.label ?? "");
+    if (!snapshot) continue;
+    for (const t of snapshot.items) {
+      if (seen.has(`${src.name} ${t.key}`)) continue;
+      // The snapshot is up to one poll interval old, so an item claimed since then would otherwise
+      // render as both a running and an eligible row (Phase B applies the same check before claiming).
+      if (rt.deps.store.activeRunForTicket(rt.deps.config.repoName, src.name, t.key)) continue;
+      seen.add(`${src.name} ${t.key}`);
+      out.push({ source: src.name, belt: belt.name, key: t.key, summary: t.summary, type: t.type, polledAt: snapshot.at });
     }
   }
   return out;
@@ -552,7 +560,7 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     const { repo } = c.req.valid("param");
     const rt = ctx.getRepo(repo);
     if (!rt) return c.json({ error: notConfigured(repo) }, 404);
-    return c.json({ eligible: await eligiblePayload(rt) }, 200);
+    return c.json({ eligible: eligiblePayload(rt) }, 200);
   });
 
   app.openapi(timelineRoute, async (c) => {

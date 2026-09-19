@@ -674,6 +674,9 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
       items = await src.client.listEligible(label);
       noteSourceAuthRecovered(deps, src.name); // a successful poll ⇒ auth is fine (clears any gate)
       noteSourceRateLimitCleared(deps, src.name); // …and that the budget is back
+      // The tick's poll is the ONLY thing that queries a source for eligible work; `/eligible` serves
+      // this snapshot. Only a success overwrites it, so a blip keeps the last good list on the board.
+      src.lastEligible.set(label ?? "", { items, at: deps.now() });
     } catch (e) {
       // A source that can't authenticate is PAUSED, not broken: record + notify (once) and skip its
       // claims this tick — it auto-resumes when a later poll succeeds. A rate-limited source is held

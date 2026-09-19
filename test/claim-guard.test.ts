@@ -50,7 +50,7 @@ function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?
     client,
     pollIntervalSeconds: 60,
     maxActiveWorkspaces: 9,
-    lastPolledAt: new Map(),
+    lastPolledAt: new Map(), lastEligible: new Map(),
     claimGuard: opts.guard === false ? undefined : { host, settleMs: 2000 },
   };
   const belt: BeltRuntime = { name: "ship", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: [], watchPr: true };

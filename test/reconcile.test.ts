@@ -6,6 +6,7 @@ import { openDb } from "../src/db/index.ts";
 import { Store } from "../src/db/store.ts";
 import { applyPendingFocus, bounceStep, claimTicket, teardownTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
 import { applySignal } from "../src/core/signals.ts";
+import { createApp, type RepoRuntime, type ServerContext } from "../src/server/app.ts";
 import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type GitApi, type GitHubApi, type HerdrApi, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import { SourceUnauthenticatedError } from "../src/auth/errors.ts";
@@ -200,7 +201,7 @@ function build(opts: { multi?: boolean } = {}) {
   };
   // Per-source cap set high (effectively unlimited) so the DEFAULT-2 cap doesn't bite the existing
   // global-cap tests; the dedicated per-source-cap test overrides it explicitly.
-  const sources: SourceRuntime[] = [{ name: "jira", type: "jira", client: jiraClient, pollIntervalSeconds: 60, maxActiveWorkspaces: 999, lastPolledAt: new Map() }];
+  const sources: SourceRuntime[] = [{ name: "jira", type: "jira", client: jiraClient, pollIntervalSeconds: 60, maxActiveWorkspaces: 999, lastPolledAt: new Map(), lastEligible: new Map() }];
   // The default belt: a work_to_pull_request belt on the jira source (today's fix→review→pr flow).
   const shipBelt: BeltRuntime = { name: "ship", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true };
   const belts: BeltRuntime[] = [shipBelt];
@@ -220,7 +221,7 @@ function build(opts: { multi?: boolean } = {}) {
       pollHumanReply: async (input) => { calls.humanPoll.push(input); return state.humanReply; },
       health: async () => {},
     };
-    sources.push({ name: "lm", type: "local_markdown", client: lmClient, pollIntervalSeconds: 60, maxActiveWorkspaces: 999, lastPolledAt: new Map() });
+    sources.push({ name: "lm", type: "local_markdown", client: lmClient, pollIntervalSeconds: 60, maxActiveWorkspaces: 999, lastPolledAt: new Map(), lastEligible: new Map() });
     lmBelt = { name: "lmship", beltType: "work_to_pull_request", source: "lm", priority: 2, active: true, workspaceName: "feature/{{work_id}}", steps: prSteps(), watchPr: true };
     belts.push(lmBelt);
   }
@@ -3641,5 +3642,41 @@ describe("claim ledger — release at teardown", () => {
     expect(store.getRun(run.id)!.phase).toBe("done");
     expect(store.getRun(plain.id)!.phase).toBe("done");
     expect(posted).toEqual([["K-CG1", `[herdr-factory release id=${run.id} host=mac]`]]);
+  });
+});
+
+// One open TUI refreshes /eligible every few seconds, on every machine, for every repo. When that
+// endpoint queried the sources live it spent the whole (GitHub-account-wide) budget and delayed the
+// factory's own claims — so the tick's poll is now the only reader, and the endpoint serves its
+// snapshot.
+describe("/eligible serves the tick's last poll — the API never queries a source", () => {
+  it("empty before the first tick, the tick's items after it, and 0 source calls throughout", async () => {
+    const { deps, state, calls, shipBelt } = build();
+    shipBelt.match = () => false; // polled, never claimed — the snapshot is what we're after here
+    state.eligible = [ticket("A-2")];
+    const app = createApp({
+      getRepo: (name: string) => (name === "demo" ? ({ ticking: false, deps } as unknown as RepoRuntime) : undefined),
+    } as unknown as ServerContext);
+    const eligible = async () => (await (await app.request("/repos/demo/eligible")).json()) as unknown;
+    const listed = {
+      eligible: [{ source: "jira", belt: "ship", key: "A-2", summary: "Fix the thing", type: "Bug", polledAt: 1000 }],
+    };
+
+    // Nothing polled yet (a fresh process) ⇒ nothing listed, and nothing asked of the backend.
+    expect(await eligible()).toEqual({ eligible: [] });
+    expect(calls.eligibleQueries).toBe(0);
+
+    await reconcileRepo(deps);
+    expect(calls.eligibleQueries).toBe(1);
+
+    // THE POINT: repeated requests are served from that one poll — the counter never moves.
+    for (let i = 0; i < 3; i++) expect(await eligible()).toEqual(listed);
+    expect(calls.eligibleQueries).toBe(1);
+
+    // A failed poll must not blank the board: the last good list stands.
+    state.failEligible = true;
+    await reconcileRepo(deps);
+    expect(calls.eligibleQueries).toBe(1); // the failing poll never reached the counter
+    expect(await eligible()).toEqual(listed);
   });
 });
