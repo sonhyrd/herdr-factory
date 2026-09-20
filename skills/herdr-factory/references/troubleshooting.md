@@ -27,7 +27,7 @@ In order. Each step rules out a whole class of cause; stop when one produces a f
 
 | # | Command | Rules out / establishes |
 |---|---|---|
-| 1 | `herdr-factory --repo <r> doctor --deep` | Install, service, server liveness, config validity, source auth + live health, evidence publisher. `--repo` is a global option — `herdr-factory --repo <r> doctor` and `herdr-factory doctor --repo <r>` both work; without it, **zero** repo checks run (§5) |
+| 1 | `herdr-factory --repo <r> doctor --deep` | Install, service, server liveness, config validity, source auth + live health, evidence publisher, **orphaned dev servers** (amber: listeners under `~/.herdr/worktrees` no live run owns — the `orphaned dev servers` row in §4). `--repo` is a global option — `herdr-factory --repo <r> doctor` and `herdr-factory doctor --repo <r>` both work; without it, **zero** repo checks run (§5) |
 | 2 | `herdr-factory --repo <r> status` | Belts (priority + `INACTIVE`), sources, every active run with phase/step, live herdr pane state per run, per-step ✓/● ticks, plus `server:` / `supervisor:` lines. |
 | 3 | `curl -s 127.0.0.1:8765/health \| jq '.repos'` | **Is this repo being served, and is its tick loop alive?** `doctor` does not check either (§5). Look at `name`, `lastTickAt`, `tickStale`. |
 | 4 | `herdr-factory --repo <r> explain <KEY>` | **The plain-language "why is this run waiting"**: the phase/park story, every pending retry with its next attempt time, armed clocks, bounce counters, ready-made next commands — plus a warning when no server is ticking the repo. Reads the DB directly (works with the server down). |
@@ -557,6 +557,7 @@ Condensed; `⚠` (amber) never fails the exit code, `✗` sets exit 1.
 | `evidence publisher (local)` ✗ | `resident server not reachable at 127.0.0.1:<port>` / `served bytes did not match the probe` | `herdr-factory start` · another process is serving `<state>/evidence`, or two factories share a state root |
 | `evidence publisher (command)` ✗ | `could not run: spawn … ENOENT` / `exited <code>` / `printed no URLs to stdout` / `timed out after <n>s` | Absolute path + `chmod +x` · run it by hand · print one absolute URL per line · raise `evidence.timeout_seconds` |
 | `evidence uploads` ✗ | `<n> stuck — AWS SSO/creds expired` | §2.9 |
+| `orphaned dev servers` ⚠ (`--deep` only) | `<n> listener(s) outlived their run — <cmd> pid <p> on :<port> in <cwd>` — a dev server whose worktree has no live run. It holds the port (so the next run's server moves up its range and an evidence pass can film a **stale server on old code**) and its whole RSS, which the scheduler still counts as free | Check what it is (`ps -o pid,rss,etime,args -p <pid>`), then kill it **by hand** — `doctor` never kills. Stop the leak at the source: have the repo write its port to `$(git rev-parse --absolute-git-dir)/hf-port` so teardown reaps it ([target-repo.md](./target-repo.md)). Amber `could not check — …` just means `lsof` is missing or refused |
 
 The `s3` deep probe **writes one tiny object by design** (`…/.herdr-doctor`) and leaves it behind.
 
@@ -580,6 +581,7 @@ Each with the by-hand check.
 | **No DB integrity/schema check** — `database` is `existsSync` only | `PRAGMA integrity_check;` `PRAGMA foreign_key_check;` `SELECT * FROM schema_version ORDER BY version;` |
 | **Live auth rejection is invisible in shallow mode**, and the in-memory auth gate is never read | `doctor --deep`; `curl -s '.../repos/<r>/status?refresh=1'` |
 | **Nothing about stuck/parked runs**; and only `evidence_publish` intents are surfaced (transitions, reply polls, `waiting`/`failed` rows are ignored) | `status`, `explain <KEY>`, `timeline <KEY>`, `GET /repos/<r>/obligations?key=<KEY>`, `GET /repos/<r>/intents` (the raw obligations JSON and the intent rows are HTTP-only) |
+| **Orphan detection needs `lsof`, and only sees TCP listeners** — a leaked dev server that has already lost its port (or a machine with no `lsof`) reads as ✓/amber-unknown, and a listener whose cwd is outside `~/.herdr/worktrees` is never attributed to a run | `ps -eo pid,rss,etime,args \| grep -i 'nuxt\|vite\|next' ` and compare against `herdr-factory --repo <r> status` — the CLAUDE.md trap "the dev servers of finished runs can outlive teardown: check `ps` before assuming a host is busy" |
 | **No writability/disk checks**, and `aws` presence is never checked despite every S3 remediation telling you to run `aws sso login` | `df -h`; `command -v aws` |
 | **`repo.github` vs real origin mismatch is never flagged** — `repo.github` unconditionally wins, so a stale value silently sends PRs at the wrong repo while the row prints ✓ | Compare with `git -C <repo.path> remote get-url origin` |
 | **`evidence uploads` can crash the whole command** (it isn't wrapped in the error-catching helper): a locked/corrupt DB makes `doctor` print no groups at all | If `doctor` exits with a bare error and no output, suspect the DB |

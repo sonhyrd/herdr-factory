@@ -384,6 +384,10 @@ export interface Deps {
   machine?: MachineConfig;
   /** Available-memory reader (MB) for the machine memory gate; tests inject it. Absent ⇒ availableMemoryMb(). */
   availableMemoryMb?: () => number;
+  /** Kill whatever LISTENs on a TCP port and return the pids that held it — teardown's dev-server
+   *  reap (hf-port handshake). Tests inject it so no test ever signals a real process.
+   *  Absent ⇒ killPortListeners() from core/dev-server.ts. */
+  killPortListeners?: (port: number) => Promise<number[]>;
 }
 
 export type { Agent };

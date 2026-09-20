@@ -12,6 +12,7 @@ import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
+import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
@@ -2521,6 +2522,9 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
  * cleanup: it touches neither the DB nor the work source (teardown owns the run-state + write-back).
  */
 export async function removeRunWorktree(deps: Deps, run: Run): Promise<void> {
+  // The port this run's dev server reserved (hf-port handshake), read BEFORE the checkout — and
+  // its git dir — are destroyed. Absent/unreadable ⇒ null ⇒ nothing to reap.
+  const devPort = run.worktreePath ? readRunPort(run.worktreePath) : null;
   // Read the worktree's branch BEFORE the checkout is destroyed — it is the last chance to see a
   // rename this run never reconciled (teardown can be the very next thing after it).
   const observed = run.worktreePath ? await deps.git.currentBranch(run.worktreePath).catch(() => null) : null;
@@ -2530,6 +2534,17 @@ export async function removeRunWorktree(deps: Deps, run: Run): Promise<void> {
     if (await deps.herdr.workspaceExists(run.workspaceId)) {
       deps.log("warn", `${run.ticketKey}: worktree remove left workspace ${run.workspaceId} — closing it directly`);
       await deps.herdr.workspaceClose(run.workspaceId);
+    }
+  }
+  // The workspace is closed, so any dev server the layout started has just been reparented —
+  // kill the listener on the run's own port (never a pattern kill) before the dir goes. Teardown
+  // must never fail because a server was already gone: every outcome here is one log line.
+  if (devPort != null) {
+    try {
+      const killed = await (deps.killPortListeners ?? killPortListeners)(devPort);
+      deps.log("info", `${run.ticketKey}: dev server port ${devPort} — ${killed.length > 0 ? `killed pid(s) ${killed.join(", ")}` : "nothing was listening"}`);
+    } catch (e) {
+      deps.log("warn", `${run.ticketKey}: could not reap the dev server on port ${devPort} — ${err(e)}`);
     }
   }
   // The checkout dir can survive a partial remove. It's always a linked worktree under

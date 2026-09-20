@@ -11,6 +11,10 @@ import { createEvidencePublisher, credsRefreshHint } from "./clients/evidence.ts
 import { run } from "./clients/exec.ts";
 import { assertMainCheckout, globalDbPath, isManagedNode, loadConfig, type BeltConfig, type Config, type StepConfig } from "./config.ts";
 import { descriptorFor } from "./sources/registry.ts";
+import { orphanWorktreeListeners, worktreesRoot } from "./core/dev-server.ts";
+import { openDb } from "./db/index.ts";
+import { Store } from "./db/store.ts";
+import { systemClock } from "./types.ts";
 import { buildDeps } from "./build-deps.ts";
 import { availableMemoryMb, loadMachineConfig, machineConfigPath } from "./machine.ts";
 import type { Deps } from "./core/deps.ts";
@@ -81,6 +85,35 @@ export async function updateCheck(): Promise<DoctorCheck> {
     return { name, ok: true, detail: `main: upstream ${upstream}` };
   } catch (e) {
     return { name, ok: false, detail: e instanceof Error && e.message ? e.message : undefined };
+  }
+}
+
+/** Dev servers that outlived their run: a LISTENing process whose cwd is inside herdr's worktrees
+ *  dir with no live run owning that worktree. They keep a port (so the next run's server silently
+ *  moves up its range and an evidence pass can film a stale server) and their whole RSS — capacity
+ *  the scheduler believes it has and does not. Amber, never a ✗, and REPORT ONLY: doctor never
+ *  kills; teardown is the only thing that kills, and only its own run's port. Deep-only (it runs
+ *  an lsof per listener). */
+export async function orphanListenerCheck(): Promise<DoctorCheck> {
+  const name = "orphaned dev servers";
+  try {
+    const dbPath = globalDbPath();
+    // No DB ⇒ no run has ever existed on this box, so every listener under the worktrees dir would
+    // read as an orphan. Say nothing rather than cry wolf.
+    if (!existsSync(dbPath)) return { name, ok: true, detail: "no database yet — nothing has run here" };
+    const db = openDb(dbPath);
+    let live: string[];
+    try {
+      live = new Store(db, systemClock).activeWorktreePaths();
+    } finally {
+      db.close();
+    }
+    const orphans = await orphanWorktreeListeners(live);
+    if (orphans.length === 0) return { name, ok: true, detail: `none — every listener under ${worktreesRoot()} belongs to a live run` };
+    const detail = orphans.map((o) => `${o.command} pid ${o.pid} on :${o.port} in ${o.cwd}`).join(" · ");
+    return { name, ok: true, warn: true, detail: `${orphans.length} listener(s) outlived their run — ${detail}. Kill them by hand (doctor never kills)` };
+  } catch (e) {
+    return { name, ok: true, warn: true, detail: `could not check — ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -405,6 +438,7 @@ export async function baseGroups(deep = false, repo?: string): Promise<DoctorGro
       if (!existsSync(p)) throw new Error("not initialized yet (created on the first `serve`)");
       return p;
     }),
+    ...(deep ? [orphanListenerCheck()] : []),
   ]);
 
   // These tools are resolved against the SERVICE's PATH, not this process's. The checks run
