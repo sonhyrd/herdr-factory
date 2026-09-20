@@ -11,7 +11,7 @@
 // already happened once (an eager import pulling the Effect/OTel graph into the boot path), not a
 // benchmark — `test/tui-startup-graph.test.ts` owns the tight version of that check.
 import { expect } from "vitest";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scenario } from "../harness/index.ts";
 import { REPO_ROOT } from "../harness/world.ts";
@@ -20,6 +20,8 @@ import { delay } from "../harness/herdr.ts";
 // Hardcoded in src/tui/main.ts — the TUI has no writable state of its own at that point in boot.
 const STARTUP_LOG = "/tmp/herdr-factory-tui-startup.log";
 const APP_READY_BUDGET_MS = 8_000;
+/** The host-local gate this world sets, so the board has one to print (or to lose). */
+const MACHINE_CAP = 4;
 
 interface Timing {
   at: string;
@@ -39,9 +41,14 @@ scenario(
       work_sources: [{ type: "local_markdown", name: "briefs", local_markdown: { folder: p.briefs } }],
       belt: [{ name: "tui", source: "briefs", workspace_name: "t/{{work_id}}", steps: [{ type: "work" }] }],
     }),
-    beforeStart: async () => {
+    beforeStart: async (p) => {
       // Shared /tmp across scenarios, so start from nothing rather than reading someone else's boot.
       rmSync(STARTUP_LOG, { force: true });
+      // A host-local gate, so this scenario can hold the line the fleet board carries on its machine
+      // header: on an install of ONE there is no header, and the cap/memory figures have to be
+      // printed somewhere or the "why has nothing been claimed?" question is answered nowhere.
+      mkdirSync(p.configDir, { recursive: true });
+      writeFileSync(join(p.configDir, "machine.yml"), `max_active_workspaces: ${MACHINE_CAP}\nmin_free_memory_mb: 1\n`);
     },
   },
   async (w) => {
@@ -113,5 +120,17 @@ scenario(
     for (const chrome of ["(this machine)", "@local", "fleet ", "unverifiable"]) {
       expect(screen, `a one-machine TUI shows no "${chrome}"`).not.toContain(chrome);
     }
+
+    // …but the HOST-WIDE facts are not fleet chrome, and a board of one still has to carry them.
+    // They belong to the machine, so they are printed once, above the repo rows — never appended to
+    // every row, which is what the fleet board used to do.
+    const gate = screen.split("\n").filter((l) => l.includes("working across all repos"));
+    expect(gate.length, `the host gate is on exactly one line:\n${screen}`).toBe(1);
+    // (The memory half runs off the right edge of a ~50-column pane; `test/tui-fleet-view.test.ts`
+    // pins the whole string. What must be on SCREEN is the live occupancy against the host's cap.)
+    expect(gate[0]!, "with this host's live occupancy against its cap").toMatch(
+      new RegExp(`cap \\d+/${MACHINE_CAP} working across all repos · memory`),
+    );
+    expect(screen, "and the raw `machine: …` form never reaches a repo row").not.toContain("machine: cap");
   },
 );

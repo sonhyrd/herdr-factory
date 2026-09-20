@@ -16,6 +16,7 @@ import {
   createFleetSource,
   filterMachines,
   fleetStatusLine,
+  hostLines,
   idleLine,
   isIdleRepo,
   machineHeader,
@@ -359,6 +360,19 @@ describe("what the board leads with", () => {
     const hoisted = machineHeader(m, 1000).at(-1)!;
     expect(hoisted.tone).toBe("bad");
     expect(hoisted.text).toContain("⚠ issues: gh auth — on several repos");
+    // Same two facts, unindented, for the board that has no header to put them under.
+    expect(hostLines(m).map((l) => [l.text, l.tone])).toEqual([
+      ["cap 1/4 working across all repos", "accent"],
+      ["⚠ issues: gh auth — on several repos", "bad"],
+    ]);
+  });
+
+  it("a machine with no gate and no shared cause contributes no host lines at all", () => {
+    expect(hostLines(machineView()), "nothing to say ⇒ nothing drawn").toEqual([]);
+    expect(
+      hostLines(machineView({ repos: [{ repo: "app", status: repoStatus("app", [], { problems: [{ kind: "auth", detail: "app only" }] }), eligible: [] }] })),
+      "a cause only one repo reports stays on that repo's row",
+    ).toEqual([]);
   });
 
   it("a problem reads as its cause, not as a count and a keypress", () => {

@@ -1879,7 +1879,7 @@ recorded) so any `/status` reader sees it; the needs-a-human red (attention/fail
 
 **What the board says, and how often.** A fleet board is mostly repos with nothing happening in
 them: on three hosts, 17 of 19 rows carried no work, and the host-wide `machine.yml` gate was printed
-on every one of them. The render therefore has three editorial rules, all of them pure functions in
+on every one of them. The render therefore has four editorial rules, all of them pure functions in
 `tui/fleet-view.ts` so they unit-test as data:
 
 - **`needsYou(machines)`** builds the section that heads the board — green PRs waiting on a merge,
@@ -1889,14 +1889,25 @@ on every one of them. The render therefore has three editorial rules, all of the
   teaches an operator to skip the top of the screen. The green half needs a fact the API had to start
   carrying: `active[].prGreen`, read straight off the `pr_green` watch state (`watch_state`, step
   `pull_request`) — a DB read on the quick path, never a GitHub call on the 3 s poll.
-- **`sharedProblems(m)` / `shortProblem(detail)`** name a problem on its row by its cause rather than
-  counting it, and hoist a cause **more than one** of a host's repos reports identically onto the
-  machine header. The rows stay (so `d` still reaches each repo's full detail) — only the repetition
-  goes. `shortProblem` cuts the detail at its ` — <hint>` half, which is written for the modal.
   Because the section REPEATS rows that also appear under their machine, its targets carry
   `section: "needs"`, which is part of the dashboard's `rowKey`. Without it the two focusables share
   a key, and the highlight — restored by key across every 3 s refresh — snaps back to the section's
   copy each poll, dragging the scroll with it. (Found by `tui-board`, not by a unit test.)
+- **`hostLines(m)`** is the machine's own facts — the host-local `machine.yml` gate (cap occupancy,
+  free memory) and `sharedProblems` below — built in ONE place and printed ONCE per machine. Where
+  they land depends on the shape of the install, and that is the whole subtlety: a fleet board hangs
+  them under the machine header (`machineHeader` insets them), and a **one-machine** board, which
+  draws no header at all, emits them unindented directly above its repo rows (`pushMachine`, gated on
+  the same `badge`/fleet flag). Dropping them from the one-machine board — the common install —
+  would leave "why has nothing been claimed?" answered nowhere on the Dashboard, which is the
+  question the gate exists for. `tui-boot` holds that line on a real one-machine pane.
+- **`sharedProblems(m)` / `shortProblem(detail)`** name a problem on its row by its cause rather than
+  counting it, and hoist a cause **more than one** of a host's repos reports identically into
+  `hostLines` — so it is said once per machine on BOTH shapes of board. The rows stay (so `d` still
+  reaches each repo's full detail) — only the repetition goes. `shortProblem` cuts the detail at its
+  ` — <hint>` half, which is written for the modal. The row's own red suffix is rendered as
+  `   ⚠ <cause>`, so the cause string carries no glyph of its own: supplying one is where the
+  issue's `▲▲ 1 problem — press d` came from.
 - **`isIdleRepo(r)` / `idleLine(names, stale)`** collapse the repos with no active run, no eligible
   work and no problem into one line. A repo whose status failed to load is **not** idle (that is
   news), a repo with eligible-but-unclaimed work is **not** idle (it is one keypress from running),

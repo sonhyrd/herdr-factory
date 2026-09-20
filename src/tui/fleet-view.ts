@@ -147,11 +147,9 @@ export function machineHeader(m: MachineView, readAt: number): { text: string; t
     { text: `✓ ${m.name} (${where(m)}) — v${m.version ?? "?"} · ${running} running`, tone: "accent" },
     { text: `    ${m.repos.length} repo${m.repos.length === 1 ? "" : "s"} · read ${ago(readAt, m.lastSeenAt)}`, tone: "accent" },
   ];
-  // The host-local gate (cap occupancy, free memory) is the machine's own line, and long enough to
-  // deserve its own row.
-  if (m.machineLine) lines.push({ text: `    ${m.machineLine.replace(/^machine: /, "")}`, tone: "accent" });
-  // A cause several repos share is one cause: name it here, not once per row.
-  for (const detail of sharedProblems(m)) lines.push({ text: `    ⚠ ${shortProblem(detail)} — on several repos`, tone: "bad" });
+  // The host-local gate (cap occupancy, free memory) and any cause several of this machine's repos
+  // share: each long enough to deserve its own row, and each said once rather than once per repo.
+  for (const line of hostLines(m)) lines.push({ ...line, text: `    ${line.text}` });
   return lines;
 }
 
@@ -177,6 +175,24 @@ export function sharedProblems(m: MachineView): Set<string> {
   const seen = new Map<string, number>();
   for (const r of m.repos) for (const d of new Set((r.status?.problems ?? []).map((p) => p.detail))) seen.set(d, (seen.get(d) ?? 0) + 1);
   return new Set([...seen].filter(([, n]) => n > 1).map(([d]) => d));
+}
+
+/**
+ * The facts that belong to the MACHINE rather than to any one of its repos: the host-local
+ * `machine.yml` gate (cap occupancy, free memory) and any problem several of its repos report
+ * identically. Printed ONCE per machine, and this is the only place they are built — under the
+ * machine header on a fleet, and directly above the repo rows on a one-machine install, which draws
+ * no header at all. A one-machine board that dropped them would answer "why has nothing been
+ * claimed?" nowhere, which is the question the gate exists for.
+ *
+ * Unindented: the caller decides (a header's continuation lines are inset; a one-machine board's
+ * repo rows are not).
+ */
+export function hostLines(m: MachineView): { text: string; tone: "accent" | "bad" }[] {
+  const lines: { text: string; tone: "accent" | "bad" }[] = [];
+  if (m.machineLine) lines.push({ text: m.machineLine.replace(/^machine: /, ""), tone: "accent" });
+  for (const detail of sharedProblems(m)) lines.push({ text: `⚠ ${shortProblem(detail)} — on several repos`, tone: "bad" });
+  return lines;
 }
 
 /** True when a repo has nothing an operator could act on: no active run, no eligible work, no

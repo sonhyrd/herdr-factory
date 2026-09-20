@@ -1534,9 +1534,9 @@ cursor.
   A repo with a problem — a run parked for attention, suspended jobs, evidence uploads blocked on
   AWS creds, a source that cannot authenticate — **names it in red on its row** (`⚠ issues: gh auth`,
   plus `(+N more)` when it has several), so what is broken reads without a keypress; a cause that
-  **several of a host's repos report identically** is said once on the machine header
-  (`⚠ issues: gh auth — on several repos`) instead of once per row — one `gh auth` is one login. The
-  rows stay either way; highlight one to read the full detail on the action line,
+  **several of a host's repos report identically** is said once for that machine
+  (`⚠ issues: gh auth — on several repos`, beside its host gate) instead of once per row — one
+  `gh auth` is one login. The rows stay either way; highlight one to read the full detail on the action line,
   or press `d` for the detail view, where everything unhealthy (the problems, a failed auth probe, a
   down belt) renders **in red**. Problems are **recorded, not polled**: the engine writes a problem
   the moment its own machinery observes one (a login failure, an expired AWS session caught by the

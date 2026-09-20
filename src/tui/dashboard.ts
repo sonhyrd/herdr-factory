@@ -36,6 +36,7 @@ import {
   createFleetSource,
   filterMachines,
   fleetStatusLine,
+  hostLines,
   idleLine,
   isIdleRepo,
   machineHeader,
@@ -451,10 +452,12 @@ export function createDashboard(
       }
     };
     const suffix = badge ? `  @${m.name}` : "";
-    // Hoisting a shared cause onto the machine header only works when there IS a header: a
-    // one-machine install draws none, so the rows keep saying it themselves. (`badge` is the fleet
-    // flag — the same condition machineHeader is drawn under.)
-    const shared = badge ? sharedProblems(m) : new Set<string>();
+    const shared = sharedProblems(m);
+    // A one-machine install draws no machine header (`badge` is the fleet flag — the same condition),
+    // so the host-wide facts have nowhere to hang: emit them here, above this machine's repo rows.
+    // Deliberately NOT a header — the status line already says the server is up, and the point of
+    // this change is to say each thing once.
+    if (!badge) for (const line of hostLines(m)) specs.push({ kind: "text", content: line.text, fg: toneColor(line.tone) });
     // Idle repos (no run, no eligible work, no problem) collapse to one line — 17 of 19 rows on a
     // real three-host fleet say nothing but "this repo is being served", which one line says for all
     // of them. `i` brings the full list back for someone confirming a specific repo is there.
