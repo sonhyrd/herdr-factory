@@ -5,7 +5,10 @@
 //   * a ready (non-draft) PR hands off to the review watch IMMEDIATELY, without waiting for
 //     step-done, so a pr agent that wanders off can't strand a mergeable PR; and
 //   * while watching, a change in the REVIEW SIGNATURE (a new unresolved thread, a failing check)
-//     wakes a resolver in the worktree, which holds a concurrency slot only while it is working.
+//     wakes a resolver in the worktree, which holds a concurrency slot only while it is working; and
+//   * a PR that is GREEN and mergeable notifies the operator once per green HEAD — including after a
+//     push on a repo with no CI, where nothing else in the signature moves — and is never merged by
+//     the factory (the human stays the merge gate).
 import { expect } from "vitest";
 import { scenario } from "../harness/index.ts";
 
@@ -49,6 +52,14 @@ scenario(
     expect(w.db.step(w.db.run(key)!.id, "pr")?.done, "…and it really was never signalled done").toBe(0);
     expect(w.db.run(key)!.resolver_active, "an idle watch holds no concurrency slot").toBe(0);
 
+    // ── green ─────────────────────────────────────────────────────────────────────────────────
+    // Nothing unresolved, nothing failing, nothing pending: the operator is told once, with the URL.
+    await w.waitForEvent(key, "pr_green", { label: "a green PR notifies the operator", timeoutMs: 120_000 });
+    const ready = () => w.herdr.notifications().filter((n) => /ready to merge/i.test(n.title));
+    expect(ready().length, "exactly one ready-to-merge notification, not one per tick").toBe(1);
+    expect(ready()[0]!.body, "the notification is actionable on a phone — it carries the PR URL").toContain(`/pull/${pr}`);
+    expect(w.gh.pr(pr)?.state, "the factory NEVER merges — it only says the PR could be").toBe("OPEN");
+
     // ── a reviewer leaves a comment ───────────────────────────────────────────────────────────
     w.gh.addUnresolvedThread(pr);
     await w.waitForEvent(key, "resolver_woken", { label: "the changed review signature wakes a resolver", timeoutMs: 120_000 });
@@ -58,6 +69,20 @@ scenario(
     // idle PR-in-review must never starve the belt of new claims.
     w.gh.resolveAllThreads(pr);
     await w.waitFor(() => w.db.run(key)?.resolver_active === 0, { label: "the resolver goes idle and releases its slot", timeoutMs: 120_000 });
+
+    // Green again after a non-green patch is a NEW green: told once more, not four times.
+    await w.waitFor(() => ready().length === 2, { label: "the second green notifies again (once)", timeoutMs: 120_000 });
+    expect(w.gh.pr(pr)?.state, "still not merged by the factory").toBe("OPEN");
+
+    // ── a push is a new green ─────────────────────────────────────────────────────────────────
+    // This fake repo has NO checks, so the push moves nothing in the review signature — unresolved
+    // and failing and pending all stay 0. Only the head commit changes. The operator must still be
+    // told, because the thing they were told about is no longer what would be merged.
+    w.gh.push(pr);
+    await w.waitFor(() => ready().length === 3, { label: "a new head commit is a new green", timeoutMs: 120_000 });
+    await w.waitFor(() => w.db.events(key).filter((e) => e.type === "pr_green").length === 3, { label: "…and it is recorded", timeoutMs: 30_000 });
+    expect(ready().length, "still one per green head, not one per tick").toBe(3);
+    expect(w.gh.pr(pr)?.state, "and STILL not merged by the factory").toBe("OPEN");
 
     // ── merged ────────────────────────────────────────────────────────────────────────────────
     w.gh.merge(pr);

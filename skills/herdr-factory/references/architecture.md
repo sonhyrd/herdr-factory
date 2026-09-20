@@ -134,7 +134,7 @@ Outcomes the reconciler actually writes: `merged`, `completed`, `abandoned`. (`c
 | `waiting_for_human` → `running` | reply found; or self-heal when there is no pending question but `run.step` is still valid |
 | `waiting_for_human` → `attention` | `human_wait_missing_question`, `human_poll_failing`, `source_item_stale` |
 | `waiting_for_human` → `tearing_down` → `done` | the adopted PR merged while parked (checked **before** the question) ⇒ `merged` |
-| `reviewing` → `reviewing` | resolver woken, or resolver observed idle |
+| `reviewing` → `reviewing` | resolver woken, resolver observed idle, or the PR went green (one "ready to merge" notification — the factory never merges) |
 | `reviewing` → `tearing_down` → `done` | PR `MERGED` ⇒ `merged` |
 | `reviewing` → `attention` | PR `CLOSED` ⇒ `pr_closed` |
 | `attention` → `running` | watchdog-park rescue on a genuine `step-done`; accepted `bounce`; `layout_wait_timeout` respawn rescue |
@@ -248,17 +248,18 @@ Defaults: `limits.max_active_workspaces` **3**, per-source **2**, `max_claims_pe
 
 **Adoption happens in the `pr` step, not in `reviewing`.** Once a number is recorded the engine fetches by number; before that, by branch (first sighting only). Handing off to `reviewing` fires the `produce: pull_request` effect (engine default `in_review`) and sets `{phase:"reviewing", step:null, prNumber, resolverActive:false}`. It fires on **PR adoption**, not on `step-done`: a *draft* PR keeps the `step-done` gate, a merged PR always hands off, and only the belt's **terminal** PR-opening step qualifies.
 
-Each tick, for every watched PR, one **batched aliased GraphQL query** (chunked at 25 PRs per query) returns `{unresolved, failing, sig}` where `sig = sha1(JSON.stringify({t: unresolvedThreadIds, c: failingContexts}))`. The batched and per-run paths compute the hash **bit-identically**, which is what keeps `lastThreadSig` continuity working when the two mix.
+Each tick, for every watched PR, one **batched aliased GraphQL query** (chunked at 25 PRs per query) returns `{unresolved, failing, pending, sig}` where `sig = sha1(JSON.stringify({t: unresolvedThreadIds, c: failingContexts}))` — `pending` (checks that have not concluded: a CheckRun with a null conclusion, a PENDING/EXPECTED StatusContext) is **not** in the hash, so a check merely finishing never counts as a new review round. The batched and per-run paths compute the hash **bit-identically**, which is what keeps `lastThreadSig` continuity working when the two mix.
 
 Then, in order:
 
 1. `MERGED` ⇒ `teardown("merged")`. `CLOSED` ⇒ park `pr_closed`. There is **no time limit** on the watch — no `watch_hours` knob exists.
-2. `actionable = unresolved > 0 || failing > 0`; `fresh = actionable && sig !== run.lastThreadSig`.
-3. **`if (!fresh && !resolverActive) return;`** — pure idle watching does zero herdr calls and holds no slot.
-4. Read the pane state (herdr unreachable ⇒ return, retry next tick).
-5. Believed-active resolver whose pane isn't `working` ⇒ `resolverActive = false`, log `resolver idle — PR #n watch no longer holds a slot`.
-6. `fresh` + pane `working` ⇒ don't pile on; just keep `resolverActive = true`.
-7. `fresh` + idle/gone ⇒ wake a resolver by rendering `prompts/resolver.md` into `.memory/herdr-factory/prompt-resolver.md` and re-prompting or spawning. **Only if the wake succeeds** is `{lastThreadSig, resolverActive:true}` recorded — a failed spawn must not mark the round handled.
+2. **Ready-to-merge notification** (`noteGreenPr`): `green = state OPEN && !isDraft && unresolved === 0 && failing === 0 && pending === 0`. On the first pass that sees a green PR, `deps.herdr.notify("herdr-factory: <KEY> ready to merge", "<KEY> is ready to merge — PR #n \"title\" in <owner/repo> is green with no unresolved threads · <url>")` and record a `pr_green` event. **The factory never merges** — this is a notification only, and no code path anywhere calls `gh pr merge`. Episode state is one `watch_state` row (run, `pull_request`, `pr_green`) whose `sig` is **the head commit the operator was told about** (`PrInfo.headOid`, from `headRefOid` on both PR lookups). It is cleared when the PR stops being green, and a *different* head is a new episode — so a push is a new green even on a repo with **no CI**, where the rollup never moves and keying on green-ness alone would say nothing. Result: once per green head, never once per tick; red → green → red → green is two notifications, not four. No duration is reported (the watch fires on the first tick that sees green, so any "green for …" would be zero). Accepted edge: a pushed commit whose check runs do not exist yet reads as green for a few seconds, so a tick in that window pings early and self-corrects on the next one.
+3. `actionable = unresolved > 0 || failing > 0`; `fresh = actionable && sig !== run.lastThreadSig`.
+4. **`if (!fresh && !resolverActive) return;`** — pure idle watching does zero herdr calls and holds no slot.
+5. Read the pane state (herdr unreachable ⇒ return, retry next tick).
+6. Believed-active resolver whose pane isn't `working` ⇒ `resolverActive = false`, log `resolver idle — PR #n watch no longer holds a slot`.
+7. `fresh` + pane `working` ⇒ don't pile on; just keep `resolverActive = true`.
+8. `fresh` + idle/gone ⇒ wake a resolver by rendering `prompts/resolver.md` into `.memory/herdr-factory/prompt-resolver.md` and re-prompting or spawning. **Only if the wake succeeds** is `{lastThreadSig, resolverActive:true}` recorded — a failed spawn must not mark the round handled.
 
 A merge is also caught while the run is parked in `attention` or `waiting_for_human`; both poll the adopted PR and tear down on `MERGED`. A merge seen at the terminal `pr` step goes `running → reviewing → (next pass) teardown`, so a merge costs one extra tick.
 

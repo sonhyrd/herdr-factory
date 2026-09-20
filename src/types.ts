@@ -84,6 +84,7 @@ export type EventType =
   | "worker_spawned"
   | "pr_opened"
   | "resolver_woken"
+  | "pr_green" // the watched PR went green + mergeable; the operator was notified once (nothing is ever merged)
   | "worker_done"
   | "review_spawned"
   | "review_done"
@@ -865,11 +866,23 @@ export interface PrInfo {
    *  hand off to the `reviewing` watch until it's marked ready-for-review — a draft keeps the
    *  step-done gate. A MERGED PR always hands off regardless. */
   isDraft: boolean;
+  /** The PR's title, when the lookup carries it — the human-readable half of the "ready to merge"
+   *  notification. Absent ⇒ callers fall back to the run's own summary. */
+  title?: string;
+  /** The head commit SHA (`headRefOid`), when the lookup carries it. The ready-to-merge watch keys
+   *  its "already told the operator" mark on it: a PUSH is a new green even on a repo with no CI at
+   *  all, where the check rollup never moves and nothing else in the signature changes. */
+  headOid?: string;
 }
 
 export interface ReviewSig {
   unresolved: number;
   failing: number;
+  /** Checks that have NOT concluded yet (queued / in progress / PENDING status contexts). Green is
+   *  `failing === 0 && pending === 0` — "not failing" alone is true the instant CI starts. Deliberately
+   *  NOT part of `sig`: the hash drives resolver wake-ups, and a check merely finishing is not a new
+   *  review round to hand an agent. */
+  pending: number;
   sig: string;
 }
 

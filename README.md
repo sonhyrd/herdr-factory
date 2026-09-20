@@ -379,7 +379,14 @@ every watched PR, and whenever the review signature changes — new unresolved t
 failing checks — a resolver agent is woken in the worktree to address them. The watch has **no time
 limit** — it rides until the PR merges or closes, however long review takes — and it holds a
 [`max_active_workspaces`](#limits-all-optional) slot **only while a resolver is actively working**,
-so an idle PR-in-review never starves the belt of new claims. Merge → teardown (worktree removed,
+so an idle PR-in-review never starves the belt of new claims. When the PR goes **green and
+mergeable** — open, not a draft, no unresolved review threads, and every check *concluded*
+successfully (a check still running is not green) — you get **one desktop notification** naming the
+ticket, the PR, the repo and the URL, so you can merge from your phone instead of discovering it an
+hour later. It is a notification only: **the factory never merges** — you are the merge gate. Once
+per green **head commit**, not once per tick: a PR that goes red and green again is a new green, and
+so is a PR that gains a new commit — even on a repo with no CI at all, where nothing else about the
+PR would change. Merge → teardown (worktree removed,
 every local branch the run created deleted — the name it was claimed under and any name it was
 renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).
@@ -449,6 +456,9 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
 - **Zero tokens on the factory floor.** Polling Jira, GitHub or Sentry, claiming, watching PRs,
   liveness checks, retries — all deterministic code (native `fetch`, `gh`, `herdr`). Agents run only inside
   the steps, and the PR resolver wakes only when the review state actually changes.
+- **You hear the moment a PR is mergeable.** Waiting for a human to press Merge is the single
+  largest cost in the pipeline. When a watched PR turns green with no unresolved threads, the
+  factory sends one notification with the URL — and stops there. It never merges anything.
 - **The ask-human cord.** A blocked or unsure agent runs `ask-human`: the factory posts the
   question through the work source (a Jira or GitHub issue comment, or an inbox file for
   markdown sources), parks
