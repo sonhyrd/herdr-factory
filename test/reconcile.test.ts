@@ -2194,6 +2194,29 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.worktreeRemove).toContain("w1");
   });
 
+  // The hand-over assumes someone is outside. If the ENGINE itself were started inside a worktree
+  // there is nobody to hand to, and the deferral would loop forever — so the second and later
+  // deferrals are warn-level and name the fix. Silent is the only unacceptable outcome here.
+  it("teardown's deferral is info once, then WARN — a loop with no escape is never silent", async () => {
+    const { deps, store, state, worktree } = build();
+    const logs: string[] = [];
+    deps.log = (level, msg) => { logs.push(`${level}: ${msg}`); };
+    const run = seed(store, worktree, "K-CWD2", "reviewing", null, {});
+    state.pr = { number: 12, state: "MERGED", url: "u" };
+    const cwd = process.cwd();
+    try {
+      process.chdir(worktree);
+      await reconcileRun(deps, store.getRun(run.id)!); // first: reviewing -> tearing_down, handed over
+      await reconcileRun(deps, store.getRun(run.id)!); // second: already tearing_down — nobody took it
+    } finally {
+      process.chdir(cwd);
+    }
+    const deferrals = logs.filter((l) => l.includes("inside the worktree it would remove"));
+    expect(deferrals).toHaveLength(2);
+    expect(deferrals[0], "the first is a routine hand-over").toMatch(/^info: .*the next tick, which runs outside it, will finish it/);
+    expect(deferrals[1], "the second names the only cause and its fix").toMatch(/^warn: .*Restart it from outside/);
+  });
+
   it("teardown kills the dev server on the port the run reserved (hf-port), before the dir goes", async () => {
     const { deps, store, state, worktree, calls } = build();
     // The handshake the target repo's setup/dev command writes: the chosen port in the WORKTREE's

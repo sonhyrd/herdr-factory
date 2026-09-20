@@ -2783,8 +2783,23 @@ async function teardownImpl(deps: Deps, run: Run, outcome: Outcome, src: SourceR
   // The tick loop runs OUTSIDE every worktree, and `tearing_down` is re-entered by reconcileRun
   // (idempotently, from the top), so the safe move is to stamp the phase and hand over. The cost is
   // one tick of latency on a self-signalled teardown; the alternative is a wedged run.
+  //
+  // The hand-over assumes SOMEONE is outside — true for the in-pane agent CLI this exists for, and
+  // for the `teardown` command an operator runs from a worktree. It is NOT true if the engine
+  // itself was started from inside a run's worktree: then every tick defers and the run never
+  // reaches `ended_at`. That state can't be fixed from here (there is no other process to hand to)
+  // but it must not be SILENT, so a deferral that is already re-entering `tearing_down` — i.e. at
+  // least the second one for this run — logs at warn. One `info` line is a hand-over; a stream of
+  // `warn` lines naming this run is the operator's cue to restart the engine from outside.
   if (runningInside(run.worktreePath)) {
-    deps.log("info", `${run.ticketKey}: teardown (${outcome}) deferred to the next tick — this process is inside the worktree it would remove`);
+    const repeat = run.phase === "tearing_down"; // the snapshot's phase, before the stamp above
+    deps.log(
+      repeat ? "warn" : "info",
+      `${run.ticketKey}: teardown (${outcome}) deferred — this process is inside the worktree it would remove` +
+        (repeat
+          ? " — and it has deferred before: if the engine itself was started inside this worktree, nothing will ever finish it. Restart it from outside."
+          : " (the next tick, which runs outside it, will finish it)"),
+    );
     return;
   }
 

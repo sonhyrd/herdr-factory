@@ -892,11 +892,11 @@ worktree, stay deduped, and still poll for a PR merge) but **no longer hold a cl
 pile of runs waiting on humans must not starve the belt of new claims. History is never deleted
 (we set `ended_at`), so the web UI can show attempts, outcomes, and durations.
 
-**event types** (the `EventType` union in `src/types.ts`): `claimed · transition · worktree_created ·
-layout_applied · layout_apply_failed · step_spawned · step_done · layout_wait_retry · bounced ·
+**event types** (the `EventType` union in `src/types.ts`): `claimed · claimed_elsewhere · transition · worktree_created ·
+layout_applied · layout_apply_failed · step_spawned · step_done · layout_wait_retry · idle_nudge · bounced ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
-pr_opened · resolver_woken · pr_green · torn_down · belt_reassigned · belt_deleted · attention · resumed ·
+pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
 match on (the e2e suite asserts exactly that).
