@@ -11,7 +11,6 @@ import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkStat
 import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
-import { fmtDur } from "./explain.ts";
 import { branchName } from "./branch.ts";
 import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
@@ -2226,35 +2225,48 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
 // review threads, and every check CONCLUDED successfully (pending ≠ green) — notify once, through
 // the same `deps.herdr.notify` path as attention/auth so Collie carries it to the phone.
 //
-// The episode clock lives in `watch_state` keyed (run, 'pull_request', 'pr_green') — no new run
-// column: `basedAt` is when the CURRENT green episode started (null ⇒ not green), and `sig` is the
-// "operator already told" mark for that episode — both cleared the moment it stops being green. So:
-// once per green, never once per tick; a red patch
-// (or a new commit, which puts the checks back to pending) clears the episode, and the next green
-// notifies again. attentionRenotifySeconds throttles nothing here on purpose — a *new* green is news
-// however soon it lands, and the episode rule already makes repeats impossible.
+// "Once" is keyed on the PR's HEAD COMMIT, stored as the mark in `watch_state` (run, 'pull_request',
+// 'pr_green') — no new run column. Two things end an episode, and both have to, because either alone
+// is inert on some real repo:
+//   * the PR stops being green (a failing or still-running check, a new review thread) — the mark is
+//     cleared, so the next green is news again; and
+//   * the head commit CHANGES — a push is a new green even on a repo with NO CI at all, where the
+//     rollup never moves and nothing else in the signature would change (the factory's own repo is
+//     exactly that case, so keying only on green/not-green would make the rule inert where it matters).
+// Between them: once per green head, never once per tick, and red → green → red → green is two.
+//
+// Known, accepted: on a repo that DOES run CI, GitHub can report a pushed commit for a few seconds
+// before its check runs exist — an empty rollup reads as green, so a tick landing in that window
+// pings early. We take it deliberately. The alternative (wait a tick to confirm) breaks the issue's
+// own acceptance criterion ("within a tick of the rollup going green") for every normal case in order
+// to smooth a rare one, and the mis-timed ping self-corrects: the next tick sees the checks pending,
+// which ends the episode, and the real green notifies again.
+//
+// No duration is reported. The watch notifies on the FIRST tick that sees a green PR, so any "green
+// for …" it could print is either zero or invented from a timestamp that doesn't mean "green since"
+// (a head commit's date says nothing about when the last review thread was resolved).
+//
+// attentionRenotifySeconds throttles nothing here on purpose — a *new* green is news however soon it
+// lands, and the episode rule already makes repeats impossible.
 const GREEN_WATCH = { step: "pull_request", watch: "pr_green" } as const;
 
 async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig): Promise<void> {
   const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
   const green = pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
   if (!green) {
-    // The episode ENDS: clear the clock and the "told them" mark together, so the next green is news
-    // again. (Clearing the mark on red — rather than keying it to the episode's start stamp — is what
-    // makes red → green → red → green two notifications even when both greens land in the same second.)
-    if (st && (st.basedAt != null || st.sig != null)) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { basedAt: null, sig: null });
+    if (st?.sig != null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null });
     return;
   }
-  const now = deps.now();
-  const since = st?.basedAt ?? now;
-  if (st?.basedAt == null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { basedAt: since });
-  if (st?.sig != null) return; // already told the operator about THIS green
+  // The head SHA when the lookup carries one; a lookup that doesn't degrades to the green/not-green
+  // rule alone (still once per green — it just can't see a push that changes nothing else).
+  const mark = pr.headOid || "green";
+  if (st?.sig === mark) return; // already told the operator about THIS green, on THIS head
 
   const title = pr.title ?? run.summary ?? "";
-  const body = `${run.ticketKey} is ready to merge — PR #${pr.number}${title ? ` "${title}"` : ""} in ${deps.ghRepo}, green for ${fmtDur(now - since)} · ${pr.url}`;
+  const body = `${run.ticketKey} is ready to merge — PR #${pr.number}${title ? ` "${title}"` : ""} in ${deps.ghRepo} is green with no unresolved threads · ${pr.url}`;
   await deps.herdr.notify(`herdr-factory: ${run.ticketKey} ready to merge`, body).catch(() => {});
-  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: "notified" });
-  deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "pr_green", detail: { number: pr.number, greenFor: now - since } });
+  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark });
+  deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "pr_green", detail: { number: pr.number, head: pr.headOid } });
   deps.log("info", `${run.ticketKey}: PR #${pr.number} is green and mergeable — notified the operator (the factory never merges)`);
 }
 

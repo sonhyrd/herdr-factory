@@ -96,11 +96,11 @@ export class GitHubClient {
   /** Look up a PR by number — the durable identity once a run has adopted one. Unlike `--head`,
    *  this keeps resolving after the head branch is deleted (e.g. GitHub auto-delete-on-merge). */
   async prByNumber(repo: string, prNumber: number): Promise<PrInfo | null> {
-    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean; title?: string }>(
-      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft,title"],
+    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean; title?: string; headRefOid?: string }>(
+      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft,title,headRefOid"],
       { allowFail: true },
     ).catch(() => null);
-    return pr && pr.number ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft, title: pr.title } : null;
+    return pr && pr.number ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft, title: pr.title, headOid: pr.headRefOid } : null;
   }
 
   /**
@@ -122,7 +122,7 @@ export class GitHubClient {
       const fields = chunk
         .map(
           (n) =>
-            `pr${n}: pullRequest(number: ${n}) { number state url isDraft title ` +
+            `pr${n}: pullRequest(number: ${n}) { number state url isDraft title headRefOid ` +
             `reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { id } } } } ` +
             `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ` +
             `__typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } } }`,
@@ -135,6 +135,7 @@ export class GitHubClient {
         url: string;
         isDraft?: boolean;
         title?: string;
+        headRefOid?: string;
         reviewThreads?: { nodes?: { isResolved: boolean; comments?: { nodes?: { id: string }[] } }[] };
         commits?: {
           nodes?: {
@@ -163,6 +164,7 @@ export class GitHubClient {
           url: pr.url,
           isDraft: !!pr.isDraft,
           title: pr.title,
+          headOid: pr.headRefOid,
           sig: { unresolved: unresolvedIds.length, failing: failing.length, pending, sig },
         });
       }

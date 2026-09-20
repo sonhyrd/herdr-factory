@@ -2247,7 +2247,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
   it("reviewing + PR green (no threads, no failing, nothing pending) → notifies the operator ONCE, with the URL", async () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-GREEN", "reviewing", null, { prNumber: 20, lastThreadSig: "s0" });
-    state.pr = { number: 20, state: "OPEN", url: "https://gh/pr/20", title: "Fix the thing" };
+    state.pr = { number: 20, state: "OPEN", url: "https://gh/pr/20", title: "Fix the thing", headOid: "abc123" };
     state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(1);
@@ -2255,6 +2255,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.notified[0]![1]).toContain("https://gh/pr/20");
     expect(calls.notified[0]![1]).toContain("PR #20");
     expect(calls.notified[0]![1]).toContain("Fix the thing");
+    expect(calls.notified[0]![1]).not.toContain("green for"); // no invented duration — see noteGreenPr
     // Idempotent: a second tick on the same green says nothing more.
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(1);
@@ -2301,6 +2302,24 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
       state.sig = sig;
       await reconcileRun(deps, store.getRun(run.id)!);
     }
+    expect(calls.notify).toBe(2);
+  });
+
+  it("reviewing + a new commit on a repo with NO checks → a new green, notified again", async () => {
+    // The no-CI path: pending and failing stay 0 across the push, so NOTHING in the review signature
+    // moves — only the head commit does. Keying the episode on the head is what makes the issue's
+    // "a new commit is a new green" rule hold on a repo (like this one) that runs no checks at all.
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-PUSH", "reviewing", null, { prNumber: 25, lastThreadSig: "s0" });
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    state.pr = { number: 25, state: "OPEN", url: "u", headOid: "sha-1" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    await reconcileRun(deps, store.getRun(run.id)!); // same head, more ticks → still one
+    expect(calls.notify).toBe(1);
+    state.pr = { number: 25, state: "OPEN", url: "u", headOid: "sha-2" }; // a push
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(2);
+    await reconcileRun(deps, store.getRun(run.id)!); // and it settles again at one per head
     expect(calls.notify).toBe(2);
   });
 

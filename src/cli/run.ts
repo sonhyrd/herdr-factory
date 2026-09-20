@@ -95,9 +95,8 @@ export function followEventExtra(type: string, detail: string | null): string {
     case "attention":
       return str(d, "reason") ?? "";
     case "pr_green": {
-      const n = num(d, "number");
-      const greenFor = num(d, "greenFor");
-      return `#${n ?? "?"} green${greenFor != null ? ` for ${greenFor}s` : ""}`;
+      const head = str(d, "head");
+      return `#${num(d, "number") ?? "?"} green${head ? ` @ ${head.slice(0, 7)}` : ""}`;
     }
     case "resolver_woken": {
       const unresolved = num(d, "unresolved");

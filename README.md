@@ -371,10 +371,11 @@ limit** — it rides until the PR merges or closes, however long review takes �
 so an idle PR-in-review never starves the belt of new claims. When the PR goes **green and
 mergeable** — open, not a draft, no unresolved review threads, and every check *concluded*
 successfully (a check still running is not green) — you get **one desktop notification** naming the
-ticket, the PR, the repo, how long it has been green, and the URL, so you can merge from your phone
-instead of discovering it an hour later. It is a notification only: **the factory never merges** —
-you are the merge gate. Once per green, not once per tick; if the PR goes red (or gains a new
-commit, which puts its checks back to pending) and goes green again, you are told again. Merge → teardown (worktree removed,
+ticket, the PR, the repo and the URL, so you can merge from your phone instead of discovering it an
+hour later. It is a notification only: **the factory never merges** — you are the merge gate. Once
+per green **head commit**, not once per tick: a PR that goes red and green again is a new green, and
+so is a PR that gains a new commit — even on a repo with no CI at all, where nothing else about the
+PR would change. Merge → teardown (worktree removed,
 every local branch the run created deleted — the name it was claimed under and any name it was
 renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).

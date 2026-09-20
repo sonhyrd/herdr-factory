@@ -869,6 +869,10 @@ export interface PrInfo {
   /** The PR's title, when the lookup carries it — the human-readable half of the "ready to merge"
    *  notification. Absent ⇒ callers fall back to the run's own summary. */
   title?: string;
+  /** The head commit SHA (`headRefOid`), when the lookup carries it. The ready-to-merge watch keys
+   *  its "already told the operator" mark on it: a PUSH is a new green even on a repo with no CI at
+   *  all, where the check rollup never moves and nothing else in the signature changes. */
+  headOid?: string;
 }
 
 export interface ReviewSig {

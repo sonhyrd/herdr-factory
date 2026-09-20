@@ -184,6 +184,7 @@ function prJson(pr, fields) {
     title: pr.title ?? "",
     body: pr.body ?? "",
     headRefName: pr.headRefName ?? "",
+    headRefOid: pr.headRefOid ?? "",
     baseRefName: pr.base ?? "main",
     mergeable: pr.state === "OPEN" ? "MERGEABLE" : "UNKNOWN",
     labels: (pr.labels ?? []).map((n) => ({ name: n })),
@@ -240,6 +241,7 @@ function prGraphql(pr) {
     url: pr.url,
     isDraft: !!pr.isDraft,
     title: pr.title ?? "",
+    headRefOid: pr.headRefOid ?? "",
     reviewThreads: threadsGraphql(pr),
     commits: { nodes: [{ commit: { statusCheckRollup: rollupGraphql(pr) } }] },
   };
@@ -498,6 +500,7 @@ function prCreate(fs, argv, statePath) {
       createdAt: new Date().toISOString(),
       isDraft: draft,
       headRefName: head,
+      headRefOid: `sha${number}0`,
       title,
       body,
       base,

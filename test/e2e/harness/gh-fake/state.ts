@@ -36,6 +36,9 @@ export interface GhPr {
    *  reads as "unknown age" and is accepted, while one the run opens is genuinely newer. */
   createdAt?: string;
   headRefName: string;
+  /** The head commit SHA. The ready-to-merge watch keys its "already notified" mark on it, so a
+   *  `push()` is a new green even here, where the fake repo has no checks at all. */
+  headRefOid?: string;
   title: string;
   body: string;
   base: string;
@@ -144,6 +147,15 @@ export class GhFake {
 
   resolveAllThreads(n: number): void {
     this.patch((s) => void this.must(s, n).threads.forEach((t) => (t.isResolved = true)));
+  }
+
+  /** Move the PR's head to a new commit — what the engine sees after the agent pushes. Nothing else
+   *  about the PR changes, which is the point: on a repo with no CI the head is the ONLY signal that
+   *  a green PR has become a new green. */
+  push(n: number, oid?: string): string {
+    const next = oid ?? `sha${Date.now().toString(36)}`;
+    this.patch((s) => void (this.must(s, n).headRefOid = next));
+    return next;
   }
 
   markReady(n: number): void {

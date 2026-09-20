@@ -639,7 +639,8 @@ reverse-engineered during the bash prototype.
   retried next poll); a `regressed` issue with no recorded baseline is reopened on Sentry's flag alone.
 - **`github.ts`** (`gh` via execFile) — `prForBranch(repo, branch)` (first-sighting discovery
   only), `prByNumber(repo, n)` (the durable identity once adopted — survives head-branch deletion
-  on merge), `reviewSignature(repo, n) → {unresolved, failing, pending, sig}` (graphql review threads +
+  on merge; both it and the batched query carry `headRefOid`, which the ready-to-merge watch keys
+  its once-per-green mark on), `reviewSignature(repo, n) → {unresolved, failing, pending, sig}` (graphql review threads +
   `statusCheckRollup`; `pending` counts checks that have NOT concluded — a CheckRun with a null
   conclusion, a PENDING/EXPECTED StatusContext — and is deliberately **outside** the hash, so a
   check merely finishing is not a new review round for the resolver), and **`prSnapshots(repo, numbers[]) → Map<number, PrSnapshot>`** — one
@@ -812,8 +813,9 @@ CREATE TABLE watch_state(                -- per-watch clocks/signatures (v34): o
   meta TEXT NOT NULL DEFAULT '{}',       -- GuardSpec.rebaseOn); heartbeat: sig/based_at = last-seen
   updated_at INTEGER NOT NULL,           -- HEAD + when; read_only: sig = the baseline, based_at =
   PRIMARY KEY (run_id, step, watch));    -- the freeze marker; pr_green (step 'pull_request'):
-                                         -- based_at = when the current green episode started, sig =
-                                         -- the "operator notified" mark. A plugin watch stores state without a
+                                         -- sig = the head commit the operator was told about (cleared
+                                         -- when the PR stops being green; a different head is a new
+                                         -- green). A plugin watch stores state without a
                                          -- migration. Re-bases WRITE NULL ROWS, never delete — the
                                          -- legacy run_steps-column fallback (one release) must not
                                          -- resurrect a cleared clock. run_steps.started_at remains
@@ -1174,14 +1176,21 @@ the adopted PR) — it tears the run down with outcome `merged`.
 PR's *green* predicate on the signature it already has — open, not a draft, `unresolved === 0`,
 `failing === 0` **and `pending === 0`** ("not failing" is true the instant CI starts; green means
 every check CONCLUDED) — and on the first pass that sees it, notifies the operator once through the
-same `deps.herdr.notify` path as attention/auth escalations, with the key, PR title, repo, how long
-it has been green and the URL. It is a notification *only*: nothing in the engine merges, and
-`gh pr merge` appears nowhere in the codebase. The episode state lives in `watch_state`
-(run, `'pull_request'`, `'pr_green'`): `based_at` is when the current green started, `sig` is the
-"told them" mark, and **both are cleared the moment the PR stops being green** — so it is once per
-green, never once per tick, and red → green → red → green is two notifications, not four. A new
-commit puts the checks back to pending, which ends the episode and makes the next green news again.
-The check costs nothing extra: it rides the batched snapshot the watch already fetches. A **custom** belt runs the same
+same `deps.herdr.notify` path as attention/auth escalations, with the key, PR title, repo and URL.
+It is a notification *only*: nothing in the engine merges, and `gh pr merge` appears nowhere in the
+codebase. The episode state is one row in `watch_state` (run, `'pull_request'`, `'pr_green'`) whose
+`sig` is the "told them" mark — **the PR's head commit SHA**. Two things end an episode, and both
+must, because either alone is inert on some real repo: the PR stops being green (mark cleared), or
+the **head commit changes** — a push is a new green even where there is no CI, and the rollup
+therefore never moves. Between them it is once per green head, never once per tick, and red → green
+→ red → green is two notifications, not four. No duration is reported: the watch fires on the first
+tick that sees green, so any "green for …" would be zero or invented. The check costs nothing extra:
+it rides the batched snapshot the watch already fetches (`headRefOid` is one more field on a query
+that was already being made). **Accepted edge:** on a repo that *does* run CI, GitHub can report a
+pushed commit for a few seconds before its check runs exist — an empty rollup reads as green, so a
+tick landing in that window pings early. Waiting a tick to confirm would break the "within a tick of
+the rollup going green" requirement for every normal case; the mis-timed ping self-corrects when the
+next tick sees the checks pending. A **custom** belt runs the same
 machinery over user-defined steps with no PR watch — its last `step-done` tears the run down with
 outcome `completed`.
 
