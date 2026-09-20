@@ -101,6 +101,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `pr-closed-park` | a PR closed without merging parks for a human and keeps its worktree |
 | `belt-matrix` | priority order, a `match` predicate, first-match-wins, an `active: false` belt that takes nothing, and the per-source cap |
 | `config-rejections` | 12 broken configs are each refused at load with a message that names the problem — and the server survives all of them |
+| `doctor-agent-tooling` | issue #49: the agent-tooling rows are gated by the CONFIG, on a host that really has no `cursor-agent` — a belt that never asks for Cursor leaves all four `not configured` (never ✗, in both modes), and the same host with a Cursor harness in its config turns the row into a ✗ that exits 1 |
 | `eligible-last-poll` | the dashboard's read budget: `/eligible` on a real `serve` answers from the TICK's last poll — 20 refreshes cost **0** source calls and log no `eligible query failed`, a claimed item is a run rather than an eligible row, and a poll that fails leaves the last good list standing |
 | `jira-parity` | a source whose status of record is the BACKEND: label pickup, ordered write-backs, a belt effect onto a custom Jira column |
 | `jira-ask-human` | the reply channel as comments, including the marker filter that stops the factory answering itself |

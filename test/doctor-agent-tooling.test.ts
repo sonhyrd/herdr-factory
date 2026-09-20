@@ -3,7 +3,7 @@
 // point is that none of these fail loudly on their own, so each must be a ✗ with a fix hint — and
 // each must report "not configured" (never ✗) on a host whose config doesn't ask for it.
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentTooling, agentToolingChecks, skillNamesIn, type AgentTooling, type DoctorCheck } from "../src/doctor.ts";
@@ -90,6 +90,16 @@ describe("agentTooling — what a loaded config asks of this host", () => {
   });
 });
 
+/** A PATH holding a fake `cursor-agent` that prints `out` — the only way to exercise the signed-in
+ *  check without a real login (and without touching the host's own cursor-agent). */
+function withFakeCursorAgent(out: string): NodeJS.ProcessEnv {
+  const bin = mkdtempSync(join(tmpdir(), "doc-bin-"));
+  tmps.push(bin);
+  writeFileSync(join(bin, "cursor-agent"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(out)}\n`);
+  chmodSync(join(bin, "cursor-agent"), 0o755);
+  return { ...process.env, PATH: bin };
+}
+
 describe("agentToolingChecks — gates and failures", () => {
   it("a host whose belts never run Cursor is not failed", async () => {
     const checks = await agentToolingChecks(tooling({ engines: new Set(["claude"]) }), true);
@@ -129,6 +139,21 @@ describe("agentToolingChecks — gates and failures", () => {
     expect(c.ok).toBe(true);
     expect(c.detail).toContain("--deep to verify");
     expect(byName(checks, "agent skills").detail).toContain("none named");
+  });
+
+  it("deep: a signed-out cursor-agent is a ✗ naming the login that only a human can run", async () => {
+    const env = withFakeCursorAgent("Not logged in");
+    const c = byName(await agentToolingChecks(tooling(), true, env), "cursor-agent");
+    expect(c.ok).toBe(false);
+    expect(c.detail).toContain("cursor-agent login");
+    expect(c.detail).toContain("opens a browser"); // it can never be fixed unattended — say so
+  });
+
+  it("deep: a signed-in cursor-agent reports the account", async () => {
+    const env = withFakeCursorAgent("✓ Logged in as tester@example.com");
+    const c = byName(await agentToolingChecks(tooling(), true, env), "cursor-agent");
+    expect(c.ok).toBe(true);
+    expect(c.detail).toBe("tester@example.com");
   });
 
   it("ocr is only required once a prompt names pr-review", async () => {
