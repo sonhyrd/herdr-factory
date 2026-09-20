@@ -56,6 +56,18 @@ describe("killPortListeners", () => {
     expect(await killPortListeners(1)).toEqual([]);
   });
 
+  it("throws rather than reporting an empty port when lsof is missing", async () => {
+    // A host without lsof must not read as "nothing is listening" — that would have teardown log a
+    // reap it never did, and doctor report no orphans. The caller logs "could not reap …" instead.
+    const path = process.env.PATH;
+    process.env.PATH = "/nonexistent";
+    try {
+      await expect(listenerPids(4321)).rejects.toThrow(/lsof/);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
   it("kills a REAL listener started as a child (the orphan case), and frees its port", { skip: !haveLsof }, async () => {
     // A listener whose parent is a shell in its own process group — the pnpm→dev-server shape
     // whose reparented child survived teardown. It prints `<pid> <port>` once it is up.

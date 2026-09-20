@@ -59,11 +59,23 @@ export function readRunPort(worktreePath: string): number | null {
   }
 }
 
-/** pids LISTENing on a TCP port (`lsof -nP -ti tcp:<port> -sTCP:LISTEN`). lsof exits 1 when
- *  nothing matches — that is "no listener", not an error. */
+/** `lsof`, with its "nothing matched" exit 1 read as empty output — but a MISSING (or refused, or
+ *  hung) lsof rethrown. Blanket `allowFail` would turn a host without lsof into a confident
+ *  "nothing is listening": teardown would log that it reaped a live server, and doctor would report
+ *  no orphans. Both callers would rather say they could not look. */
+async function lsof(args: string[], timeoutMs: number): Promise<string> {
+  try {
+    return (await run("lsof", args, { timeoutMs })).stdout;
+  } catch (e) {
+    if (e instanceof Error && /\(code 1\)/.test(e.message)) return ""; // lsof: no match
+    throw e; // not installed / not permitted / timed out
+  }
+}
+
+/** pids LISTENing on a TCP port (`lsof -nP -ti tcp:<port> -sTCP:LISTEN`). */
 export async function listenerPids(port: number): Promise<number[]> {
-  const r = await run("lsof", ["-nP", "-ti", `tcp:${port}`, "-sTCP:LISTEN"], { allowFail: true, timeoutMs: 10_000 });
-  return r.stdout
+  const out = await lsof(["-nP", "-ti", `tcp:${port}`, "-sTCP:LISTEN"], 10_000);
+  return out
     .split("\n")
     .map((l) => Number.parseInt(l.trim(), 10))
     .filter((n) => Number.isInteger(n) && n > 1);
@@ -114,9 +126,9 @@ export interface OrphanListener {
  *  `(LISTEN)` last. `+c 0` keeps the full command name — lsof truncates it to 9 chars by default,
  *  which turns the one field an operator identifies the process by into `MainThrea`. */
 async function listeningProcesses(): Promise<{ pid: number; command: string; port: number }[]> {
-  const r = await run("lsof", ["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN"], { allowFail: true, timeoutMs: 15_000 });
+  const stdout = await lsof(["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN"], 15_000);
   const out: { pid: number; command: string; port: number }[] = [];
-  for (const line of r.stdout.split("\n").slice(1)) {
+  for (const line of stdout.split("\n").slice(1)) {
     const f = line.trim().split(/\s+/);
     if (f.length < 9) continue;
     const pid = Number.parseInt(f[1]!, 10);
@@ -128,8 +140,8 @@ async function listeningProcesses(): Promise<{ pid: number; command: string; por
 
 /** A process's cwd, via lsof's field output (`-Fn` ⇒ an `n<path>` line). Works on macOS + Linux. */
 async function cwdOf(pid: number): Promise<string | null> {
-  const r = await run("lsof", ["-a", "-d", "cwd", "-Fn", "-p", String(pid)], { allowFail: true, timeoutMs: 10_000 });
-  return /^n(.+)$/m.exec(r.stdout)?.[1]?.trim() ?? null;
+  const out = await lsof(["-a", "-d", "cwd", "-Fn", "-p", String(pid)], 10_000);
+  return /^n(.+)$/m.exec(out)?.[1]?.trim() ?? null;
 }
 
 /** Listeners running inside a factory worktree that NO live run owns any more — dev servers that

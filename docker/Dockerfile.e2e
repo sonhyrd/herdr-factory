@@ -12,10 +12,11 @@ FROM node:26.4.0-bookworm-slim
 # git      — worktrees, the bare `origin`, src/version.ts, doctor's auto-update check
 # curl     — herdr download at build time; scenario probes of the resident server at test time
 # procps   — RSS/FD sampling in the resource-soak scenario
+# lsof     — teardown's dev-server reap and doctor --deep's orphan check shell out to it
 # jq       — shell-side assertions and the fake `gh`/`herdr` shims
 # less     — git's default pager; without it some git plumbing complains under a PTY
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates procps jq less \
+      git curl ca-certificates procps jq less lsof \
     && rm -rf /var/lib/apt/lists/* \
     && npm i -g pnpm@11 --silent
 
