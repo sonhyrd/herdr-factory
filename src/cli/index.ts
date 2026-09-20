@@ -8,7 +8,7 @@ import { stepDescriptorFor } from "../steps/registry.ts";
 import { ejectPrompts, UnknownPromptStepError } from "../prompts-eject.ts";
 import { installSkill, SkillBundleMissingError, SkillDestinationExistsError } from "../skill-install.ts";
 import { createEvidencePublisher, enumerateEvidenceFiles, resolveGithubUsername } from "../clients/evidence.ts";
-import { baseGroups, repoGroup, type DoctorGroup } from "../doctor.ts";
+import { baseGroups, repoGroup, resetCursorModelsCache, type DoctorGroup } from "../doctor.ts";
 import { openDb } from "../db/index.ts";
 import { Store } from "../db/store.ts";
 import { initRepo } from "../init.ts";
@@ -1154,12 +1154,13 @@ program
 
 program
   .command("doctor")
-  .description("health check: local + presence by default; --deep also interacts with services (gh auth, work-source health, evidence-bucket write). Add --repo <name> for repo-specific checks")
-  .option("--deep", "also interact with external services: gh auth, work-source health, and an evidence-bucket write probe (network + a tiny S3 write)")
+  .description("health check: local + presence by default; --deep also interacts with services (gh auth, cursor-agent login + models, work-source health, evidence-bucket write). Add --repo <name> for repo-specific checks (and the agent tooling that repo's config asks for)")
+  .option("--deep", "also interact with external services: gh auth, cursor-agent (login + model ids), work-source health, and an evidence-bucket write probe (network + a tiny S3 write)")
   .action(cliAction("doctor", async (opts: { deep?: boolean }) => {
     const deep = opts.deep ?? false;
     const repo = (program.opts() as { repo?: string }).repo;
-    const groups = await baseGroups(deep);
+    resetCursorModelsCache(); // each doctor run asks cursor-agent afresh (memoized only WITHIN a run)
+    const groups = await baseGroups(deep, repo);
     if (repo) groups.push(await repoGroup(repo, deep));
     let failed = false;
     groups.forEach((g, i) => {

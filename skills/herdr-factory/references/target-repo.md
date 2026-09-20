@@ -51,7 +51,10 @@ Notes on each:
   (e.g. `~/.claude/hooks/herdr-agent-state.sh`). `herdr integration status` lists every supported
   harness and whether its hook is `current` / `outdated` / `not installed`.
 - `doctor` also checks `claude` on PATH **unconditionally**, even when the configured `agent.command`
-  is `opencode`/`codex`/… — a red ✗ there is cosmetic for a non-claude setup.
+  is `opencode`/`codex`/… — a red ✗ there is cosmetic for a non-claude setup. `cursor-agent` is the
+  one harness checked from the config instead of unconditionally: with `--repo`, and only when a belt
+  really starts a Cursor agent, `doctor` checks it on PATH, and `--deep` adds `cursor-agent status`,
+  the repo's `--model` ids against `cursor-agent models`, the skills its prompts name, and `ocr`.
 - `doctor` checks **none** of: `base_ref` existence, the `.gitignore` rule, the herdr plugin link, or
   the agent integration. See [troubleshooting.md](./troubleshooting.md).
 

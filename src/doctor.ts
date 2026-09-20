@@ -4,11 +4,12 @@
 // maintains itself vs the external tools + auth the user supplies. Repo-specific checks are a
 // separate group behind `--repo`.
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEvidencePublisher, credsRefreshHint } from "./clients/evidence.ts";
 import { run } from "./clients/exec.ts";
-import { assertMainCheckout, globalDbPath, isManagedNode } from "./config.ts";
+import { assertMainCheckout, globalDbPath, isManagedNode, loadConfig, type BeltConfig, type Config, type StepConfig } from "./config.ts";
 import { descriptorFor } from "./sources/registry.ts";
 import { orphanWorktreeListeners, worktreesRoot } from "./core/dev-server.ts";
 import { openDb } from "./db/index.ts";
@@ -18,6 +19,7 @@ import { buildDeps } from "./build-deps.ts";
 import { availableMemoryMb, loadMachineConfig, machineConfigPath } from "./machine.ts";
 import type { Deps } from "./core/deps.ts";
 import { pingHealth, readServerInfo } from "./server/client.ts";
+import { HERDR_AGENT_KINDS } from "./types.ts";
 import * as service from "./watchers/service.ts";
 import { ago, readUpdateStatus, updateChannel, updateStalled } from "./watchers/update-status.ts";
 
@@ -155,10 +157,257 @@ async function herdrVersionCheck(herdrBin: string, env?: NodeJS.ProcessEnv): Pro
   return `v${version}`;
 }
 
+// --- the agent tooling a run actually shells out to -----------------------------------------
+// `claude` is not the only harness a belt runs: every pane launches whatever the config's `agent:`
+// block names, and the prompts delegate the real work to agent SKILLS. None of that used to be
+// checked, and none of it fails loudly — a missing skill just makes the agent improvise, and a
+// `--model` id cursor-agent doesn't recognise makes it print its model list and exit, leaving a
+// pane that LOOKS ready while the whole run burns quietly. So these checks are CONFIG-driven: a
+// host whose belts never touch Cursor reports "not configured" rather than ✗ (issue #49).
+
+/** Where each agent engine reads its skills from, relative to $HOME. */
+const SKILL_ROOT: Record<string, string> = { cursor: ".cursor/skills", claude: ".claude/skills" };
+
+/** The herdr agent KIND a harness block runs as: its explicit `kind`, else the command when the
+ *  command itself names a kind (`claude`), else Cursor's CLI under its own binary name. undefined
+ *  for a wrapper script with no `kind:` — we can't tell what it launches, so we don't guess. */
+function engineKind(a: { command?: string; kind?: string } | undefined): string | undefined {
+  if (!a) return undefined;
+  if (a.kind) return a.kind;
+  const base = a.command?.split("/").pop() ?? "";
+  if (base === "cursor-agent") return "cursor";
+  return HERDR_AGENT_KINDS.includes(base) ? base : undefined;
+}
+
+/** Every `--model <id>` / `--model=<id>` in an argv. */
+function modelIds(args: readonly string[]): string[] {
+  const out: string[] = [];
+  args.forEach((a, i) => {
+    if (a === "--model" && args[i + 1]) out.push(args[i + 1]!);
+    else if (a.startsWith("--model=")) out.push(a.slice("--model=".length));
+  });
+  return out;
+}
+
+// Skill names are read from the prompts rather than hardcoded, so the check follows the prompts as
+// they change. Two deliberately TIGHT patterns, so prose can never invent a name: a path rooted at a
+// skills DIRECTORY (`~/.claude/skills/to-spec/SKILL.md`) and a bolded name directly before the word
+// "skill" (`Use the **pr-review** skill`). Anything vaguer is left alone — a ✗ for a skill nobody
+// asked for is worse than no check, and the loose form catches prose like "release skills/commands
+// under `.claude/`".
+const SKILL_PATTERNS = [/\.(?:claude|cursor)\/skills\/([a-z0-9][a-z0-9._-]*)/g, /\*\*([a-z0-9][a-z0-9._-]*)\*\*\s+skill\b/g];
+
+/** The skill names a prompt body references. */
+export function skillNamesIn(body: string): string[] {
+  const out = new Set<string>();
+  for (const re of SKILL_PATTERNS) for (const m of body.matchAll(re)) out.add(m[1]!);
+  return [...out];
+}
+
+/** The prompt bodies a step carries at LOAD time: its engine base, plus a `config`-sourced user
+ *  prompt file. A `repo`-sourced prompt lives in a run's worktree and isn't readable from here. */
+function stepPrompts(config: Config, step: StepConfig): string[] {
+  const bodies = [step.enginePrompt];
+  if (step.promptFile && step.promptFileSource === "config") {
+    const abs = isAbsolute(step.promptFile) ? step.promptFile : join(config.paths.repoDir, step.promptFile);
+    if (existsSync(abs)) bodies.push(readFileSync(abs, "utf8"));
+  }
+  return bodies.filter((b): b is string => !!b);
+}
+
+/** Which engine runs a step: the layout pane it targets (that pane's agent is what actually starts),
+ *  falling back to the harness a SPAWNED pane would launch (step over belt over repo). */
+function stepEngine(config: Config, belt: BeltConfig, step: StepConfig): string | undefined {
+  const layout = config.layouts.find((l) => l.id === belt.defaultLayout);
+  const pane = step.tab && step.pane ? layout?.tabs.find((t) => t.title === step.tab)?.panes.find((p) => p.title === step.pane) : undefined;
+  if (pane?.agent) return pane.agent.kind;
+  return engineKind(step.agent ?? config.agent);
+}
+
+/** What a repo's config asks of the agent tooling on this host: which engines it starts, the Cursor
+ *  model ids it names, and the skills its prompts delegate to (per engine, since each engine reads
+ *  its skills from its own root). */
+export interface AgentTooling {
+  engines: Set<string>;
+  cursorModels: Set<string>;
+  /** engine kind → the skill names that engine's prompts reference. */
+  skills: Map<string, Set<string>>;
+}
+
+export function agentTooling(config: Config): AgentTooling {
+  const engines = new Set<string>();
+  const cursorModels = new Set<string>();
+  const skills = new Map<string, Set<string>>();
+  const addModels = (engine: string | undefined, args: readonly string[]) => {
+    if (engine) engines.add(engine);
+    // Only Cursor's ids are checkable against `cursor-agent models` — `--model opus` on a claude
+    // pane is Claude Code's namespace, not Cursor's.
+    if (engine === "cursor") for (const m of modelIds(args)) cursorModels.add(m);
+  };
+  // Layout panes start their own agents (the common case: every step targets a pane).
+  for (const l of config.layouts) for (const t of l.tabs) for (const p of t.panes) if (p.agent) addModels(p.agent.kind, p.agent.args);
+  // …and a step with no pane spawns one from the resolved harness.
+  addModels(engineKind(config.agent), config.agent.flags);
+  for (const belt of config.belts) {
+    for (const step of belt.steps) {
+      if (step.agent) addModels(engineKind(step.agent), step.agent.flags);
+      const engine = stepEngine(config, belt, step);
+      if (!engine) continue;
+      for (const body of stepPrompts(config, step)) {
+        for (const name of skillNamesIn(body)) {
+          let set = skills.get(engine);
+          if (!set) skills.set(engine, (set = new Set()));
+          set.add(name);
+        }
+      }
+    }
+  }
+  return { engines, cursorModels, skills };
+}
+
+/** `cursor-agent models` prints `<id> - <label>` per line. One invocation per doctor run, memoized
+ *  so several repos share it. */
+let cursorModelsCache: Promise<Set<string>> | undefined;
+function listCursorModels(env?: NodeJS.ProcessEnv): Promise<Set<string>> {
+  cursorModelsCache ??= (async () => {
+    // allowFail + our own message: the raw `exec failed: cursor-agent models (code 1): …` this used
+    // to surface is not a fix hint, and the issue asks every row to carry one.
+    const r = await run("cursor-agent", ["models"], { env, timeoutMs: 30_000, allowFail: true });
+    if (r.code !== 0) {
+      const said = firstLine(`${r.stdout}\n${r.stderr}`);
+      throw new Error(`\`cursor-agent models\` failed (exit ${r.code})${said ? ` — ${said}` : ""} — sign in with \`cursor-agent login\` if it wants authentication`);
+    }
+    return new Set([...r.stdout.matchAll(/^(\S+) - /gm)].map((m) => m[1]!));
+  })();
+  return cursorModelsCache;
+}
+/** Test seam / fresh-run reset: the next `listCursorModels` invokes the CLI again. */
+export function resetCursorModelsCache(): void {
+  cursorModelsCache = undefined;
+}
+
+/** Presence as a BOOLEAN, for a check that must branch on it rather than fail on it — `run()` turns
+ *  a spawn ENOENT into an ordinary non-zero result under `allowFail`, so a check that goes straight
+ *  to invoking a tool cannot tell "missing" from "broken" and would misdiagnose it. */
+async function isOnPath(tool: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
+  return onPath(tool, env).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** The same remediation the group's other absent-tool rows give: install it, then re-run `install`
+ *  so the SERVICE's frozen PATH picks it up (these checks resolve against that PATH, not a shell's). */
+function missingToolHint(what: string): string {
+  return `not on PATH — install ${what}, then re-run \`herdr-factory install\` so the service PATH picks it up`;
+}
+
+/** The first non-empty line a CLI printed, for quoting its own words back in a ✗. */
+function firstLine(out: string): string {
+  return out.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+}
+
+/** The "you provide" checks that only a loaded config can gate: cursor-agent (+ its login and the
+ *  model ids in play), the skills the prompts name, and `ocr`. Each is a ✗ with a one-line fix hint,
+ *  never a throw; each reports "not configured" when this config doesn't ask for it. */
+export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, env?: NodeJS.ProcessEnv): Promise<DoctorCheck[]> {
+  // Pushed as PROMISES and awaited together: `cursor-agent status` and `cursor-agent models` each
+  // cost ~2s, and running them back to back is what would push `--deep` past "a couple of seconds".
+  const checks: (DoctorCheck | Promise<DoctorCheck>)[] = [];
+  const usesCursor = tooling.engines.has("cursor");
+  // Presence, resolved ONCE and shared by the rows that invoke cursor-agent. Deep must establish it
+  // before interpreting anything the CLI "said": under `allowFail` a spawn ENOENT arrives as an
+  // ordinary non-zero result, so without this a MISSING binary reads as a signed-out one — and the
+  // operator is told to run `cursor-agent login`, which itself fails with command-not-found.
+  const cursorOnPath = usesCursor && deep ? isOnPath("cursor-agent", env) : undefined;
+
+  // 1. cursor-agent. Its login opens a browser and blocks, so it can never be fixed unattended —
+  //    naming it here, early, is the whole point.
+  if (!usesCursor) {
+    checks.push({ name: "cursor-agent", ok: true, detail: "not configured — no belt runs a Cursor agent" });
+  } else if (!deep) {
+    checks.push(attempt("cursor-agent", () => onPath("cursor-agent", env)));
+  } else {
+    checks.push(
+      attempt("cursor-agent (signed in)", async () => {
+        if (!(await cursorOnPath)) throw new Error(missingToolHint("Cursor's CLI (`cursor-agent`)"));
+        const r = await run("cursor-agent", ["status"], { env, allowFail: true, timeoutMs: 30_000 });
+        const said = firstLine(`${r.stdout}\n${r.stderr}`);
+        const who = /logged in as (\S+)/i.exec(`${r.stdout} ${r.stderr}`)?.[1];
+        // Quote the CLI's own first line whichever way it exited — a non-zero exit (a broken
+        // install answering `error: unknown command status`) is exactly when it is worth showing.
+        if (!who) throw new Error(`not signed in — run \`cursor-agent login\` on this host (it opens a browser)${said ? ` [cursor-agent said: ${said}]` : ""}`);
+        return who;
+      }),
+    );
+  }
+
+  // 2. Every configured Cursor `--model` id still exists. Deep only: one CLI invocation.
+  const models = [...tooling.cursorModels].sort();
+  if (models.length === 0) {
+    checks.push({ name: "cursor models", ok: true, detail: "none configured" });
+  } else if (!deep) {
+    checks.push({ name: "cursor models", ok: true, detail: `${models.length} configured (${models.join(", ")}) — --deep to verify` });
+  } else {
+    checks.push(
+      attempt("cursor models", async () => {
+        // One root cause, one ✗: when the binary is absent the row above already says so and how to
+        // fix it, so this defers rather than repeating it as a second failure.
+        if (cursorOnPath && !(await cursorOnPath)) return "not checked — cursor-agent is not on PATH (see the row above)";
+        const known = await listCursorModels(env);
+        const gone = models.filter((m) => !known.has(m));
+        if (gone.length > 0) throw new Error(`${gone.join(", ")} not in \`cursor-agent models\` — fix the \`--model\` id in this repo's config (a rejected id makes cursor-agent print its model list and exit)`);
+        return models.join(", ");
+      }),
+    );
+  }
+
+  // 3. The skills the prompts name exist under the engine that runs them. Deep only, so plain
+  //    `doctor` stays PATH-only.
+  const named = [...tooling.skills].flatMap(([engine, names]) => [...names].map((name) => ({ engine, name })));
+  if (named.length === 0) {
+    checks.push({ name: "agent skills", ok: true, detail: "none named by the prompts" });
+  } else if (!deep) {
+    checks.push({ name: "agent skills", ok: true, detail: `${named.length} named by the prompts — --deep to verify` });
+  } else {
+    checks.push(
+      attempt("agent skills", async () => {
+        const missing = named.filter(({ engine, name }) => {
+          const root = SKILL_ROOT[engine];
+          return root ? !existsSync(join(homedir(), root, name, "SKILL.md")) : false;
+        });
+        if (missing.length > 0) {
+          throw new Error(missing.map(({ engine, name }) => `${name} missing at ~/${SKILL_ROOT[engine]}/${name}/SKILL.md`).join("; ") + " — install (or re-link) the skill on this host");
+        }
+        return `${named.length} present (${named.map((s) => s.name).sort().join(", ")})`;
+      }),
+    );
+  }
+
+  // 4. `ocr` — pr-review's third review track shells out to it, and nothing in the install puts it
+  //    there. Only checked when a prompt actually names pr-review.
+  const needsOcr = [...tooling.skills.values()].some((names) => names.has("pr-review"));
+  checks.push(
+    needsOcr
+      ? // `ocr` gets a hint of its own rather than the shared `command -v` failure the other
+        //  you-provide tools show: it is the one tool here that NOTHING installs, so "where does it
+        //  come from" is the actual question a ✗ has to answer.
+        attempt("ocr", async () => {
+          if (!(await isOnPath("ocr", env))) throw new Error(`${missingToolHint("`ocr`")} (pr-review's third review track shells out to it; nothing in \`install.sh\` provides it)`);
+        })
+      : { name: "ocr", ok: true, detail: "not configured — no prompt names the pr-review skill" },
+  );
+
+  return await Promise.all(checks);
+}
+
 /** Machine-wide checks, grouped by ownership. No repo needed.
  *  `deep` = also interact with external services (gh auth, herdr daemon); the default is local-only
- *  and side-effect-free (tool presence, no network calls). */
-export async function baseGroups(deep = false): Promise<DoctorGroup[]> {
+ *  and side-effect-free (tool presence, no network calls).
+ *  `repo` is optional and only widens the "you provide" group: the agent tooling a run shells out to
+ *  (cursor-agent, its model ids, the skills the prompts name, ocr) is only checkable — and only
+ *  gateable, so a Cursor-less host isn't failed — against a loaded config. */
+export async function baseGroups(deep = false, repo?: string): Promise<DoctorGroup[]> {
   const herdrBin = process.env.HERDR_BIN_PATH ?? "herdr";
   const info = readServerInfo();
   const running = info ? await pingHealth(info.port).catch(() => false) : false;
@@ -223,6 +472,18 @@ export async function baseGroups(deep = false): Promise<DoctorGroup[]> {
       : attempt("gh", () => onPath("gh", toolEnv)),
     attempt("claude", () => onPath("claude", toolEnv)),
   ]);
+
+  // A config that won't load is already the repo group's ✗ (`config loads + sources buildable`);
+  // here it just means we can't say what tooling this host needs, so we say nothing.
+  if (repo) {
+    let config: Config | undefined;
+    try {
+      config = loadConfig(repo).config;
+    } catch {
+      config = undefined;
+    }
+    if (config) provided.push(...(await agentToolingChecks(agentTooling(config), deep, toolEnv)));
+  }
 
   return [
     { title: "managed by herdr-factory", checks: managed },
