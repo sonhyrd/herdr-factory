@@ -387,7 +387,7 @@ Target-repo assets the shipped prompts look for: `CLAUDE.md` / `AGENTS.md` (incl
 
 ### The resolver wake prompt (adjacent surface)
 
-Not a belt step — it wakes an agent to resolve PR review threads and failing checks after the PR is open. It runs through the **same** pack chain, substitutes **only** `@@KEY@@` and `@@PR_NUMBER@@`, is validated nowhere, and lands at `.memory/herdr-factory/prompt-resolver.md`. It cannot be wired via a step's `prompt_file`; customise it by dropping `resolver.md` (or `<source>/resolver.md`) into a pack directory.
+Not a belt step — it wakes an agent to resolve PR review threads and failing checks after the PR is open. It runs through the **same** pack chain, substitutes **only** `@@KEY@@` and `@@PR_NUMBER@@`, is validated nowhere, and lands at `.memory/herdr-factory/prompt-resolver.md`. It cannot be wired via a step's `prompt_file`; customise it by dropping `resolver.md` (or `<source>/resolver.md`) into a pack directory. Its shipped text tells the resolver to probe `main` once (never with a probe PR or an empty commit) before fixing a failing check: a check that fails **identically on `main`** is reported in one PR comment and left red rather than fixed in the ticket branch, and it may never open a PR other than the one it was given.
 
 ---
 
