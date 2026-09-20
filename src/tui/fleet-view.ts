@@ -150,7 +150,96 @@ export function machineHeader(m: MachineView, readAt: number): { text: string; t
   // The host-local gate (cap occupancy, free memory) is the machine's own line, and long enough to
   // deserve its own row.
   if (m.machineLine) lines.push({ text: `    ${m.machineLine.replace(/^machine: /, "")}`, tone: "accent" });
+  // A cause several repos share is one cause: name it here, not once per row.
+  for (const detail of sharedProblems(m)) lines.push({ text: `    ⚠ ${shortProblem(detail)} — on several repos`, tone: "bad" });
   return lines;
+}
+
+// ── what the board leads with, and what it collapses ─────────────────────────────────────────────
+// A fleet board is mostly repos with nothing happening in them. The three helpers below are what let
+// the render say the interesting half first and the boring half once:
+//   * `needsYou` — the runs and machines that will not move until a human acts;
+//   * `sharedProblems`/`shortProblem` — a problem named on the row, and named ONCE per host when
+//     several of its repos report the identical one (a single `gh auth` is one login, not five);
+//   * `idleRepos` — repos with no run, no eligible work and no problem, which collapse to one line.
+
+/** A problem as a row can carry it: the cause, without the "— press s"/"— run X" hint the detail
+ *  appends for the modal. Truncated, because this rides at the end of a repo row. */
+export function shortProblem(detail: string): string {
+  const cause = detail.split(" — ")[0]!.trim();
+  return cause.length > 52 ? `${cause.slice(0, 51)}…` : cause;
+}
+
+/** Problem details that MORE THAN ONE of this machine's repos report identically — host-wide causes
+ *  (an expired `gh auth`, AWS creds) wearing a per-repo disguise. The header says them once; the rows
+ *  stay (so `d` still reaches each repo's full detail) but do not repeat the text. */
+export function sharedProblems(m: MachineView): Set<string> {
+  const seen = new Map<string, number>();
+  for (const r of m.repos) for (const d of new Set((r.status?.problems ?? []).map((p) => p.detail))) seen.set(d, (seen.get(d) ?? 0) + 1);
+  return new Set([...seen].filter(([, n]) => n > 1).map(([d]) => d));
+}
+
+/** True when a repo has nothing an operator could act on: no active run, no eligible work, no
+ *  problem. A repo whose status failed to load is NOT idle — that is news, and keeps its row. */
+export function isIdleRepo(r: RepoView): boolean {
+  return r.status != null && r.status.active.length === 0 && r.eligible.length === 0 && (r.status.problems?.length ?? 0) === 0;
+}
+
+/** The one line that stands in for a machine's idle repos. On an unverifiable machine it says
+ *  `unverified`, never `idle`: those rows are a remembered read, and "idle" would claim this one. */
+export function idleLine(names: string[], stale: boolean): string {
+  return `  ${stale ? "unverified" : "idle"} · ${names.join(" · ")}`;
+}
+
+/** One thing that will not move until a human acts, for the board's top section. */
+export interface NeedsYouItem {
+  text: string;
+  tone: "good" | "warn" | "bad";
+  machine: string;
+  repo: string;
+  /** The run it points at; absent for a machine-level entry. */
+  key?: string;
+  source?: string | null;
+  phase?: string;
+  stale?: boolean;
+}
+
+/**
+ * The board's first section: everything blocked on a person, across the whole fleet — a PR that is
+ * green and waiting to be merged (the `pr_green` watch already knows), a run parked for `attention`,
+ * a run that asked a human a question, and a machine that has stopped answering.
+ *
+ * Empty means the section is not drawn at all: a heading that is usually "nothing" teaches an
+ * operator to skip the top of the screen, which is the one place this board cannot afford to lose.
+ *
+ * A stale machine's runs still list — they were blocked on a human when it last answered and nothing
+ * since says otherwise — but they carry the machine's name and cannot be acted on (`stale`).
+ */
+export function needsYou(machines: MachineView[]): NeedsYouItem[] {
+  const green: NeedsYouItem[] = [];
+  const parked: NeedsYouItem[] = [];
+  const asking: NeedsYouItem[] = [];
+  const blind: NeedsYouItem[] = [];
+  for (const m of machines) {
+    if (m.state === "unverifiable") {
+      blind.push({ text: `✗ ${m.name} unverifiable — ${m.detail ?? "no answer"}`, tone: "bad", machine: m.name, repo: "" });
+    }
+    for (const r of m.repos) {
+      for (const run of r.status?.active ?? []) {
+        const at = `${r.repo}${m.local ? "" : ` @${m.name}`}`;
+        const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, stale: m.stale };
+        if (run.prGreen && run.prNumber != null) {
+          green.push({ ...base, text: `✓ ${run.ticketKey}  PR #${run.prNumber} is green — ready to merge  (${at})`, tone: "good" });
+        }
+        if (run.phase === "attention") {
+          parked.push({ ...base, text: `⚠ ${run.ticketKey}  parked — ${run.attentionReason ?? "needs attention"}  (${at})`, tone: "bad" });
+        } else if (run.phase === "waiting_for_human") {
+          asking.push({ ...base, text: `? ${run.ticketKey}  waiting for a human reply  (${at})`, tone: "warn" });
+        }
+      }
+    }
+  }
+  return [...green, ...parked, ...asking, ...blind];
 }
 
 /** A run on an unverifiable machine: no card (a card would claim to be live), one line saying what
