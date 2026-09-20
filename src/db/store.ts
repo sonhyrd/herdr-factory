@@ -362,6 +362,16 @@ export class Store {
     return counts;
   }
 
+  /** Every live run's checkout path, across ALL repos. "Does a live run still own this worktree?"
+   *  is not a per-repo question — the doctor's orphaned-listener check compares a listener's cwd
+   *  against every factory run on the box. */
+  activeWorktreePaths(): string[] {
+    const rows = this.db
+      .prepare(`SELECT DISTINCT worktree_path AS p FROM runs WHERE ended_at IS NULL AND worktree_path IS NOT NULL`)
+      .all() as { p: string }[];
+    return rows.map((r) => r.p);
+  }
+
   activeRuns(repo: string): Run[] {
     const rows = this.db
       .prepare(`${RUN_SELECT} WHERE r.repo = ? AND r.ended_at IS NULL ORDER BY r.created_at`)

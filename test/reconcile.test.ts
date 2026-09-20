@@ -154,6 +154,7 @@ function build(opts: { multi?: boolean } = {}) {
     worktreeRemove: [] as string[],
     workspaceClose: [] as string[],
     rmrf: [] as string[],
+    killPort: [] as number[], // teardown's dev-server reap — ports, never a real signal
     branchDelete: [] as string[],
     fetchRef: [] as [string, string, string][],
     humanAsk: [] as HumanAskInput[],
@@ -342,6 +343,7 @@ function build(opts: { multi?: boolean } = {}) {
     uid: () => `u${++uidN}`,
     sleep: async () => {},
     rmrf: async (p) => { calls.rmrf.push(p); },
+    killPortListeners: async (port) => { calls.killPort.push(port); return [4242]; },
   };
   return { deps, store, state, calls, setNow: (n: number) => { now = n; }, worktree, shipBelt, lmBelt, sources };
 }
@@ -2052,6 +2054,39 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.transitions).toContainEqual(["K-9", "merged"]); // terminal state written back
     expect(calls.worktreeRemove).toContain("w1");
     expect(calls.branchDelete).toContain("fix/K-9-s");
+  });
+
+  it("teardown kills the dev server on the port the run reserved (hf-port), before the dir goes", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    // The handshake the target repo's setup/dev command writes: the chosen port in the WORKTREE's
+    // git dir (a linked worktree's `.git` is a file pointing at it), not in the checkout.
+    const gitDir = mkdtempSync(join(tmpdir(), "cats-gitdir-"));
+    tmps.push(gitDir);
+    writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    writeFileSync(join(gitDir, "hf-port"), "4100\n");
+    const run = seed(store, worktree, "K-PORT", "reviewing", null, {});
+    state.pr = { number: 40, state: "MERGED", url: "u" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.killPort).toEqual([4100]);
+    expect(store.getRun(run.id)!.phase).toBe("done");
+  });
+
+  it("teardown carries on when hf-port is absent or unreadable — a missing port is never a failure", async () => {
+    for (const [key, port] of [["K-NOPORT", null], ["K-BADPORT", "not-a-port"]] as const) {
+      const { deps, store, state, worktree, calls } = build();
+      if (port !== null) {
+        const gitDir = mkdtempSync(join(tmpdir(), "cats-gitdir-"));
+        tmps.push(gitDir);
+        writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+        writeFileSync(join(gitDir, "hf-port"), port);
+      }
+      const run = seed(store, worktree, key, "reviewing", null, {});
+      state.pr = { number: 41, state: "MERGED", url: "u" };
+      await reconcileRun(deps, store.getRun(run.id)!);
+      expect(calls.killPort).toEqual([]); // nothing to reap
+      expect(store.getRun(run.id)!.phase).toBe("done"); // teardown still completed
+      expect(calls.worktreeRemove).toContain("w1");
+    }
   });
 
   it("teardown drops a still-pending evidence upload (best-effort — worktree about to be removed)", async () => {

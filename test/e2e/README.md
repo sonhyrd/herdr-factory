@@ -99,6 +99,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `capture-cap` | a flaky capture loop parks at the cap — and the station's own verdict still wins |
 | `pr-review-watch` | a draft PR keeps the step-done gate, a ready one hands off without it, and a new review thread wakes a resolver that holds a slot only while working |
 | `pr-closed-park` | a PR closed without merging parks for a human and keeps its worktree |
+| `teardown-dev-server` | issue #48: a real listener in its own process group, with its cwd in the worktree and its port in `<git dir>/hf-port`, is dead and its port free once the run tears down — and a run with **no** `hf-port` still ends `merged` with its worktree and branch reaped |
 | `belt-matrix` | priority order, a `match` predicate, first-match-wins, an `active: false` belt that takes nothing, and the per-source cap |
 | `config-rejections` | 12 broken configs are each refused at load with a message that names the problem — and the server survives all of them |
 | `eligible-last-poll` | the dashboard's read budget: `/eligible` on a real `serve` answers from the TICK's last poll — 20 refreshes cost **0** source calls and log no `eligible query failed`, a claimed item is a run rather than an eligible row, and a poll that fails leaves the last good list standing |

@@ -61,6 +61,27 @@ retries. Never keep your own work on a branch that matches a belt's `workspace_n
 
 ---
 
+### 1.1 Dev servers: write `hf-port`, or they outlive the run
+
+A dev server started in a layout pane is **reparented** when the workspace closes — so without this
+it survives teardown, holding its port (the next run's server silently moves up the range, and an
+evidence pass can film a stale server on old code) and its whole RSS forever.
+
+Write the port you picked into the worktree's own git dir, from wherever the repo already chooses it
+(`setup-worktree.sh`, a layout `setup.command`, or the dev pane's command):
+
+```sh
+echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"
+```
+
+Teardown reads it **before** it removes anything and, once the workspace is closed, kills the
+listener's process group on that port (never a pattern kill — only the pid(s) on this run's own
+port). No file, an unreadable one, or a dead server: teardown logs one line and carries on, and the
+server leaks exactly as it did before. `doctor --deep` names listeners under `~/.herdr/worktrees`
+that no live run owns — report only; it never kills.
+
+---
+
 ## 2. What the engine reads out of the repo itself (mechanical, not prompt-mediated)
 
 These are read by the engine from the **run's worktree**, with no agent involved.
