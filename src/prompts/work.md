@@ -42,7 +42,12 @@ repo's guidance genuinely conflicts with them, follow this prompt and say so in 
    videos) before designing a solution — they are part of the spec.
 3. Bootstrap the worktree if needed (install deps / run the repo's setup).
 4. Implement the change following the repo's own conventions (above) and preferring existing
-   patterns. Keep the change focused.
+   patterns. Keep the change focused. **Edit files with the harness's own file-edit tool** —
+   it fails loudly when its target text is not found. When a scripted edit is genuinely the
+   right tool (one mechanical change repeated across many files), **assert the replacement
+   landed**: compare the text before and after, or re-read the file and grep for the new
+   text, and treat a no-op replace as a failure — a `replace` that matches nothing still
+   exits 0.
 5. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area
    (its documented ones if it has them). Fix everything they report.
 6. **Commit** your work to the branch — code only, and commit incrementally as you go
