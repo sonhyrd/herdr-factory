@@ -130,7 +130,9 @@ commits, during its automated round — hence its own heartbeat). The **heartbea
 within `limits.stall_seconds` (default **2700**) parks `step_stalled`. **budget** parks `step_budget`
 past `budget_seconds` (5400). Both guards **veto while the pane state is `working`** — a live agent is
 never parked by a timer (logged `past <what> but still working — extending`). Both are rescued by a
-genuine later `step-done` or `bounce`. `work` never opens a PR and never touches the item's status.
+genuine later `step-done` or `bounce`. Before either can trip, an agent that has sat at its prompt for
+`limits.idle_nudge_seconds` (default **300**) is re-prompted once — see the idle nudge in
+`references/architecture.md` §10. `work` never opens a PR and never touches the item's status.
 
 ### evidence
 

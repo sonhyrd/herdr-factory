@@ -91,6 +91,7 @@ export type EventType =
   | "step_spawned"
   | "step_done"
   | "layout_wait_retry" // a layout-pane wait window expired; the engine re-armed it (bounded respawn budget)
+  | "idle_nudge" // a running step's pane sat idle past limits.idle_nudge_seconds; it was re-prompted once
   | "bounced"
   | "signal_queued" // a durable bounce/ask-human intent couldn't apply immediately (run lock busy) — the tick consumes it
   | "signal_rejected" // a consumed bounce/ask-human intent was invalid by the time it applied (stale/misaddressed)

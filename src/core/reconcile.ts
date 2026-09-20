@@ -1,6 +1,6 @@
 import { arbitrateClaim, releaseClaim } from "./claim-guard.ts";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import * as Effect from "effect/Effect";
 import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
@@ -12,6 +12,7 @@ import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
+import { fmtDur } from "./explain.ts";
 import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
@@ -2201,7 +2202,131 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
     return;
   }
   if (rs.absentAt != null) deps.store.upsertRunStep(run.id, step.name, { absentAt: null }); // seen alive again
+  // Alive, not done, no watchdog verdict: the one remaining shape is an agent sitting at its prompt
+  // with nothing prompting it. Nudge it once, well before any watch trips.
+  await nudgeIdleStepAgent(deps, run, step, rs);
   deps.log("info", `${run.ticketKey}: awaiting step-done ${step.name} (pane ${rs.paneId})`);
+}
+
+// --- the idle-agent nudge (one code path, two callers) ----------------------------------------
+// The commonest wedge in the factory is an agent that finished its work — or drifted off — and
+// never ran `step-done`. It sits at its prompt, perfectly alive, until the stall or budget window
+// expires 45-60 minutes later and parks the run for a human. One message heals it.
+//
+// Only a pane at its PROMPT is nudged (idle, or done having finished a turn — isReadyForInput): a
+// `working` pane is mid-turn (its own work, an on-demand question, or human-driven — injecting a
+// foreign turn interleaves two conversations), and a dead pane is the respawn machinery's job
+// (absence confirmation → spawnStep). The nudge points at the pass's rendered prompt file, whose
+// baked step-done command carries the still-valid --pass stamp (neither a resume nor a nudge ever
+// bumps the pass).
+//
+// Both callers — the human `resume` and the proactive idle nudge below — send the IDENTICAL text to
+// the identical set of pane states, so that lives here once: a drift between "what resume sends" and
+// "what the watchdog-preempting nudge sends" is a silent bug nobody would see until an agent
+// answered one and not the other.
+//
+// What the two callers do NOT share is the handshake, and they must not:
+//
+//  * `fresh` — resume forces an unmemoized pane read (a one-shot operator action arriving right
+//    after the agent finished); the per-tick nudge rides the ~5s agents memo.
+//  * `confirm` — `agentSend({ confirm: true })` is `agent prompt --wait --until working --timeout
+//    20s`, and BOTH callers run inside the run lock. For a human resume that is fine (one action,
+//    one run). For the per-tick nudge it is actively self-defeating: the lock it pins for up to 20s
+//    is the same lock the `step-done` it is trying to elicit needs, so the agent's signal comes
+//    back `run busy — the next pass will advance the belt` and the step advances a tick later than
+//    it should. A scripted/quiet agent that never reports `working` makes that the COMMON case, not
+//    the rare one. The nudge is therefore fire-and-forget: `nudged` then means "herdr accepted the
+//    submission", not "the agent demonstrably woke up", and the next tick's pane state tells us the
+//    rest for free.
+async function nudgeStepAgent(
+  deps: Deps,
+  run: Run,
+  stepName: string,
+  paneId: string,
+  lead: string,
+  opts: { fresh?: boolean; confirm?: boolean } = {},
+): Promise<{ nudged: boolean; worker?: string }> {
+  try {
+    const worker = await deps.herdr.paneState(paneId, opts.fresh ? { fresh: true } : undefined);
+    if (!isReadyForInput(worker)) return { nudged: false, worker };
+    const nudged = await deps.herdr.agentSend(
+      paneId,
+      `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief. ` +
+        `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`,
+      { confirm: opts.confirm === true },
+    );
+    deps.log(nudged ? "info" : "warn", `${run.ticketKey}: nudge of the ${stepName} agent (pane ${paneId}) ${nudged ? "submitted" : "was not accepted"}`);
+    return { nudged, worker };
+  } catch {
+    /* best-effort — herdr unreachable / pane gone; the caller's own recovery owns it */
+    return { nudged: false };
+  }
+}
+
+// The PROACTIVE half: nudge that idle agent ~5 minutes in instead of parking the run 45 minutes
+// later. Runs every tick for every running step whose watchdogs said `none`, so two properties are
+// load-bearing:
+//
+//  * It rides the MEMOIZED pane state (no `fresh: true`). The resume path forces a fresh read
+//    because it is a one-shot interactive action; this one is O(runs) per tick, and a fresh read
+//    here would re-add exactly the per-run herdr call the batched snapshot work removed.
+//  * Once per idle EPISODE, not once per tick. The mark is one `watch_state` row (run, step,
+//    `idle_nudge`) — no new run column, the same shape as the `pr_green` mark: `basedAt` = when the
+//    pane was first seen idle, `sig` = the HEAD at the moment the nudge was sent (or "nudged" when
+//    there is no worktree HEAD to read). The episode ends — and the row clears — when the pane goes
+//    `working` again, or when the branch HEAD moves: either is real progress, and the next idle
+//    stretch is news again. So idle → nudge → work → idle is two nudges, and idle for an hour is one.
+const IDLE_NUDGE = "idle_nudge";
+
+async function nudgeIdleStepAgent(deps: Deps, run: Run, step: StepConfig, rs: RunStep): Promise<void> {
+  const window = deps.config.limits.idleNudgeSeconds;
+  if (window <= 0 || !rs.paneId) return; // 0 disables the nudge entirely
+  const clear = (): void => void deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { sig: null, basedAt: null });
+
+  let worker: string;
+  try {
+    worker = await deps.herdr.paneState(rs.paneId); // memoized — no extra herdr call per tick
+  } catch {
+    return; // herdr unreachable / pane gone: the liveness + watchdog paths own recovery
+  }
+  const st = deps.store.getWatchState(run.id, step.name, IDLE_NUDGE);
+  if (worker === "working") {
+    if (st?.basedAt != null || st?.sig != null) clear(); // the episode ended — the agent is busy again
+    return;
+  }
+  if (!isReadyForInput(worker)) return; // gone/unknown/blocked: not ours to prompt into
+
+  if (st?.sig != null) {
+    // Already nudged in this episode. The only thing that can re-open it from here is a HEAD move
+    // (the agent worked and finished between two ticks, so we never observed `working`).
+    const head = run.worktreePath ? await deps.git.headSha(run.worktreePath).catch(() => null) : null;
+    if (head && head !== st.sig) clear();
+    return;
+  }
+  if (st?.basedAt == null) {
+    deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { basedAt: deps.now() });
+    return; // first tick that saw it idle — start the clock
+  }
+  if (deps.now() - st.basedAt < window) return;
+
+  const { nudged } = await nudgeStepAgent(
+    deps,
+    run,
+    step.name,
+    rs.paneId,
+    `${run.ticketKey}: this pane has been idle for ~${fmtDur(deps.now() - st.basedAt)} and the ${step.name} step has not been signalled done.`,
+  );
+  // Mark the episode nudged EVEN IF the send wasn't confirmed: one nudge per idle stretch is the
+  // contract, and a retry loop on an unconfirmed send is how a wedged pane gets spammed every tick.
+  const head = run.worktreePath ? await deps.git.headSha(run.worktreePath).catch(() => null) : null;
+  deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { sig: head || "nudged" });
+  deps.store.recordEvent({
+    runId: run.id,
+    repo: deps.config.repoName,
+    ticketKey: run.ticketKey,
+    type: "idle_nudge",
+    detail: { step: step.name, pane: rs.paneId, nudged, idleSeconds: deps.now() - st.basedAt },
+  });
 }
 
 /** Transition the work item to its review state and move the run into the human-review watch.
@@ -2519,36 +2644,27 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
   // a signal the pane never receives on its own, and the commonest watchdog park is an agent that
   // finished (or drifted off) WITHOUT running step-done — un-parking alone left that agent idle
   // until the fresh budget expired and re-parked the run, making resume a dead end for exactly the
-  // case it exists to heal. Only a pane at its PROMPT is nudged (idle, or done having finished a
-  // turn — isReadyForInput): a `working` pane is mid-turn (its own
-  // work, an on-demand question, or human-driven — injecting a foreign turn interleaves two
-  // conversations), and a dead pane is the respawn machinery's job (absence confirmation →
-  // spawnStep). The nudge points at the pass's rendered prompt file, whose baked step-done command
-  // carries the still-valid --pass stamp (resume never bumps the pass).
+  // case it exists to heal. Same code path as the proactive idle nudge (nudgeStepAgent), with one
+  // difference: the read is FRESH, not the ~5s agent-list memo. That memo exists to collapse
+  // O(runs) liveness polling inside one tick, and a human resume is a one-shot interactive action
+  // arriving right after the agent finished — deciding "still working, don't nudge" from a snapshot
+  // taken seconds before the operator acted is how a resume silently nudges nobody.
   let nudged = false;
   let worker: string | undefined;
   if (phase === "running" && run.step) {
     const paneId = deps.store.getRunStep(run.id, run.step)?.paneId;
     if (paneId) {
-      try {
-        // FRESH, not the ~5s agent-list memo: that memo exists to collapse O(runs) liveness polling
-        // inside one tick, and a human resume is a one-shot interactive action arriving right after
-        // the agent finished. Deciding "still working, don't nudge" from a snapshot taken seconds
-        // before the operator acted is how a resume silently nudges nobody.
-        worker = await deps.herdr.paneState(paneId, { fresh: true });
-        if (isReadyForInput(worker)) {
-          nudged = await deps.herdr.agentSend(
-            paneId,
-            `A human resumed ${run.ticketKey} after it was parked (${run.attentionReason ?? "attention"}). ` +
-              `Continue the ${run.step} step in this worktree — re-read ${MEMORY_DIR}/prompt-${run.step}.md if you need the full brief. ` +
-              `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`,
-            { confirm: true }, // the recorded `nudged` flag now means "the agent demonstrably woke up"
-          );
-          deps.log(nudged ? "info" : "warn", `${run.ticketKey}: nudge of the resumed ${run.step} agent (pane ${paneId}) ${nudged ? "landed" : "was not confirmed"}`);
-        }
-      } catch {
-        /* best-effort — herdr unreachable / pane gone; the reconcile that follows owns recovery */
-      }
+      ({ nudged, worker } = await nudgeStepAgent(
+        deps,
+        run,
+        run.step,
+        paneId,
+        `A human resumed ${run.ticketKey} after it was parked (${run.attentionReason ?? "attention"}).`,
+        { fresh: true, confirm: true }, // the recorded `nudged` then means "the agent demonstrably woke up"
+      ));
+      // A human resume is a fresh start for the step — including its idle-nudge episode, so an
+      // agent that sat idle through the park can be nudged again if it idles after the resume.
+      deps.store.upsertWatchState(run.id, run.step, IDLE_NUDGE, { sig: null, basedAt: null });
     }
   }
   // `worker` rides along so an unexplained `nudged:false` is diagnosable: it names the state the
@@ -2641,9 +2757,51 @@ async function teardown(deps: Deps, run: Run, outcome: Outcome, src: SourceRunti
   );
 }
 
+/** Is this process standing inside `dir`? The one question teardown has to ask before it removes a
+ *  worktree — see the hand-over in teardownImpl. Resolved, and matched on a path SEGMENT boundary
+ *  so `/w/run-1` never counts as inside `/w/run-10`. */
+function runningInside(dir: string | null): boolean {
+  if (!dir) return false;
+  const root = resolve(dir);
+  const here = resolve(process.cwd());
+  return here === root || here.startsWith(root + sep);
+}
+
 async function teardownImpl(deps: Deps, run: Run, outcome: Outcome, src: SourceRuntime | undefined): Promise<void> {
   const repo = deps.config.repoName;
   deps.store.updateRun(run.id, { phase: "tearing_down", outcome });
+
+  // NEVER saw off the branch we are standing on. A terminal signal (`step-done` on a belt's last
+  // step, a `bounce` that ends the run, an operator's `teardown`) is applied IN-PROCESS by the CLI
+  // the agent runs — and that CLI lives inside the run's own worktree, in a pane of the workspace
+  // the next line would remove. `herdr worktree remove --force` HUPs every pane in that workspace,
+  // so it kills THIS process mid-call: the run lock it holds is then never released and sits stale
+  // for its whole 300s TTL while every tick logs "busy (nudge in flight)" and the run never reaches
+  // `ended_at`. (It reproduces on any non-PR belt whose last step signals done from its own pane —
+  // a PR belt hides it because teardown lands on the merge watch, which only a tick runs.)
+  //
+  // The tick loop runs OUTSIDE every worktree, and `tearing_down` is re-entered by reconcileRun
+  // (idempotently, from the top), so the safe move is to stamp the phase and hand over. The cost is
+  // one tick of latency on a self-signalled teardown; the alternative is a wedged run.
+  //
+  // The hand-over assumes SOMEONE is outside — true for the in-pane agent CLI this exists for, and
+  // for the `teardown` command an operator runs from a worktree. It is NOT true if the engine
+  // itself was started from inside a run's worktree: then every tick defers and the run never
+  // reaches `ended_at`. That state can't be fixed from here (there is no other process to hand to)
+  // but it must not be SILENT, so a deferral that is already re-entering `tearing_down` — i.e. at
+  // least the second one for this run — logs at warn. One `info` line is a hand-over; a stream of
+  // `warn` lines naming this run is the operator's cue to restart the engine from outside.
+  if (runningInside(run.worktreePath)) {
+    const repeat = run.phase === "tearing_down"; // the snapshot's phase, before the stamp above
+    deps.log(
+      repeat ? "warn" : "info",
+      `${run.ticketKey}: teardown (${outcome}) deferred — this process is inside the worktree it would remove` +
+        (repeat
+          ? " — and it has deferred before: if the engine itself was started inside this worktree, nothing will ever finish it. Restart it from outside."
+          : " (the next tick, which runs outside it, will finish it)"),
+    );
+    return;
+  }
 
   // Write the terminal lifecycle state back to the source (never blocks cleanup — the outbox
   // keeps retrying after the run ends). No-op for Jira (merged/aborted/done are unmapped → no

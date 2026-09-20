@@ -604,6 +604,7 @@ is pure data (`herdr-factory reload` picks it up without a restart).
 | `attention_renotify_seconds` | 3600    | re-notify cadence for parked runs                               |
 | `step_budget_seconds`        | 3600    | fallback per-step budget — used when a step sets no `budget_seconds` and its primitive declares no default (`work` 5400 · `evidence` 2400 · `review` 1800 · `pr` 3600) |
 | `stall_seconds`              | 2700    | no new commits for this long → attention (heartbeat steps only) |
+| `idle_nudge_seconds`         | 300     | a running step whose pane sits at its prompt this long is re-prompted **once** ("if you're done, write the handoff and run step-done") before any watchdog trips; `0` disables it |
 | `max_bounces`                | 6       | bounces to any one step before attention; `0` disables bouncing |
 | `max_capture_attempts`       | 5       | evidence capture attempts per pass before attention (flaky-capture cap) |
 | `tick_interval_seconds`      | 60      | reconcile cadence per repo                                      |

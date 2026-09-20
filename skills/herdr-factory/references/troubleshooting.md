@@ -505,6 +505,13 @@ Both forms end with the ready-made
 | `external_wait_deadline` | an `external_wait` intent's deadline | `external wait expired[: <note>]` | **no** (payload `on_deadline: "ignore"` opts out of parking) | `POST /repos/<r>/intents/<id>/fulfil` late, or `resume` / `teardown` |
 | *(a plugin guard's reason)* | a registered `GuardSpec` + evaluator | evaluator-defined | per its `autoRescueOnDone` / `autoRespawnLimit` | `obligations` reports the derived `rescue` class |
 
+Both `step_budget` and `step_stalled` should now be **rare for a merely forgetful agent**: an idle
+pane is re-prompted once after `limits.idle_nudge_seconds` (default 300) long before either window
+expires, and `explain <KEY>` says so — *"The engine already nudged this idle agent N ago and it still
+never signalled — that is a wedged agent, not a slow one."* When you see that line, `resume` will
+probably not help either: the agent is stuck, not slow. Check the pane itself. A park with **no**
+such line, on the other hand, is an agent that was genuinely working (or `idle_nudge_seconds: 0`).
+
 **What is NOT a park** (common misreadings):
 
 - **A source that can't authenticate** → *pause + throttled notify*. Its claims and write-backs are
@@ -813,6 +820,11 @@ Compare `age_sec` for `budget` against the step's `budget_seconds`, and for `hea
 `limits.stall_seconds`. `read_only` with `based_at IS NOT NULL` = the baseline is **frozen** (only a
 HEAD move after that trips); `NULL` = still tracking. Rows are never deleted — `sig IS NULL AND
 based_at IS NULL` means "deliberately cleared", not "absent".
+
+`idle_nudge` is the proactive nudge's episode, not a watch that can park: `based_at` = when the pane
+was first seen at its prompt, `sig` = the branch HEAD at the moment the one nudge of that episode
+went out (`NULL` = the `limits.idle_nudge_seconds` window has not elapsed yet). Both `NULL` = no open
+episode (the pane is `working`, HEAD moved, or the run was resumed).
 
 **Q9 — human questions and their poll clocks**
 

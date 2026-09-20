@@ -27,6 +27,7 @@ const EVENT_LABEL: Record<string, string> = {
   step_spawned: "▶ step started",
   step_done: "✓ step done",
   layout_wait_retry: "waiting for layout pane",
+  idle_nudge: "↯ idle agent nudged",
   bounced: "↩ bounced back",
   signal_queued: "signal queued",
   signal_rejected: "signal rejected",
@@ -97,6 +98,10 @@ export function followEventExtra(type: string, detail: string | null): string {
     case "pr_green": {
       const head = str(d, "head");
       return `#${num(d, "number") ?? "?"} green${head ? ` @ ${head.slice(0, 7)}` : ""}`;
+    }
+    case "idle_nudge": {
+      const step = str(d, "step");
+      return `${step ?? "?"}${d.nudged === false ? " (not confirmed)" : ""}`;
     }
     case "resolver_woken": {
       const unresolved = num(d, "unresolved");

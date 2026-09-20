@@ -133,6 +133,14 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
     return { kind: w.kind, watches: w.watches, rescue: w.rescue, facts };
   });
 
+  // The proactive idle nudge's episode (watch_state row, not a declared guard — it never parks).
+  // `sig` is set only once the nudge has actually been sent, so its row-updated time IS the nudge.
+  const nudgeRow = watched ? deps.store.getWatchState(run.id, watched.name, "idle_nudge") : undefined;
+  const idleNudge =
+    nudgeRow && (nudgeRow.basedAt != null || nudgeRow.sig != null)
+      ? { idleSince: nudgeRow.basedAt, nudgedAt: nudgeRow.sig != null ? nudgeRow.updatedAt : null }
+      : null;
+
   const maxBounces = belt?.maxBounces ?? deps.config.limits.maxBounces;
   const bounceCaps = (belt?.steps ?? [])
     .map((s) => ({ step: s.name, count: deps.store.guardCounter(run.id, s.name, BOUNCE_CAP.guard), max: maxBounces }))
@@ -158,6 +166,6 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
       humanQuestion: q ? { id: q.id, step: q.step, posted: q.externalId !== null, pollAttempts: q.pollAttempts, pollErrors: q.pollErrors, nextPollAt: q.nextPollAt } : null,
       ledger,
     },
-    watches: { step: watched?.name ?? null, guards, engine, bounceCaps },
+    watches: { step: watched?.name ?? null, guards, engine, bounceCaps, idleNudge },
   };
 }
