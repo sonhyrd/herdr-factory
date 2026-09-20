@@ -1154,8 +1154,8 @@ program
 
 program
   .command("doctor")
-  .description("health check: local + presence by default; --deep also interacts with services (gh auth, work-source health, evidence-bucket write). Add --repo <name> for repo-specific checks")
-  .option("--deep", "also interact with external services: gh auth, work-source health, and an evidence-bucket write probe (network + a tiny S3 write)")
+  .description("health check: local + presence by default; --deep also interacts with services (gh auth, cursor-agent login + models, work-source health, evidence-bucket write). Add --repo <name> for repo-specific checks (and the agent tooling that repo's config asks for)")
+  .option("--deep", "also interact with external services: gh auth, cursor-agent (login + model ids), work-source health, and an evidence-bucket write probe (network + a tiny S3 write)")
   .action(cliAction("doctor", async (opts: { deep?: boolean }) => {
     const deep = opts.deep ?? false;
     const repo = (program.opts() as { repo?: string }).repo;

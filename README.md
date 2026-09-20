@@ -67,6 +67,17 @@ herdr server speaks a protocol this herdr CLI can talk to. Run `herdr-factory do
 `doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, and
 each repo's config, sources, and evidence bucket.
 
+With `--repo <name>`, `doctor` also checks the **agent tooling that repo's config actually asks
+for**, since that is the part nothing else fails loudly on: `cursor-agent` on PATH (and, on
+`--deep`, signed in — its login opens a browser, so it can never be fixed unattended); every Cursor
+`--model` id in the config still in `cursor-agent models` (`--deep`; a rejected id makes
+cursor-agent print its model list and exit, leaving a pane that *looks* ready); every agent **skill**
+the prompts name present as `SKILL.md` under the engine that runs that step (`~/.cursor/skills/` or
+`~/.claude/skills/`, `--deep`); and `ocr` on PATH when a prompt names the `pr-review` skill. Each
+reports `not configured` rather than ✗ when your config doesn't ask for it — a host with no Cursor
+belt is never failed by them — and `--deep` adds about two seconds for the pair of `cursor-agent`
+calls. Plain `doctor` stays PATH-only.
+
 <details>
 <summary>Private repo / custom clone URL / uninstall</summary>
 

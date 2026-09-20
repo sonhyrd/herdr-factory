@@ -172,7 +172,11 @@ herdr-factory/
                           → zod → typed Config (work_sources[] — union assembled from the source
                           registry — + belt[]); listConfiguredRepos + server path/port helpers + the
                           editor JSON Schema
-    doctor.ts             the doctor checks: managed / you-provide / per-repo (--deep = live probes)
+    doctor.ts             the doctor checks: managed / you-provide / per-repo (--deep = live probes).
+                          you-provide widens with `--repo`: agentTooling() reads the loaded config
+                          for the harnesses a belt starts (layout panes + the resolved agent block),
+                          its Cursor --model ids, and the skill names its prompts reference — each
+                          check reports "not configured" when the config doesn't ask for it
     types.ts              shared domain types (incl. Phase, WorkState, WorkItem)
     version.ts            VERSION = package version + git HEAD sha (a new commit changes it, so
                           ensure-up restarts an outdated serve — stamped into /health + server.json)
@@ -1804,7 +1808,7 @@ herdr-factory provision-node              # (re)download the pinned vendored Nod
 herdr-factory schema [--stdout]           # write the config.yml JSON Schema for editors
 herdr-factory install | uninstall | start | stop   # the supervisor service (launchd / systemd)
 herdr-factory capture-lock acquire|release <resource> [owner] # machine-global exclusive_resource lock
-herdr-factory doctor [--deep] [--repo <name>]      # managed / you-provide / per-repo health (--deep: live probes)
+herdr-factory doctor [--deep] [--repo <name>]      # managed / you-provide / per-repo health (--deep: live probes; --repo also checks cursor-agent, its --model ids, the skills the prompts name, ocr)
 herdr-factory fleet [--json] [--timeout <ms>]      # every run on every machine (fleet-wide; --repo narrows it)
 herdr-factory help
 ```
