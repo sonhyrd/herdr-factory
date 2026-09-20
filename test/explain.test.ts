@@ -207,6 +207,20 @@ describe("explainRun — attention parks", () => {
     expect(text).toContain(`herdr-factory --repo ${REPO} resume HF-1`);
   });
 
+  // The fact that tells an operator this is a WEDGED agent, not a slow one: the engine already
+  // sent it the idle nudge and it still never signalled (issue #54).
+  it("step_budget/step_stalled: an already-nudged idle agent is named as wedged", () => {
+    const nudged = { watches: { idleNudge: { idleSince: NOW - 900, nudgedAt: NOW - 600 } } };
+    const budget = joined(parked("step_budget", "work step over budget (worker: idle)", nudged));
+    expect(budget).toContain("already nudged this idle agent 10m ago");
+    expect(budget).toContain("wedged agent, not a slow one");
+    expect(budget).not.toContain("finished but never ran its step-done"); // the weaker guess is replaced
+    const stalled = joined(parked("step_stalled", "work step stalled (worker: idle)", nudged));
+    expect(stalled).toContain("already nudged this idle agent 10m ago");
+    // No nudge yet (the window never elapsed) ⇒ no claim about one.
+    expect(joined(parked("step_stalled", "work step stalled (worker: idle)", { watches: { idleNudge: { idleSince: NOW - 60, nudgedAt: null } } }))).not.toContain("already nudged");
+  });
+
   it("layout_wait_timeout: reports the spent respawn budget and the plugin-link cause", () => {
     const text = joined(
       parked("layout_wait_timeout", "work: layout pane fix/work never became available", {

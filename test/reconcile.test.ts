@@ -346,7 +346,7 @@ function build(opts: { multi?: boolean } = {}) {
     rmrf: async (p) => { calls.rmrf.push(p); },
     killPortListeners: async (port) => { calls.killPort.push(port); return [4242]; },
   };
-  return { deps, store, state, calls, setNow: (n: number) => { now = n; }, worktree, shipBelt, lmBelt, sources };
+  return { deps, store, state, calls, config, setNow: (n: number) => { now = n; }, worktree, shipBelt, lmBelt, sources };
 }
 
 const ticket = (key: string, type = "Bug"): Ticket => ({ key, summary: "Fix the thing", type });
@@ -1248,6 +1248,117 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     await reconcileRepo(deps);
     await reconcileRepo(deps);
     expect(calls.agentSend.length).toBe(1); // no re-submission on any later tick
+  });
+
+  // ── the proactive idle nudge (issue #54) ──────────────────────────────────────────────────────
+  // An agent that finished and forgot `step-done` used to be invisible for the whole stall/budget
+  // window. Now a pane that sits continuously at its prompt past `idle_nudge_seconds` gets exactly
+  // one re-prompt, well before any watch trips.
+  const nudges = (calls: { agentSend: [string, string][] }) => calls.agentSend.filter(([, text]) => /idle for ~/.test(text));
+
+  it("idle nudge: an idle pane is re-prompted ONCE per idle episode, not once per tick", async () => {
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "idle";
+    const run = seed(store, worktree, "IN-1", "running", "fix");
+    calls.agentSend.length = 0;
+
+    await reconcileRun(deps, store.getRun(run.id)!); // first sight of an idle pane: starts the clock
+    expect(nudges(calls).length).toBe(0);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")!.basedAt).toBe(1000);
+
+    setNow(1000 + 299);
+    await reconcileRun(deps, store.getRun(run.id)!); // still inside the 300s window
+    expect(nudges(calls).length).toBe(0);
+
+    setNow(1000 + 301);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(1);
+    expect(nudges(calls)[0]![0]).toBe("w1:p1");
+    expect(nudges(calls)[0]![1]).toContain(".memory/herdr-factory/prompt-fix.md"); // the pass's own brief
+    expect(nudges(calls)[0]![1]).toMatch(/step-done/);
+    expect(store.timeline("demo", "IN-1").filter((e) => e.type === "idle_nudge").length).toBe(1);
+
+    for (const t of [1500, 2000, 3000, 3500]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(nudges(calls).length, "many more idle ticks are still exactly one nudge").toBe(1);
+    expect(store.getRun(run.id)!.phase).toBe("running"); // the nudge never parks anything
+  });
+
+  it("idle nudge: a working pane is never nudged, however long the step runs", async () => {
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "working";
+    const run = seed(store, worktree, "IN-2", "running", "fix");
+    calls.agentSend.length = 0;
+    for (const t of [1000, 2000, 3000, 4000]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(nudges(calls).length).toBe(0);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")?.basedAt ?? null).toBe(null);
+  });
+
+  it("idle nudge: idle → nudge → working → idle is TWO nudges", async () => {
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "idle";
+    const run = seed(store, worktree, "IN-3", "running", "fix");
+    calls.agentSend.length = 0;
+    await reconcileRun(deps, store.getRun(run.id)!);
+    setNow(1400);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(1);
+
+    state.paneState = "working"; // the nudge landed and the agent took a turn — the episode ends
+    setNow(1500);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")!.sig).toBe(null);
+
+    state.paneState = "idle"; // ...and it idles again
+    setNow(1600);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    setNow(2000);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(2);
+  });
+
+  it("idle nudge: a HEAD move re-opens the episode even when `working` was never observed", async () => {
+    // The ~5s agent-list memo and a 60s tick between them can hide a whole turn. A commit is the
+    // other proof that real work happened, so it ends the episode too.
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "idle";
+    state.headSha = "sha-a";
+    const run = seed(store, worktree, "IN-4", "running", "fix");
+    calls.agentSend.length = 0;
+    await reconcileRun(deps, store.getRun(run.id)!);
+    setNow(1400);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(1);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")!.sig).toBe("sha-a");
+
+    state.headSha = "sha-b"; // the nudged agent committed between two ticks
+    setNow(1500);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")!.sig).toBe(null); // episode closed
+    setNow(1600);
+    await reconcileRun(deps, store.getRun(run.id)!); // …a new idle episode begins
+    setNow(2000);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(2);
+  });
+
+  it("idle nudge: limits.idle_nudge_seconds 0 disables it entirely", async () => {
+    const { deps, store, state, calls, worktree, setNow, config } = build();
+    config.limits.idleNudgeSeconds = 0;
+    state.paneState = "idle";
+    const run = seed(store, worktree, "IN-5", "running", "fix");
+    calls.agentSend.length = 0;
+    for (const t of [1000, 2000, 4000]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(nudges(calls).length).toBe(0);
+    expect(store.getWatchState(run.id, "fix", "idle_nudge")).toBeUndefined();
   });
 
   it("read_only enforcement: a FROZEN read-only step that moves HEAD (commits) parks for attention", async () => {
