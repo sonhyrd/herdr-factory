@@ -27,7 +27,7 @@ is `.strict()`, so writing `belt_type:` is a hard `Unrecognized key: "belt_type"
 
 | Derived property | Derived from | Effect |
 |---|---|---|
-| `watchPr` | some kept step produces `pull_request` | after the last step the run enters the `reviewing` phase and the engine watches the PR until it merges or closes |
+| `watchPr` | some kept step produces `pull_request` | after the last step the run enters the `reviewing` phase and the engine watches the PR until it merges or closes — notifying the operator once when it goes green and mergeable, and **never merging it** |
 | the `in_review` write-back | the `pull_request` product capability's `effectOnProduce` | firing `produce(pull_request)` → `in_review` on the source |
 | a bounce path | some step declares a bounce (`evidence`, `review`, or a `custom` step with `bounce: true`) | that step may send work backward to an earlier `work`/`custom` step |
 | the evidence machinery (capture cap, capture mutex, upload outbox) | some step produces `evidence` | only an `evidence` step brings it |

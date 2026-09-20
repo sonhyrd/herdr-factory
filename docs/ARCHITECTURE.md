@@ -639,8 +639,10 @@ reverse-engineered during the bash prototype.
   retried next poll); a `regressed` issue with no recorded baseline is reopened on Sentry's flag alone.
 - **`github.ts`** (`gh` via execFile) — `prForBranch(repo, branch)` (first-sighting discovery
   only), `prByNumber(repo, n)` (the durable identity once adopted — survives head-branch deletion
-  on merge), `reviewSignature(repo, n) → {unresolved, failing, sig}` (graphql review threads +
-  `statusCheckRollup`), and **`prSnapshots(repo, numbers[]) → Map<number, PrSnapshot>`** — one
+  on merge), `reviewSignature(repo, n) → {unresolved, failing, pending, sig}` (graphql review threads +
+  `statusCheckRollup`; `pending` counts checks that have NOT concluded — a CheckRun with a null
+  conclusion, a PENDING/EXPECTED StatusContext — and is deliberately **outside** the hash, so a
+  check merely finishing is not a new review round for the resolver), and **`prSnapshots(repo, numbers[]) → Map<number, PrSnapshot>`** — one
   aliased GraphQL query (chunked at 25) resolving state + review threads + check rollup for
   **every watched PR in a tick**, replacing 3 `gh` subprocess calls per reviewing run per tick
   (~9k req/h at 50 runs — over the REST budget on its own). Its signature hash is bit-identical
@@ -809,7 +811,9 @@ CREATE TABLE watch_state(                -- per-watch clocks/signatures (v34): o
   sig TEXT, based_at INTEGER,            -- window's base (re-based at entry/dispatch/resume per
   meta TEXT NOT NULL DEFAULT '{}',       -- GuardSpec.rebaseOn); heartbeat: sig/based_at = last-seen
   updated_at INTEGER NOT NULL,           -- HEAD + when; read_only: sig = the baseline, based_at =
-  PRIMARY KEY (run_id, step, watch));    -- the freeze marker. A plugin watch stores state without a
+  PRIMARY KEY (run_id, step, watch));    -- the freeze marker; pr_green (step 'pull_request'):
+                                         -- based_at = when the current green episode started, sig =
+                                         -- the "operator notified" mark. A plugin watch stores state without a
                                          -- migration. Re-bases WRITE NULL ROWS, never delete — the
                                          -- legacy run_steps-column fallback (one release) must not
                                          -- resurrect a cleared clock. run_steps.started_at remains
@@ -886,7 +890,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 layout_applied · layout_apply_failed · step_spawned · step_done · layout_wait_retry · bounced ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
-pr_opened · resolver_woken · torn_down · belt_reassigned · belt_deleted · attention · resumed ·
+pr_opened · resolver_woken · pr_green · torn_down · belt_reassigned · belt_deleted · attention · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
 match on (the e2e suite asserts exactly that).
@@ -1164,7 +1168,20 @@ review-ready PR — it need not signal `step-done`**: once the PR exists the run
 so a `pr` agent that keeps working, blocks on a question, or is abandoned can't strand a mergeable PR
 (a **draft** PR keeps the `step-done` gate until it's marked ready; a **merged** PR always hands
 off). A merge is caught even while the run is parked in `attention` or `waiting_for_human` (both poll
-the adopted PR) — it tears the run down with outcome `merged`. A **custom** belt runs the same
+the adopted PR) — it tears the run down with outcome `merged`.
+
+**Ready-to-merge notification (the factory never merges).** Every `reviewing` pass evaluates the
+PR's *green* predicate on the signature it already has — open, not a draft, `unresolved === 0`,
+`failing === 0` **and `pending === 0`** ("not failing" is true the instant CI starts; green means
+every check CONCLUDED) — and on the first pass that sees it, notifies the operator once through the
+same `deps.herdr.notify` path as attention/auth escalations, with the key, PR title, repo, how long
+it has been green and the URL. It is a notification *only*: nothing in the engine merges, and
+`gh pr merge` appears nowhere in the codebase. The episode state lives in `watch_state`
+(run, `'pull_request'`, `'pr_green'`): `based_at` is when the current green started, `sig` is the
+"told them" mark, and **both are cleared the moment the PR stops being green** — so it is once per
+green, never once per tick, and red → green → red → green is two notifications, not four. A new
+commit puts the checks back to pending, which ends the episode and makes the next green news again.
+The check costs nothing extra: it rides the batched snapshot the watch already fetches. A **custom** belt runs the same
 machinery over user-defined steps with no PR watch — its last `step-done` tears the run down with
 outcome `completed`.
 
@@ -2321,6 +2338,9 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   NOT bumped: the agent continues the same pass, so its prompt's baked `--pass` stamp stays valid.
 - **The claim cap counts working runs** (`countOccupying`); parked `attention`/
   `waiting_for_human` runs keep their worktree + dedup but hold no slot.
+- **The factory never merges.** The `reviewing` watch notifies when a PR is green and mergeable and
+  stops there; the human is the merge gate. Adding an auto-merge is a product decision, not a
+  refactor — the operator chose the notification over it deliberately.
 - **`prSnapshots` and `reviewSignature` must hash identically** — `lastThreadSig` continuity is
   what stops the resolver being re-woken for an already-handled review state when batched and
   per-run polling mix.

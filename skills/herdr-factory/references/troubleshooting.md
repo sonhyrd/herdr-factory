@@ -222,7 +222,7 @@ a PR with nothing actionable does zero herdr calls and holds **no** slot by desi
 
 ```sh
 gh pr view <n> --json isDraft,mergeable,statusCheckRollup,reviewDecision
-herdr-factory --repo <r> timeline <KEY> | grep -E 'pr_opened|resolver_woken'
+herdr-factory --repo <r> timeline <KEY> | grep -E 'pr_opened|resolver_woken|pr_green'
 ```
 
 The watch wakes a resolver agent only when `unresolved > 0 || failing > 0` **and** the review
@@ -230,7 +230,8 @@ signature differs from the recorded one.
 
 | Branch | Signature | Fix |
 |---|---|---|
-| Nothing actionable | no unresolved threads, no failing checks | Correct. It waits for a human to merge or close |
+| Nothing actionable | no unresolved threads, no failing checks | Correct. It waits for a human to merge or close — **the factory never merges**. If the checks have all *concluded* green you also got one "ready to merge" notification (`pr_green` in the timeline) |
+| Green PR, no "ready to merge" notification | a check has not concluded yet (`pending > 0` — "not failing" is not green), the PR is a draft, a review thread is unresolved, or the operator was already told about **this** green (the mark clears only when the PR goes non-green) | `gh pr checks <n>` for a still-running check; otherwise nothing to fix — it fires once per green |
 | Actionable but no `resolver_woken` | the signature already matches `run_products.signature` (round considered handled), or `wakeResolver` found no pane to use | `resume` — it clears `lastThreadSig` + `resolverActive`, so the next tick re-wakes the resolver |
 | `resolver idle — PR #n watch no longer holds a slot` | the resolver pane went idle; the round is handed back to watching | Normal |
 | PR merged, run still active | teardown happens on the **next** pass | Wait one tick |
