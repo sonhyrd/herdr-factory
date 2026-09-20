@@ -160,6 +160,21 @@ describe("shipped pr prompts gate @@PR_TEMPLATE@@ + the pr: behavior tokens behi
   }
 });
 
+describe("shipped pr prompts carry the assumptions sections on every belt", () => {
+  // The worktree (and the handoff notes in it) is deleted at teardown, so the PR body is the only
+  // durable record of what the work step guessed — the sections must survive an evidence-less belt.
+  for (const rel of ["pr.md", "github_issues/pr.md"]) {
+    for (const [what, evidence] of [["work\u2192pr (no evidence)", false], ["a belt with evidence", true]] as const) {
+      it(`${rel}: ${what} still asks for ## Assumptions and ## Not proven by any check`, () => {
+        const body = stripInactiveProductBlocks(prompt(rel), () => evidence);
+        expect(body).toContain("## Assumptions");
+        expect(body).toContain("## Not proven by any check");
+        expect(body).toContain("Omit the heading entirely when there are none");
+      });
+    }
+  }
+});
+
 describe("belt-level pr: block — absent block renders byte-identical to before it existed", () => {
   // Replicate the pr-step render for a default work→review→pr belt with NO `pr:` block: pull_request
   // active, evidence inactive, no PR template, no commit conventions — strip the @@WHEN@@ clauses then

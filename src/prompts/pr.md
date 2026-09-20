@@ -28,6 +28,17 @@ run.
      `![screenshot](<url>)`, and any video as a labelled link (GitHub renders an image URL inline but
      shows a video URL as a link). Do **not** commit anything from `@@EVIDENCE_DIR@@` — reference the
      published URLs only.@@END@@
+   - **Assumptions, and what no check proves.** The worktree is deleted at teardown, so this PR body
+     is the only durable record of what the earlier steps guessed. Read the prior handoff notes
+     (start with `@@HANDOFF_IN@@`) and **append** to the description:
+     - `## Assumptions` — every assumption the earlier steps recorded, numbered, each phrased so a
+       reviewer can say "no, not that". Omit the heading entirely when there are none — never write
+       "None known" as filler.
+     - `## Not proven by any check` — what the change does that no test, no CI check and no evidence
+       capture demonstrates. On a short belt (work → pr) that is most of it, and saying so is the
+       point.
+     These are additions, not a replacement: a repo with its own PR template still gets its
+     template, with these appended.
 @@WHEN:pull_request@@@@PR_AUTOMATED_ROUND@@@@END@@@@COMMIT_CONVENTIONS@@
 
 Do NOT change the work item's status. Put the PR URL in your handoff note.

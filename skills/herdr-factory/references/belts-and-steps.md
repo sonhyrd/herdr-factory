@@ -168,7 +168,10 @@ is inert for that pass.
 
 ### pr
 
-Pushes the branch, opens the PR with `gh`, embeds the published evidence URLs from the handoff, then
+Pushes the branch, opens the PR with `gh`, embeds the published evidence URLs from the handoff, lifts
+the earlier steps' recorded assumptions out of those notes into `## Assumptions` (heading omitted when
+there are none) plus a `## Not proven by any check` section — appended to the repo's own PR template,
+not substituted for it, since teardown deletes the handoff notes — then
 runs the **automated round** — it waits for CI and review bots and addresses their findings.
 `@@PR_AUTOMATED_ROUND@@` renders the belt's `pr.automated_round_minutes`: unset ⇒ the prompt's default
 (~10 min), `N` ⇒ ~N min, **`0` ⇒ skip the round entirely**.
