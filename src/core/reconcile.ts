@@ -12,6 +12,7 @@ import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
+import { fmtDur } from "./explain.ts";
 import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
@@ -2293,13 +2294,12 @@ async function nudgeIdleStepAgent(deps: Deps, run: Run, step: StepConfig, rs: Ru
   }
   if (deps.now() - st.basedAt < window) return;
 
-  const idleFor = Math.round((deps.now() - st.basedAt) / 60);
   const { nudged } = await nudgeStepAgent(
     deps,
     run,
     step.name,
     rs.paneId,
-    `${run.ticketKey}: this pane has been idle for ~${idleFor}min and the ${step.name} step has not been signalled done.`,
+    `${run.ticketKey}: this pane has been idle for ~${fmtDur(deps.now() - st.basedAt)} and the ${step.name} step has not been signalled done.`,
   );
   // Mark the episode nudged EVEN IF the send wasn't confirmed: one nudge per idle stretch is the
   // contract, and a retry loop on an unconfirmed send is how a wedged pane gets spammed every tick.
