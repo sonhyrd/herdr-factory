@@ -378,7 +378,7 @@ imported on first activation — you may see ` loading...` or ` failed to load: 
 
 | Tab | For | Notes |
 |---|---|---|
-| **Dashboard** | watch and drive live work: per machine → per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; on a one-machine install the tab bar's top-right status text reads `● server up · v<version> · uptime <d>`, and with a [fleet](#the-dashboard-with-a-fleet) it reads `● fleet <reachable>/<total> machines · v<version> here`. Either form takes a ` · ⚠ <note>` tail in amber: the last auto-update wanting attention, plus (with a fleet) every remote that is `unverifiable (last seen <d>)` and every remote whose server is on **another version** than this machine's — a box the updater has not reached is otherwise invisible from here (`fleetStatusLine`, `src/tui/fleet-view.ts`). Only the Dashboard tab polls, so this text holds its last value while another tab is active. A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) shows a **red `⚠ N problem(s) — press d`** after the active count; highlighting the row prints the full problem details in red on the action line. `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. Server down ⇒ the status text reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
+| **Dashboard** | watch and drive live work: per machine → per repo → per belt → a **kanban board** of active runs and eligible items | auto-refreshes every 3 s; on a one-machine install the tab bar's top-right status text reads `● server up · v<version> · uptime <d>`, and with a [fleet](#the-dashboard-with-a-fleet) it reads `● fleet <reachable>/<total> machines · v<version> here`. Either form takes a ` · ⚠ <note>` tail in amber: the last auto-update wanting attention, plus (with a fleet) every remote that is `unverifiable (last seen <d>)` and every remote whose server is on **another version** than this machine's — a box the updater has not reached is otherwise invisible from here (`fleetStatusLine`, `src/tui/fleet-view.ts`). Only the Dashboard tab polls, so this text holds its last value while another tab is active. A repo with problems (runs parked for attention, suspended jobs, expired AWS SSO / source sessions, auth failures) **names** the first one in red after the active count — `⚠ <cause>` (the detail up to its ` — <hint>` half, truncated to 64 chars), plus `(+N more)` when it has several; highlighting the row prints the full problem details in red on the action line. A cause that **more than one of a host's repos reports identically** is said once for that machine (`⚠ <cause> — on several repos`) and left off those rows — one `gh auth` is one login — but the rows themselves stay, so `d` still reaches each repo's full detail (`sharedProblems`/`shortProblem`, `src/tui/fleet-view.ts`). It rides with the host gate, so it lands under the machine header on a fleet and above the repo rows on a one-machine install (`hostLines`). `/status.problems` is RECORDED state (the v37 problem ledger + derived parked/suspended entries): the engine records a problem when its own machinery observes it (the auth gate, a failed delivery, the evidence creds probe on its ~5-min tick cadence) and clears it on recovery — the dashboard never probes anything on load, so an expired AWS session lights the row without a failed upload and without opening the detail view. The host-local `machine.yml` gate (`cap <n>/<N> working across all repos · memory <free> MB available (floor <min> MB)`) is printed **once per machine** and never on a repo row: above the repo rows on a one-machine install, under the machine header with a [fleet](#the-dashboard-with-a-fleet) (`hostLines`, `src/tui/fleet-view.ts`). It is what answers "why has nothing been claimed?" when the cap is saturated or free memory is under the floor. Server down ⇒ the status text reads ``⚠ server not running — start it with `herdr-factory serve` `` and each repo becomes a `<repo>   (server down)` row |
 | **Config** | the five-section config editor over `~/.config/herdr-factory/repos/<name>/config.yml` + its `env` file, with a `+ new repo…` wizard | edits a YAML `Document`, so comments and formatting survive |
 | **Doctor** | the machine-wide health checks | see the caveat at the end of this section |
 
@@ -425,6 +425,29 @@ resize re-lays it immediately. Runs whose belt no longer exists appear in one fu
 `unassigned (no belt)` lane. The highlighted card's ⚠ detail (attention reason / stuck upload) is
 printed on the action line while it is highlighted.
 
+**A belt holding one or two cards drops the grid** and renders one line per card instead —
+`● 54  work  48m  nudge an idle agent…` (icon · key · step · age/PR · summary) — because five column
+headers and a rule to say "one run, in work, 48m" is most of an 80×24 screen. The columns come back
+as soon as a belt carries three or more (`compactBoard`, `src/tui/kanban.ts`). Selection, clicks and
+every key work identically on both.
+
+**"needs you" heads the board** (`needsYou`, `src/tui/fleet-view.ts`) — a short section *above* the
+machine headers, reading the whole fleet and **never** narrowed by the `m` filter (a PR waiting on
+another box is still waiting). In order: PRs that are green and waiting on a merge
+(`✓ <KEY>  PR #<n> is green — ready to merge  (<repo> @<machine>)`, from `active[].prGreen`, which the
+server reads off the `pr_green` watch state — no GitHub call on the 3 s poll), runs parked for
+attention (`⚠ <KEY>  parked — <reason>`), runs in `waiting_for_human` (`? <KEY>  waiting for a human
+reply`), and machines that have gone silent (`✗ <machine> unverifiable — <why>`). **Empty ⇒ it is not
+drawn at all.** Its run entries *are* the runs: `s`, `x`, `d` and `↵` act on them from there, so a
+parked run never has to be hunted down a second time; a machine entry is not actionable.
+
+**Idle repos collapse to one line per machine**: a repo with **no active run, no eligible work and no
+problem** becomes a word in `  idle · <repo> · <repo>` under its host, because that row carries
+exactly one fact and one line can carry it for all of them. A repo with **eligible-but-unclaimed
+work** is not idle and keeps its row; a repo whose status failed to load is not idle either (it keeps
+its row and its `(status unavailable)` line); and on an `unverifiable` machine the line reads
+`  unverified · …`. `i` expands them all (`isIdleRepo`/`idleLine`, `src/tui/fleet-view.ts`).
+
 Dashboard, on the highlighted card or row (`src/tui/dashboard.ts`) — every mutating action goes through
 a confirm modal, and the result lands on the bottom action line:
 
@@ -439,6 +462,7 @@ a confirm modal, and the result lands on the bottom action line:
 | `s` | **resume / retry now**, routed on the highlighted card: a run parked for `attention` is **resumed** (`Resume "<key>" (un-park it and pick up where it left off)?` → `✓ resumed "<key>" → <phase>`); any other run, or a repo/ready row, gets the **bulk clear-and-retry** (`Clear "<scope>"'s suspended background jobs and retry them now (uploads, source write-backs)?` → `✓ "<scope>": N jobs due now (M suspensions cleared) — flushed`, or `— a tick is mid-pass`, or `"<scope>": no suspended or waiting jobs`). A run card scopes to that run; a repo row is repo-wide and clears every suspension the repo row flags in red | run, repo, ready |
 | `x` | tear the run down — `Tear down "<key>" (removes its worktree)?` | run cards |
 | `m` | filter the board to one machine, or back to all of them — a chooser over `all machines` + every machine in the [fleet](#the-dashboard-with-a-fleet). On a one-machine install it answers `this is the only machine in the fleet` and changes nothing | anywhere |
+| `i` | expand the collapsed **idle** repos, or collapse them again (`showing every repo` / `idle repos collapsed`; while expanded the board's last line reads `(showing idle repos — press i to collapse them)`) | anywhere |
 | `r` | refresh now | anywhere |
 
 With a fleet, every confirmation above also names the machine it would land on (`Tear down "<key>" on
@@ -474,8 +498,13 @@ Once there IS another machine:
   across all repos, free memory) on its own line when the host sets one. The lines are deliberately
   short — a herdr pane is routinely ~50 columns, and a fact that falls off the right edge is not
   reported.
+  A problem several of the host's repos share is named here too, one line each
+  (`    ⚠ <cause> — on several repos`).
 - **A `@<machine>` badge** on every repo row (`<repo>  @<machine>   active N/M`), so a row still says
-  where it is once you have scrolled past its header.
+  where it is once you have scrolled past its header. The host gate is deliberately **not** repeated
+  on the row: cap occupancy and the memory floor are host-wide by definition and the header prints
+  them once (`hostLines`, `src/tui/fleet-view.ts` — the same two lines a ONE-machine board prints
+  above its repo rows, since it has no header to hang them under).
 - **`m` filters** the board to one machine or back to all. A filter naming a machine that has left the
   fleet falls back to all — an empty board would read as "no work".
 - **A machine that stops answering is `unverifiable`, not empty.** Its header becomes
@@ -485,6 +514,8 @@ Once there IS another machine:
   icon and a ticking age that this read cannot vouch for. Blanking them would say the runs are gone
   when they are merely unobservable, which is the reading an operator acts on. Keys on those rows are
   refused up front (`✗ <machine> is unverifiable — it cannot be acted on until it answers again`).
+  Its collapsed repos read `  unverified · <repo> · <repo>`, never `idle`: those rows are a remembered
+  read, and "idle" would be a claim about now.
   The machines that *are* answering carry on untouched; one silent box costs its own rows, not the view.
 - **Every action is routed**, through that run's own machine client and no other (`route()` in
   `src/tui/dashboard.ts`, `clientFor` in `src/tui/fleet-view.ts`) — tick, claim, teardown,

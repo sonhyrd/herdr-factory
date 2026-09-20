@@ -32,12 +32,26 @@ import { text } from "./render.ts";
 import { listConfiguredRepos } from "../config-paths.ts";
 import type { ActiveRun } from "./api.ts";
 import { withoutClaimed } from "./eligible-cache.ts";
-import { createFleetSource, filterMachines, fleetStatusLine, machineHeader, staleRunLine, type FleetView, type MachineView } from "./fleet-view.ts";
+import {
+  createFleetSource,
+  filterMachines,
+  fleetStatusLine,
+  hostLines,
+  idleLine,
+  isIdleRepo,
+  machineHeader,
+  needsYou,
+  sharedProblems,
+  shortProblem,
+  staleRunLine,
+  type FleetView,
+  type MachineView,
+} from "./fleet-view.ts";
 import type { MachineClient } from "../fleet/index.ts";
 import { updateWarning } from "../watchers/update-status.ts";
 import { BORDER, theme } from "./theme.ts";
 import type { ChooseFn, ConfirmFn, PromptFn, ShowInfoFn, TabView } from "./types.ts";
-import { MIN_COLUMN_WIDTH, buildLanes, layoutKanban, looseLane, type BoardRun, type KanbanCell, type Tone } from "./kanban.ts";
+import { MIN_COLUMN_WIDTH, buildLanes, compactBoard, layoutKanban, looseLane, type BoardRun, type KanbanCell, type Tone } from "./kanban.ts";
 import { formatWorkItemDetail } from "./work-detail.ts";
 // A LEAF module (type-only imports) — safe in the TUI's eager startup graph.
 import { explainRun } from "../core/explain.ts";
@@ -100,6 +114,9 @@ function runNote(run: ActiveRun): { text: string; tone: Tone } | undefined {
 }
 
 type RowKind = "repo" | "run" | "eligible" | "source" | "machine";
+/** Below this many cards a belt renders as one line per run instead of a column grid — the grid earns
+ *  its five headers only once work is actually spread across steps. */
+const COMPACT_MAX_CARDS = 2;
 interface Target {
   /** The machine that owns this row — the ONLY machine an action on it may be sent to. */
   machine: string;
@@ -113,6 +130,11 @@ interface Target {
   phase?: string;
   /** A detail too long for a card; surfaced on the action line when the card is highlighted. */
   note?: { text: string; tone: Tone };
+  /** Which part of the board this row sits in. The "needs you" section REPEATS rows that also appear
+   *  under their machine (that is the point of it), so without this the two focusables would share a
+   *  row key — and the highlight, which is restored by key across refreshes, would snap back to the
+   *  section's copy every poll, dragging the scroll with it. */
+  section?: "needs";
   /** Set on a row carried forward from an unverifiable machine: it is last-known state, so nothing
    *  may be acted on through it (the machine is not answering — the action would fail anyway, but
    *  saying so up front is the difference between "refused" and "maybe it worked"). */
@@ -189,9 +211,12 @@ export function createDashboard(
   let lastWidth = 0;
   // Which machine the board is narrowed to; null = the whole fleet. Driven by `m`.
   let machineFilter: string | null = null;
+  // False = idle repos are collapsed into one line per machine (the default); `i` expands them for
+  // someone confirming a particular repo is being served at all.
+  let showIdle = false;
   let warnedAboutFleet = false;
 
-  const rowKey = (t: Target) => `${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
+  const rowKey = (t: Target) => `${t.section ?? "board"}|${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
   const beltsKey = (machine: string, repo: string) => `${machine}|${repo}`;
   /** The machine as this view last saw it — how an action learns whether its target is answering. */
   const machineOf = (name: string): MachineView | undefined => lastView?.machines.find((m) => m.name === name);
@@ -414,7 +439,11 @@ export function createDashboard(
     const blank = () => specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
     /** Lay a set of lanes out and emit one board line per rendered row, carrying each card's target. */
     const pushBoard = (lanes: ReturnType<typeof buildLanes>, resolve: (card: { kind: string; key: string }) => Target | undefined) => {
-      for (const cells of layoutKanban(lanes, lastWidth)) {
+      // One or two cards don't need a grid: the column view would spend five headers, a rule and a
+      // blank line to say "one run, in work, 48m".
+      const cards = lanes.reduce((n, lane) => n + lane.cards.length, 0);
+      const layout = cards <= COMPACT_MAX_CARDS ? compactBoard(lanes, lastWidth) : layoutKanban(lanes, lastWidth);
+      for (const cells of layout) {
         specs.push({
           kind: "board",
           cells,
@@ -423,7 +452,19 @@ export function createDashboard(
       }
     };
     const suffix = badge ? `  @${m.name}` : "";
+    const shared = sharedProblems(m);
+    // A one-machine install draws no machine header (`badge` is the fleet flag — the same condition),
+    // so the host-wide facts have nowhere to hang: emit them here, above this machine's repo rows.
+    // Deliberately NOT a header — the status line already says the server is up, and the point of
+    // this change is to say each thing once.
+    if (!badge) for (const line of hostLines(m)) specs.push({ kind: "text", content: line.text, fg: toneColor(line.tone) });
+    // Idle repos (no run, no eligible work, no problem) collapse to one line — 17 of 19 rows on a
+    // real three-host fleet say nothing but "this repo is being served", which one line says for all
+    // of them. `i` brings the full list back for someone confirming a specific repo is there.
+    const idle = showIdle ? [] : m.repos.filter(isIdleRepo);
+    const idleNames = new Set(idle.map((r) => r.repo));
     for (const { repo: name, status: st, eligible: cached } of m.repos) {
+      if (idleNames.has(name)) continue;
       if (st) statusBelts.set(beltsKey(m.name, name), st.belts);
       const active = st?.active ?? [];
       // Repo-level problems (parked runs, suspended jobs, AWS creds, source auth) light the repo
@@ -431,9 +472,15 @@ export function createDashboard(
       // action line while the row is highlighted (the note), and in red under `d` (the detail
       // modal). `s` on the row clears the suspensions and retries.
       const problems = st?.problems ?? [];
+      // A host-wide cause (one `gh auth`, one expired AWS session) is named ONCE on the machine
+      // header; the row carries only what is this repo's own, and names it rather than counting it.
+      const own = problems.filter((p) => !shared.has(p.detail));
+      const more = own.length > 1 ? ` (+${own.length - 1} more)` : "";
+      // The machine line is deliberately NOT here: cap occupancy and the memory floor are host-wide
+      // by definition, and the header above already prints them once.
       specs.push({
         kind: "text",
-        content: `${name}${suffix}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}${st?.machine ? `   ${st.machine}` : ""}`,
+        content: `${name}${suffix}   active ${active.length}/${st?.limits.maxActiveWorkspaces ?? "?"}`,
         fg: theme.accent,
         target: {
           machine: m.name,
@@ -442,7 +489,9 @@ export function createDashboard(
           stale: m.stale,
           note: problems.length ? { text: `⚠ ${name}: ${problems.map((p) => p.detail).join(" · ")}`, tone: "bad" } : undefined,
         },
-        problem: problems.length ? `⚠ ${problems.length} problem${problems.length === 1 ? "" : "s"} — press d` : undefined,
+        // No ⚠ of its own: `applyLine` renders the suffix as `   ⚠ <problem>`. The old string carried
+        // one too, which is where the issue's `▲▲ 1 problem — press d` came from.
+        problem: own.length ? `${shortProblem(own[0]!.detail)}${more}` : undefined,
       });
       if (!st) {
         specs.push({ kind: "text", content: "  (status unavailable)", fg: theme.text.tertiary });
@@ -493,6 +542,32 @@ export function createDashboard(
         });
       }
     }
+    // The collapsed repos, last: they are the footnote of the host, not its content. On an
+    // unverifiable machine the line says `unverified`, never `idle` — these rows are a remembered
+    // read, and "idle" would be a claim about now.
+    if (idle.length > 0) specs.push({ kind: "text", content: idleLine(idle.map((r) => r.repo), m.stale), fg: theme.text.tertiary });
+  }
+
+  /** The board's first section: everything across the fleet that is blocked on a person. Absent when
+   *  there is nothing — a heading that usually reads "nothing" teaches an operator to skip the top
+   *  of the screen, which is the one place this board cannot afford to lose. */
+  function pushNeedsYou(machines: MachineView[], specs: LineSpec[]): void {
+    const items = needsYou(machines);
+    if (items.length === 0) return;
+    specs.push({ kind: "text", content: `needs you · ${items.length}`, fg: theme.status.warn });
+    for (const item of items) {
+      specs.push({
+        kind: "text",
+        content: item.text,
+        fg: toneColor(item.tone),
+        // A run entry is the run: s/x/d/↵ act on it from here, so the operator never has to find it
+        // again further down the board. A machine entry is not actionable (nothing to send it to).
+        target: item.key
+          ? { section: "needs", machine: item.machine, repo: item.repo, kind: "run", key: item.key, source: item.source, phase: item.phase, stale: item.stale }
+          : { section: "needs", machine: item.machine, repo: "", kind: "machine", stale: true },
+      });
+    }
+    specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
   }
 
   function renderView(view: FleetView): void {
@@ -509,9 +584,14 @@ export function createDashboard(
     const shown = filterMachines(view, machineFilter);
     const nowSec = Date.now() / 1000;
     const specs: LineSpec[] = [];
+    // What needs a human, across the WHOLE fleet — above the hosts, and never narrowed by the
+    // machine filter: a PR waiting to merge on another box is still waiting.
+    pushNeedsYou(view.machines, specs);
     for (const m of shown) {
       if (fleet) {
-        if (specs.length) specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
+        if (specs.length && specs[specs.length - 1]!.kind === "text" && (specs[specs.length - 1] as { content: string }).content !== "") {
+          specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
+        }
         // Only the head line is focusable: the rest is that line's continuation, not another row.
         machineHeader(m, view.readAt).forEach((line, i) => {
           specs.push({
@@ -536,6 +616,7 @@ export function createDashboard(
       specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });
     }
     if (machineFilter) specs.push({ kind: "text", content: `  (showing ${machineFilter} only — press m for all machines)`, fg: theme.text.tertiary });
+    if (showIdle) specs.push({ kind: "text", content: "  (showing idle repos — press i to collapse them)", fg: theme.text.tertiary });
     reconcile(specs);
   }
 
@@ -869,6 +950,12 @@ export function createDashboard(
         break;
       case "m":
         void pickMachine();
+        key.preventDefault();
+        break;
+      case "i":
+        showIdle = !showIdle;
+        setAction(showIdle ? "showing every repo" : "idle repos collapsed", theme.text.secondary);
+        if (lastView) renderView(lastView);
         key.preventDefault();
         break;
       case "x":

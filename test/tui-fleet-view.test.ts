@@ -16,7 +16,13 @@ import {
   createFleetSource,
   filterMachines,
   fleetStatusLine,
+  hostLines,
+  idleLine,
+  isIdleRepo,
   machineHeader,
+  needsYou,
+  sharedProblems,
+  shortProblem,
   staleRunLine,
   versionDrift,
   type FleetView,
@@ -295,5 +301,95 @@ describe("what the operator reads", () => {
     expect(filterMachines(view, null).map((m) => m.name)).toEqual(["local", "build-box"]);
     expect(filterMachines(view, "build-box").map((m) => m.name)).toEqual(["build-box"]);
     expect(filterMachines(view, "retired").map((m) => m.name), "an empty board would read as no work").toEqual(["local", "build-box"]);
+  });
+});
+
+// ── the redesign: lead with what needs a human, say a host-wide fact once, collapse the rest ──────
+describe("what the board leads with", () => {
+  const withRuns = (repo: string, active: ActiveRun[], over: Partial<RepoStatus> = {}) => ({ repo, status: repoStatus(repo, active, over), eligible: [] });
+
+  it("lists a green PR, an attention park and a waiting run — the three things that need a person", () => {
+    const m = machineView({
+      repos: [
+        withRuns("app", [
+          activeRun({ ticketKey: "HF-1", prNumber: 12, prGreen: true, phase: "reviewing" }),
+          activeRun({ id: 2, ticketKey: "HF-2", phase: "attention", attentionReason: "the work step bounced twice" }),
+          activeRun({ id: 3, ticketKey: "HF-3", phase: "waiting_for_human" }),
+          activeRun({ id: 4, ticketKey: "HF-4", phase: "running" }),
+        ]),
+      ],
+    });
+    const items = needsYou([m]);
+    expect(items.map((i) => i.key), "green first, then parked, then asking — a healthy run is not listed").toEqual(["HF-1", "HF-2", "HF-3"]);
+    expect(items[0]!.text).toContain("PR #12 is green — ready to merge");
+    expect(items[1]!.text).toContain("the work step bounced twice");
+    expect(items[2]!.text).toContain("waiting for a human reply");
+    expect(items.map((i) => [i.machine, i.repo])).toEqual([["local", "app"], ["local", "app"], ["local", "app"]]);
+  });
+
+  it("names an unverifiable machine, and is empty — so not drawn — when nothing is blocked", () => {
+    expect(needsYou([machineView({ repos: [withRuns("app", [activeRun()])] })])).toEqual([]);
+    const blind = needsYou([machineView(), machineView({ name: "build-box", local: false, state: "unverifiable", detail: "no answer within 2000ms", stale: true })]);
+    expect(blind).toHaveLength(1);
+    expect(blind[0]!.text).toContain("build-box unverifiable — no answer within 2000ms");
+    expect(blind[0]!.key, "a machine entry points at no run").toBeUndefined();
+    expect(
+      needsYou([machineView({ state: "unverifiable" })]),
+      "on an install of one, a silent machine is just the status line's `server not running`",
+    ).toEqual([]);
+  });
+
+  it("a run on a silent machine is still listed, and marked as un-actionable", () => {
+    const items = needsYou([
+      machineView({ name: "build-box", local: false, state: "unverifiable", stale: true, repos: [withRuns("api", [activeRun({ phase: "attention" })])] }),
+    ]);
+    expect(items.map((i) => [i.key, i.stale])).toContainEqual(["HF-1", true]);
+  });
+
+  it("a problem several repos share is hoisted to the host header; one repo's own stays its own", () => {
+    const auth = { kind: "auth", detail: "issues: gh auth — run `gh auth login`" };
+    const m = machineView({
+      machineLine: "machine: cap 1/4 working across all repos",
+      repos: [
+        { repo: "app", status: repoStatus("app", [], { problems: [auth] }), eligible: [] },
+        { repo: "api", status: repoStatus("api", [], { problems: [auth] }), eligible: [] },
+        { repo: "site", status: repoStatus("site", [], { problems: [{ kind: "git", detail: "site: not a git checkout" }] }), eligible: [] },
+      ],
+    });
+    expect([...sharedProblems(m)]).toEqual([auth.detail]);
+    const hoisted = machineHeader(m, 1000).at(-1)!;
+    expect(hoisted.tone).toBe("bad");
+    expect(hoisted.text).toContain("⚠ issues: gh auth — on several repos");
+    // Same two facts, unindented, for the board that has no header to put them under.
+    expect(hostLines(m).map((l) => [l.text, l.tone])).toEqual([
+      ["cap 1/4 working across all repos", "accent"],
+      ["⚠ issues: gh auth — on several repos", "bad"],
+    ]);
+  });
+
+  it("a machine with no gate and no shared cause contributes no host lines at all", () => {
+    expect(hostLines(machineView()), "nothing to say ⇒ nothing drawn").toEqual([]);
+    expect(
+      hostLines(machineView({ repos: [{ repo: "app", status: repoStatus("app", [], { problems: [{ kind: "auth", detail: "app only" }] }), eligible: [] }] })),
+      "a cause only one repo reports stays on that repo's row",
+    ).toEqual([]);
+  });
+
+  it("a problem reads as its cause, not as a count and a keypress", () => {
+    expect(shortProblem("issues: gh auth — run `gh auth login`")).toBe("issues: gh auth");
+    expect(shortProblem("x".repeat(80)).length, "it rides at the end of a repo row").toBeLessThanOrEqual(64);
+  });
+
+  it("only a repo with no run, no eligible work and no problem is idle", () => {
+    expect(isIdleRepo({ repo: "a", status: repoStatus("a", []), eligible: [] })).toBe(true);
+    expect(isIdleRepo({ repo: "a", status: repoStatus("a", [activeRun()]), eligible: [] })).toBe(false);
+    expect(isIdleRepo({ repo: "a", status: repoStatus("a", []), eligible: [eligibleItem("HF-9")] }), "unclaimed work is not idle").toBe(false);
+    expect(isIdleRepo({ repo: "a", status: repoStatus("a", [], { problems: [{ kind: "auth", detail: "gh auth" }] }), eligible: [] })).toBe(false);
+    expect(isIdleRepo({ repo: "a", status: null, eligible: [] }), "a repo that failed to load is news").toBe(false);
+  });
+
+  it("collapsed rows on a silent machine read as unverified, never as idle", () => {
+    expect(idleLine(["a", "b"], false)).toBe("  idle · a · b");
+    expect(idleLine(["a", "b"], true)).toBe("  unverified · a · b");
   });
 });

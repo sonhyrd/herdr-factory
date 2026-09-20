@@ -273,6 +273,10 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
       // step columns only read `step`/`done`, so the extra fields are inert there.
       steps: rt.deps.store.runStepsFor(r.id).map((s) => ({ step: s.step as string, done: s.done, startedAt: s.startedAt, doneAt: s.doneAt, pass: s.pass })),
       ...(problem ? { problem } : {}),
+      // The green-PR watch's mark: set while the watched PR is green on its current head, cleared the
+      // moment it stops being green. That is exactly "waiting on a human to merge", and it is a DB
+      // read — no GitHub call on the dashboard's 3 s poll.
+      prGreen: rt.deps.store.getWatchState(r.id, "pull_request", "pr_green")?.sig != null,
     };
   };
   const sources = quick

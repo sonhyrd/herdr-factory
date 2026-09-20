@@ -18,6 +18,7 @@ import { GhFake, initialGhState } from "./gh-fake/state.ts";
 import type { AgentScript, Driver, Lane, ScenarioSpec, Tier, WorldPaths } from "./types.ts";
 
 type FleetMachineSpec = NonNullable<ScenarioSpec["fleetMachines"]>[string];
+type ExtraRepoSpec = NonNullable<ScenarioSpec["extraRepos"]>[string];
 
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HARNESS_DIR, "..", "..", "..");
@@ -112,6 +113,9 @@ export class World {
   };
   /** The other MACHINES of the fleet: one extra `serve` each (see `ScenarioSpec.fleetMachines`). */
   private readonly fleet = new Map<string, { factory: Factory; paths: WorldPaths; spec: FleetMachineSpec }>();
+  /** Extra repos on THIS machine's server (see `ScenarioSpec.extraRepos`) — one config folder and
+   *  briefs folder each, all under the same config dir and state root as the main repo. */
+  private readonly extraRepos = new Map<string, { paths: WorldPaths; spec: ExtraRepoSpec }>();
   private started = false;
 
   constructor(spec: ScenarioSpec) {
@@ -217,6 +221,16 @@ export class World {
     this.gh = new GhFake({ statePath: this.files.ghState, logPath: this.files.ghLog });
     this.db = new Db(this.paths.stateRoot, this.repoName);
 
+    // Each extra repo is just another `repos/<name>/config.yml` under the SAME config dir, so this
+    // machine's one server loads it alongside the main repo — a multi-repo host, which is a different
+    // thing from a fleet machine and the shape the board's per-host rules are about.
+    for (const [name, repoSpec] of Object.entries(this.spec.extraRepos ?? {})) {
+      this.extraRepos.set(name, {
+        paths: { ...this.paths, repoConfigDir: join(this.paths.configDir, "repos", name), briefs: join(home, `briefs-${name}`) },
+        spec: repoSpec,
+      });
+    }
+
     // Each extra machine is a whole second factory: its own config dir, state root and port, so
     // nothing it does can touch this machine's DB — which is the point, since the fleet's job is to
     // merge two independent servers' views. Ports sit 2000 above the main allocation, clear of every
@@ -267,6 +281,14 @@ export class World {
     return entry.factory;
   }
 
+  /** An extra repo's on-disk geography (`ScenarioSpec.extraRepos`) — its briefs folder is where work
+   *  for it is dropped, and its `repoConfigDir` is its own `config.yml`. */
+  repoPaths(name: string): WorldPaths {
+    const entry = this.extraRepos.get(name);
+    if (!entry) throw new Error(`no extra repo "${name}" in scenario "${this.spec.name}"`);
+    return entry.paths;
+  }
+
   /** That machine's on-disk geography — its briefs folder is where work for it is dropped. */
   machinePaths(name: string): WorldPaths {
     const entry = this.fleet.get(name);
@@ -291,6 +313,7 @@ export class World {
       this.files.agentStateDir,
       join(this.paths.home, ".config", "herdr"),
       ...[...this.fleet.values()].flatMap(({ paths }) => [paths.repoConfigDir, paths.stateRoot, paths.briefs]),
+      ...[...this.extraRepos.values()].flatMap(({ paths }) => [paths.repoConfigDir, paths.briefs]),
     ]) {
       mkdirSync(d, { recursive: true });
     }
@@ -449,6 +472,11 @@ export class World {
     const render = (over: Record<string, unknown>): string =>
       `# yaml-language-server: $schema=../../config.schema.json\n${yamlStringify(mergeConfig(base, over), { lineWidth: 0 })}`;
     writeFileSync(join(this.paths.repoConfigDir, "config.yml"), render(this.spec.config(this.paths)));
+
+    for (const [, { paths, spec }] of this.extraRepos) {
+      writeFileSync(join(paths.repoConfigDir, "config.yml"), render((spec.config ?? this.spec.config)(paths)));
+      for (const [key, body] of Object.entries(spec.briefs ?? {})) writeFileSync(join(paths.briefs, `${key}.md`), body);
+    }
 
     // Each fleet machine gets the same treatment: its own config.yml (over the same defaults and the
     // same target checkout) and its own briefs. The endpoints file is what makes `fleet` reach them.

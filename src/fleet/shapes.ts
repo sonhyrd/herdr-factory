@@ -31,6 +31,10 @@ export interface ActiveRun {
   /** A background problem the step columns can't show — e.g. the evidence step reads "done" (URLs
    *  emitted) but its media upload is still stuck retrying. Absent when the run is healthy. */
   problem?: { kind: "evidence-upload"; detail: string };
+  /** True while the `pr_green` watch holds a mark for this run's CURRENT head: the PR is open, not a
+   *  draft, has no unresolved threads and every check concluded green — i.e. it is waiting on a human
+   *  to press Merge (the factory never merges). Absent on older servers. */
+  prGreen?: boolean;
 }
 
 export interface RepoStatus {

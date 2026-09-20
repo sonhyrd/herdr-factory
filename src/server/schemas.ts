@@ -148,6 +148,9 @@ const StatusResponse = z
         worker: z.string().nullable(),
         steps: z.array(z.object({ step: z.string(), done: z.boolean(), startedAt: z.number().nullable(), doneAt: z.number().nullable(), pass: z.number() })),
         problem: z.object({ kind: z.literal("evidence-upload"), detail: z.string() }).optional(),
+        // The pr_green watch's mark for this run's current head: the PR is green and waiting on a
+        // human to merge. The dashboard's "needs you" section leads with these.
+        prGreen: z.boolean().optional(),
       }),
     ),
     // Repo-level problems for the dashboard's red per-repo light: runs parked for attention,

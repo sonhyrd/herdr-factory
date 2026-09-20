@@ -1509,14 +1509,35 @@ cursor.
 
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
-  `x` tears down, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
+  `x` tears down, `i` expands the collapsed idle repos, and `r` refreshes (mutating actions require
+  confirmation). Empty belts stay hidden.
+  The board is built to be read at a glance, so it says each thing once and leads with the part that
+  is waiting on you:
+  - **"needs you" heads the board**, above the hosts and never narrowed by the machine filter: PRs
+    that are green and waiting to be merged (the factory never merges — see
+    [`work_to_pull_request`](#work_to_pull_request--feed-it-a-ticket-get-a-merged-pr)), runs parked for `attention`, runs that asked a human a
+    question, and machines that have gone silent. There is nothing to press to get it and nothing
+    drawn when it is empty. Its run entries *are* the runs — `s`, `x`, `d` and `↵` act on them from
+    there, so a parked run never has to be found twice.
+  - **Idle repos collapse** to one line per machine — `idle · agent-kit · paul-clips` — because a
+    repo with no active run, no eligible work and no problem carries exactly one fact, and one line
+    can carry it for all of them. `i` brings the full list back. A repo with **eligible work waiting**
+    is not idle and keeps its row, and on an `unverifiable` machine the line reads `unverified`
+    rather than `idle`: those rows are a remembered read, not a claim about now.
+  - **A belt with one or two items is one line per run** — `● 54  work  48m  nudge an idle agent…` —
+    and the kanban grid appears once work is actually spread across steps.
+  - **The host gate is not repeated per repo.** Cap occupancy and the memory floor are host-wide by
+    definition; they are printed once, on the machine's header.
   Eligible items come from each machine's **last tick poll**, never a live source query — the
   dashboard refreshes every few seconds across every machine and repo, and querying the sources on
   each refresh burned the whole (account-wide) API budget the factory itself claims with. So the list
   is at most one `poll_interval_seconds` old, and a server that has not ticked yet shows none.
   A repo with a problem — a run parked for attention, suspended jobs, evidence uploads blocked on
-  AWS creds, a source that cannot authenticate — carries a **red ⚠ icon and count** on its row, so a
-  broken repo is visible at a glance; highlight the row to read the full detail on the action line,
+  AWS creds, a source that cannot authenticate — **names it in red on its row** (`⚠ issues: gh auth`,
+  plus `(+N more)` when it has several), so what is broken reads without a keypress; a cause that
+  **several of a host's repos report identically** is said once for that machine
+  (`⚠ issues: gh auth — on several repos`, beside its host gate) instead of once per row — one
+  `gh auth` is one login. The rows stay either way; highlight one to read the full detail on the action line,
   or press `d` for the detail view, where everything unhealthy (the problems, a failed auth probe, a
   down belt) renders **in red**. Problems are **recorded, not polled**: the engine writes a problem
   the moment its own machinery observes one (a login failure, an expired AWS session caught by the

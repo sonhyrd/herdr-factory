@@ -207,6 +207,51 @@ export function looseLane(title: string, runs: BoardRun[], nowSec: number, tone:
   };
 }
 
+/**
+ * The same lanes, one line per card instead of a grid — for a belt carrying a run or two, where the
+ * column view spends five headers, a rule and two lines to say "one run, in work, 48m". The step is
+ * on the card's own line (its lane's title), so nothing is lost by dropping the columns.
+ *
+ * Cells keep their lane/card indices, so a caller resolves and hit-tests a compact line exactly as it
+ * does a grid one.
+ */
+export function compactBoard(lanes: KanbanLane[], width: number): KanbanLine[] {
+  if (width <= 0) return [];
+  const lines: KanbanLine[] = [];
+  lanes.forEach((lane, laneIndex) => {
+    lane.cards.forEach((card, cardIndex) => {
+      lines.push([{ lane: laneIndex, card: cardIndex, x: 0, width, segments: compactSegments(card, lane.title, width) }]);
+    });
+  });
+  return lines;
+}
+
+/** One compact card line: `● HF-54  work  48m  nudge an idle agent…`. Budget order mirrors
+ *  `cardSegments` — gutter, icon and key are fixed, then the step, then the meta, and the summary
+ *  takes whatever is left. */
+function compactSegments(card: KanbanCard, step: string, width: number): Segment[] {
+  const { icon, tone } = stateIcon(card.state);
+  const head = `${icon} `;
+  const inner = Math.max(0, width - GUTTER.length - head.length);
+  const key = truncate(card.key, inner);
+  const flag = card.flag ? " ⚠" : "";
+  const meta = card.meta ? `  ${card.meta}` : "";
+  const tail = inner - key.length - flag.length;
+  const summaryRoom = tail - step.length - meta.length - 4;
+  const summary = card.summary && summaryRoom >= 3 ? `  ${truncate(card.summary, summaryRoom)}` : "";
+  const rest = truncate(`  ${step}${meta}${summary}`, Math.max(0, tail));
+  const segments: Segment[] = [
+    { text: GUTTER, tone: "tertiary" },
+    { text: head, tone },
+    { text: key, tone: "primary" },
+    { text: rest, tone: "secondary" },
+  ];
+  if (flag) segments.push({ text: flag, tone: "warn" });
+  const filler = Math.max(0, width - segments.reduce((n, seg) => n + seg.text.length, 0));
+  if (filler) segments.push({ text: " ".repeat(filler), tone: "tertiary" });
+  return segments;
+}
+
 /** Segments for one card, summing to exactly `width`. Budget order: the gutter and icon are fixed, the
  *  key is never dropped (only truncated), the meta is shed before the summary is squeezed away. */
 function cardSegments(card: KanbanCard, width: number): Segment[] {

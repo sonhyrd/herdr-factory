@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LEGEND, MIN_COLUMN_WIDTH, buildLanes, cardState, layoutKanban, looseLane, stateIcon, type BoardRun, type CardState, type KanbanCell, type Tone } from "../src/tui/kanban.ts";
+import { LEGEND, MIN_COLUMN_WIDTH, buildLanes, cardState, compactBoard, layoutKanban, looseLane, stateIcon, type BoardRun, type CardState, type KanbanCell, type Tone } from "../src/tui/kanban.ts";
 
 const NOW = 1000; // epoch seconds — every duration below is derived from this
 
@@ -170,5 +170,39 @@ describe("kanban layout", () => {
   it("returns nothing to render for no lanes or no width", () => {
     expect(layoutKanban([], 80)).toEqual([]);
     expect(layoutKanban(lanes(), 0)).toEqual([]);
+  });
+});
+
+describe("the compact board — one line per run, for a belt that has one or two", () => {
+  it("puts the step, the age and the summary on the run's own line instead of spending five columns", () => {
+    const lanes = buildLanes(
+      ["work", "evidence", "review", "pr"],
+      [run({ key: "54", summary: "nudge an idle agent", step: "work", createdAt: NOW - 2880 })],
+      [],
+      NOW,
+    );
+    const lines = compactBoard(lanes, 60);
+    expect(lines, "one run ⇒ one line, no headers and no rule").toHaveLength(1);
+    const text = cellText(lines[0]![0]!);
+    expect(text).toContain("● 54");
+    expect(text).toContain("work");
+    expect(text).toContain("48m");
+    expect(text).toContain("nudge an idle agent");
+    expect(text.length, "cells pad to their full width, as the grid's do").toBe(60);
+  });
+
+  it("keeps each cell's lane/card indices, so a click resolves exactly as it does on the grid", () => {
+    const lanes = buildLanes(["work", "review"], [run({ key: "HF-9", step: "review" })], [{ key: "HF-10", summary: "unclaimed" }], NOW);
+    const cells = compactBoard(lanes, 50).map((line) => line[0]!);
+    expect(cells.map((c) => [c.lane, c.card])).toEqual([[0, 0], [2, 0]]);
+    expect(lanes[cells[0]!.lane]!.cards[cells[0]!.card!]!.key).toBe("HF-10");
+    expect(lanes[cells[1]!.lane]!.cards[cells[1]!.card!]!.key).toBe("HF-9");
+  });
+
+  it("sheds the summary rather than the key when the terminal is narrow", () => {
+    const lanes = buildLanes(["work"], [run({ key: "HF-1234", summary: "a long summary nobody has room for", step: "work" })], [], NOW);
+    const text = cellText(compactBoard(lanes, MIN_COLUMN_WIDTH)[0]![0]!);
+    expect(text).toContain("HF-1234");
+    expect(text.length).toBe(MIN_COLUMN_WIDTH);
   });
 });
