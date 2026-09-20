@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { globMatch, resolveBeltLayout, tabTree, splitRatio, clampRatio, applyLayout, deriveAgentName, setupScript, HAND_BACK } from "../src/core/layout.ts";
@@ -189,10 +189,15 @@ describe("tabTree — pane commands and agent panes", () => {
   });
 });
 
+// The suite-wide throwaway Claude config dir (test/helpers/setup-env.ts); tests that point the trust
+// step at their own temp dir restore this afterwards rather than unsetting it.
+const SUITE_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+
 describe("applyLayout", () => {
   const tmps: string[] = [];
   afterEach(() => {
     delete process.env.HERDR_FACTORY_STATE_ROOT;
+    process.env.CLAUDE_CONFIG_DIR = SUITE_CLAUDE_CONFIG_DIR; // never leave the real ~/.claude.json exposed
     for (const d of tmps) rmSync(d, { recursive: true, force: true });
     tmps.length = 0;
   });
@@ -321,6 +326,52 @@ describe("applyLayout", () => {
     const deps = stubDeps(rec, { agentAdopt: async () => false });
     await applyLayout(deps, { workspaceId: "W", rootTabId: "T0" }, { id: "p", tabs: [{ title: "t", panes: [agentPane("a")] }] });
     expect(rec).toContain("notify herdr-factory: agent did not start");
+  });
+
+  it("a failed start reports herdr's OWN error code in the warning and the notification", async () => {
+    // Without this the log said only "could not start claude in t0" — which is the same line for a
+    // folder-trust prompt, a missing binary and a busy pane, so the real cause (issue #44's
+    // `agent_not_ready: … blocked during startup`) could not be read back off the serve log at all.
+    const rec: string[] = [];
+    const logged: string[] = [];
+    const bodies: string[] = [];
+    const deps = stubDeps(rec, {
+      agentAdopt: async () => false,
+      lastAgentError: "agent_not_ready: agent 'claude-w' blocked during startup",
+      notify: async (title: string, body: string) => void bodies.push(`${title} | ${body}`),
+    });
+    (deps as { log: (level: string, msg: string) => void }).log = (level, msg) => void logged.push(`${level} ${msg}`);
+    await applyLayout(deps, { workspaceId: "W", rootTabId: "T0" }, { id: "p", tabs: [{ title: "t", panes: [agentPane("a")] }] });
+    expect(logged).toContain(`warn layout "p": could not start claude in t0: agent_not_ready: agent 'claude-w' blocked during startup`);
+    expect(bodies[0]).toContain("agent_not_ready: agent 'claude-w' blocked during startup");
+  });
+
+  it("trusts the WORKTREE in claude's config before starting a claude agent in it", async () => {
+    // A fresh worktree otherwise stops claude at "Is this a project you trust?" — the pane comes up,
+    // the agent never becomes ready, and the step targeting it burns its whole layout wait (#44).
+    const cfgDir = mkdtempSync(join(tmpdir(), "hf-claude-"));
+    tmps.push(cfgDir);
+    process.env.CLAUDE_CONFIG_DIR = cfgDir;
+    const rec: string[] = [];
+    await applyLayout(
+      stubDeps(rec),
+      { workspaceId: "W", rootTabId: "T0", cwd: "/work/wt-44" },
+      { id: "p", tabs: [{ title: "t", panes: [agentPane("a")] }] },
+    );
+    const cfg = JSON.parse(readFileSync(join(cfgDir, ".claude.json"), "utf8")) as { projects: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(cfg.projects["/work/wt-44"]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it("does NOT touch claude's config for another harness", async () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "hf-claude-"));
+    tmps.push(cfgDir);
+    process.env.CLAUDE_CONFIG_DIR = cfgDir;
+    await applyLayout(
+      stubDeps([]),
+      { workspaceId: "W", rootTabId: "T0", cwd: "/work/wt-44" },
+      { id: "p", tabs: [{ title: "t", panes: [agentPane("a", { kind: "opencode" })] }] },
+    );
+    expect(existsSync(join(cfgDir, ".claude.json"))).toBe(false);
   });
 
   it("waits for the setup status file, reporting progress on the pane, before starting its agent", async () => {

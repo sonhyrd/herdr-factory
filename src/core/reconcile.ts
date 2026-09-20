@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type SourceRuntime } from "./deps.ts";
-import type { StepConfig } from "../config.ts";
+import type { LayoutAgent, StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
@@ -15,6 +15,8 @@ import { branchName } from "./branch.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
+import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
+import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { reportToPane, showRunPane } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
@@ -1825,6 +1827,79 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
  *  bumped once per consumed wait window and reset on successful dispatch (spawnStep) or human resume. */
 const layoutWaitGuard = (step: StepConfig): GuardSpec | undefined => step.guards.find((g) => g.kind === "layout_wait");
 
+/** Re-attempt the layout's own `agent start` for a step whose configured pane is up but has no agent.
+ *
+ *  The layout hook builds a worktree's panes ONCE and starts their agents once; a start that fails
+ *  (herdr's `agent_not_ready` — Claude Code's folder-trust prompt, a cold harness, a transient race)
+ *  leaves the pane sitting at a shell prompt forever, and every window of the step's layout wait then
+ *  expires against a pane nothing will ever bring an agent to. Re-running the SAME adoption (kind and
+ *  args straight from the layout pane's `agent:` block, trust pre-answered) is the only recovery that
+ *  can work without a human.
+ *
+ *  One ordering note: herdr keeps a starting agent's NAME reserved for as long as its own `agent start`
+ *  is waiting out the pane's readiness timeout, so a re-adopt issued INSIDE that window is refused
+ *  `agent_name_taken` — logged like any other failed start, and retried by the next window. With the
+ *  defaults that cannot happen (a 60s start timeout inside a 600s wait); it only bites where both are
+ *  compressed.
+ *
+ *  Deliberately narrow: only a pane that resolves by its configured label AND is at an available shell
+ *  prompt is touched — that state is herdr's own definition of "no agent here" and of a pane `agent
+ *  start` will accept, so this can never interrupt an agent that is merely slow or mid-turn. Answers
+ *  whether an agent was started. Never throws (herdr being unreachable is the wait's problem, not
+ *  this retry's). */
+async function retryLayoutAgent(deps: Deps, run: Run, belt: BeltRuntime, step: StepConfig): Promise<boolean> {
+  if (!run.workspaceId || !step.tab || !step.pane) return false;
+  try {
+    const target = layoutAgentForStep(deps, run, belt, step);
+    if (!target) return false; // a pane the layout doesn't declare an agent for — nothing to restart
+    const paneId = await deps.herdr.tabPaneByLabel(run.workspaceId, step.tab, step.pane);
+    if (!paneId) return false; // the layout hasn't built the pane yet — wait, don't build it here
+    if (!(await deps.herdr.paneAtShellPrompt(paneId))) return false; // an agent IS there (or the pane is busy)
+    deps.log("warn", `${run.ticketKey}: ${step.tab}/${step.pane} is at a shell prompt with no agent — re-starting ${target.agent.kind}`);
+    const name = await adoptLayoutAgent(deps, target.layoutId, target.agent, paneId, run.workspaceId, {
+      cwd: run.worktreePath ?? undefined,
+      name: target.name,
+    });
+    return name != null;
+  } catch {
+    return false; // herdr unreachable / a pane that vanished mid-check — the wait re-arms as before
+  }
+}
+
+/** The layout pane a step dispatches into: its `agent:` block and the herdr agent NAME the layout
+ *  BUILD gave it — which the retry has to reuse exactly.
+ *
+ *  herdr requires an agent name to be unique among LIVE agents, so the build numbers the agent panes
+ *  it walks (`claude-w1`, `claude-w1-2`, …) rather than naming them all after the workspace. A retry
+ *  that asked for the bare base name would therefore be refused `agent_name_taken` for every pane but
+ *  the first whenever an earlier same-kind pane's agent is alive — which is the normal case (this
+ *  repo's own ship layout has four agent panes in one workspace), and it would leave exactly the park
+ *  this retry exists to prevent. So the walk here mirrors `applyLayoutImpl`: the layout PRUNED the way
+ *  the hook prunes it for a factory-owned run (a dropped tab shifts every later pane's number), tabs
+ *  in order, panes in order, accumulating names until the step's own pane. That name is free precisely
+ *  because this pane's agent is the one that is not live. A pane with an explicit `agent_name` keeps
+ *  it, exactly as the build does. */
+function layoutAgentForStep(
+  deps: Deps,
+  run: Run,
+  belt: BeltRuntime,
+  step: StepConfig,
+): { layoutId: string; agent: LayoutAgent; name: string } | undefined {
+  const resolved = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
+  if (!resolved || !run.workspaceId) return undefined;
+  const { layout } = pruneLayoutToBelt(resolved, belt);
+  const taken: string[] = [];
+  for (const tab of layout.tabs) {
+    for (const pane of tab.panes) {
+      if (!pane.agent) continue;
+      const name = pane.agent.name ?? deriveAgentName(pane.agent.kind, run.workspaceId, taken);
+      if (tab.title === step.tab && pane.title === step.pane) return { layoutId: layout.id, agent: pane.agent, name };
+      taken.push(name);
+    }
+  }
+  return undefined;
+}
+
 /** A step is waiting for its configured layout pane to come up (an idle agent in tab/pane).
  *  Stay put and retry next tick. Once we've waited past `layout_wait_seconds` (measured from the
  *  step row's started_at), consume one of the guard's bounded respawn credits and RE-ARM the wait in
@@ -1846,6 +1921,10 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   const limit = guard?.autoRespawnLimit ?? 0;
   if (guard && deps.store.guardCounter(run.id, step.name, guard.kind) < limit) {
     const attempt = deps.store.bumpGuardCounter(run.id, step.name, guard.kind);
+    // The pane may be up with NO agent in it — the layout's `agent start` failed (a claude stopped at
+    // the folder-trust prompt is the case this was built for). Re-arming alone would then wait out
+    // every remaining window for an agent nothing is bringing up, so re-attempt the adoption first.
+    const restarted = await retryLayoutAgent(deps, run, belt, step);
     // Re-arm: each retry gets a FULL fresh window, so the budget bounds wall-clock at
     // (1 + limit) × layout_wait_seconds rather than being burned in `limit` consecutive ticks.
     deps.store.upsertRunStep(run.id, step.name, { startedAt: deps.now() });
@@ -1854,7 +1933,7 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
       repo: deps.config.repoName,
       ticketKey: run.ticketKey,
       type: "layout_wait_retry",
-      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit },
+      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit, agentRestarted: restarted },
     });
     deps.log("warn", `${run.ticketKey}: ${step.name} layout pane ${where} not up after ${waited}s — re-arming the wait (retry ${attempt}/${limit})`);
     return;

@@ -77,6 +77,11 @@ export interface HerdrApi {
   }): Promise<string | null>;
   /** Start `kind` in an EXISTING pane (a layout's agent pane). true ⇒ herdr says it's ready for input. */
   agentAdopt(paneId: string, opts: { name: string; kind: string; args?: readonly string[]; timeoutMs?: number }): Promise<boolean>;
+  /** The last `agent start` failure text (herdr's machine-readable code + message, e.g.
+   *  `agent_not_ready: … blocked during startup`) — logged verbatim when a start fails, because it is
+   *  what tells a trust prompt apart from a missing binary or a busy pane. Optional: a fake that
+   *  doesn't track it just reports no detail. */
+  readonly lastAgentError?: string | null;
   /** A layout pane's opening `prompt:` — waits for the agent to settle only when a timeout is given. */
   agentOpenPrompt(target: string, text: string, opts?: { settleTimeoutMs?: number }): Promise<boolean>;
   /** Is the pane at an available shell prompt (what `agent start` requires)? One sample; callers poll. */

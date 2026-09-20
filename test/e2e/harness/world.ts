@@ -159,6 +159,11 @@ export class World {
       ...(process.env as Record<string, string>),
       HOME: home,
       XDG_CONFIG_HOME: join(home, ".config"),
+      // Claude Code's config, which the engine EDITS before starting a claude agent (it pre-answers
+      // the folder-trust prompt — src/core/claude-trust.ts). Pinned into the world explicitly: this
+      // env spreads the developer's own environment, and an inherited CLAUDE_CONFIG_DIR would send
+      // that write to their real config instead of the world's.
+      CLAUDE_CONFIG_DIR: home,
       PATH: `${this.paths.bin}:${process.env.PATH ?? ""}`,
       TERM: "xterm-256color",
       // Explicit, because it decides two things: which shell herdr spawns in a pane, and which rc file

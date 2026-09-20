@@ -319,6 +319,69 @@ function writeIn(cwd, rel, body) {
   log(`  wrote ${p} (${body.length} bytes)`);
 }
 
+/** The work item this pane belongs to, for the per-item startup knobs below. A layout pane carries it
+ *  because the hook builds the tab with `HERDR_FACTORY_TICKET` on it (core/layout-hook.ts), and a
+ *  dedicated pane because `agentStart` passes the same env — so one world can give two runs different
+ *  startup behaviour without an env var that would apply to both. */
+const TICKET = process.env.HERDR_FACTORY_TICKET || "";
+const keysOf = (v) => String(v || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+/** `HF_AGENT_EXIT_FIRST=<key>[=<n>][,…]` — the first `n` execs for that work item (default 1) exit
+ *  immediately, before reporting any state, so herdr's adoption handshake fails (`agent start` answers
+ *  with its own code) and the pane is left sitting at a shell prompt with no agent. That is the shape
+ *  of Claude Code stopping on its folder-trust prompt, and it is what the layout wait's re-adopt has
+ *  to recover from. Exec `n+1` — a later re-adopt — runs normally.
+ *
+ *  `n > 1` matters for where the failure is OBSERVED: the layout BUILD's start runs inside herdr's
+ *  plugin hook, whose herdr calls go to the real binary rather than the world's logging wrapper, so
+ *  only a failure on the ENGINE's own re-adopt is visible in `w.herdr.notifications()`. */
+function refuseFirstStart() {
+  const spec = keysOf(process.env.HF_AGENT_EXIT_FIRST)
+    .map((pair) => pair.split("="))
+    .find(([key]) => key === TICKET);
+  if (!TICKET || !spec) return;
+  const want = Number(spec[1] || 1);
+  const marker = path.join(LOG_DIR, `exit-first-${TICKET}`);
+  let refused = 0;
+  try {
+    refused = Number(fs.readFileSync(marker, "utf8").trim()) || 0;
+  } catch {
+    /* first exec */
+  }
+  if (!(refused < want)) return;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(marker, String(refused + 1));
+  } catch {
+    /* if we cannot record it, better to start than to refuse forever */
+    return;
+  }
+  log(`EXIT-FIRST: refusing start ${refused + 1}/${want} for ${TICKET}`);
+  process.exit(1);
+}
+
+/** `HF_AGENT_BUSY_BOOT=<key>=<ms>[,…]` — report `working` from the moment this agent is exec'd and
+ *  hold it for that long: an agent that IS in the pane and is simply never ready for input. A step
+ *  targeting the pane cannot dispatch (`isReadyForInput` is idle/done), so its layout-wait window
+ *  expires against a LIVE agent — the case the wait's re-adopt must leave strictly alone.
+ *
+ *  Deliberate: herdr's own `agent start` may well time out on an agent that never idles. That is the
+ *  faithful shape (a harness stuck mid-startup), and it changes nothing for the assertion: the pane's
+ *  foreground is the agent either way, and herdr's passive detection picks the harness up once it
+ *  idles, so the step dispatches and the run still finishes. */
+function busyBoot() {
+  const ms = Number(
+    keysOf(process.env.HF_AGENT_BUSY_BOOT)
+      .map((pair) => pair.split("="))
+      .find(([key]) => key === TICKET)?.[1] || 0,
+  );
+  if (!TICKET || !Number.isFinite(ms) || ms <= 0) return;
+  log(`BUSY-BOOT: holding working for ${ms}ms`);
+  setState("working");
+  sleep(ms);
+  setState("idle");
+}
+
 /** Sit idle for a beat before the first turn — a real harness's boot window, and load-bearing here.
  *
  *  `herdr agent start` blocks until it has detected the agent AND marked it ready for input, and the
@@ -347,6 +410,8 @@ function bootDwell() {
 
 // ── main ────────────────────────────────────────────────────────────────────────────────────────
 log(`START argv=${JSON.stringify(process.argv.slice(2))} cwd=${process.cwd()}`);
+refuseFirstStart(); // may exit(1) before any state is reported
+busyBoot(); // per-item: hold `working` before ever reporting idle
 setState("idle");
 process.stdout.write("\n> ");
 bootDwell();

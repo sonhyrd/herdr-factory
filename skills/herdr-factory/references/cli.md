@@ -296,7 +296,7 @@ Phases: `claiming | running | waiting_for_human | reviewing | tearing_down | don
 
 ```
 2026-07-24T06:38:52.000Z  claimed  {"branch":"chore/staging-cherry-pick-…","source":"adhoc-pr","belt":"adhoc-pr"}
-2026-07-24T07:22:37.000Z  layout_wait_retry  {"step":"work","tab":"fix","pane":"work","attempt":1,"limit":3}
+2026-07-24T07:22:37.000Z  layout_wait_retry  {"step":"work","tab":"fix","pane":"work","attempt":1,"limit":3,"agentRestarted":true}
 2026-07-24T08:06:19.000Z  attention  {"reason":"layout_wait_timeout","step":"work","tab":"fix","pane":"work","respawnsUsed":3}
 2026-07-24T08:15:26.000Z  resumed  {"phase":"claiming","step":null,"nudged":false}
 2026-07-24T08:23:10.000Z  pr_opened  {"number":6837}

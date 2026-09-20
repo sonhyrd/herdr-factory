@@ -9,6 +9,7 @@ import { renderWorkVars } from "./branch.ts";
 import { productActiveFor, type PromptStepContext, stripInactiveProductBlocks, validatePromptBody } from "../prompts/contract.ts";
 import { guardsResetOn } from "../steps/guards.ts";
 import { awaitShellPrompt } from "./layout.ts";
+import { isClaudeAgent, trustWorktreeInClaude } from "./claude-trust.ts";
 import { showRunPane } from "./pane-display.ts";
 import { signalCommand } from "../signals/registry.ts";
 import { REPO_PACK_SUBDIR, resolvePromptFile } from "../prompt-packs.ts";
@@ -333,6 +334,14 @@ async function dispatchToLayoutImpl(
   // `name` is herdr's AGENT name, not a label: herdr enforces `[a-z][a-z0-9_-]{0,31}` and rejects
   // anything else outright (`invalid_agent_name`), so the run's own `<step>:<KEY>` can't be used — a
   // ticket key alone is usually uppercase. The readable identity is published as pane metadata below.
+  // Same folder-trust pre-answer the layout path does (see core/claude-trust.ts): a claude stopped at
+  // "Is this a project you trust?" never reaches readiness, and agentStart then closes the pane and
+  // reports a spawn failure for what is really an unanswered prompt.
+  if (isClaudeAgent(opts.agent.kind ?? opts.agent.command)) {
+    const trust = trustWorktreeInClaude(opts.worktree);
+    if (trust.status === "set") deps.log("info", `${opts.ticketKey}: trusted ${opts.worktree} in ${trust.path} for claude`);
+    if (trust.status === "failed") deps.log("warn", `${opts.ticketKey}: could not trust ${opts.worktree} in ${trust.path}: ${trust.detail}`);
+  }
   const target = await deps.herdr.agentStart({
     workspaceId: opts.workspaceId,
     cwd: opts.worktree,

@@ -152,7 +152,11 @@ pane and a plain pane always end that way, because `agent start` needs a pane si
 2. **each agent pane**: poll `herdr pane process-info` until the pane's shell is genuinely idle, then
    `herdr agent start <name> --kind <k> --pane <id> --timeout <ms> [-- agent_args…]`, which blocks until
    herdr has detected the agent. Then the pane's optional `prompt:`. A failed agent logs, notifies, and
-   is skipped — it never tears down the layout that is already built.
+   is skipped — it never tears down the layout that is already built. The log line and the notification
+   carry **herdr's own error** (`could not start claude in <pane>: agent_not_ready: … blocked during
+   startup`), which is what tells a harness stuck on a prompt apart from a missing integration.
+   For a `claude` pane the build first marks the worktree trusted in Claude Code's config — see
+   *Claude Code's folder-trust prompt* below.
 
 `blocking: true` gates every pane **command and agent** — dev servers and agents start only after setup
 finishes — while the panes themselves are visible from the start. (Before 0.7.5 it gated pane *creation*,
@@ -160,6 +164,26 @@ because panes were split one CLI call at a time.) An agent on the setup pane wai
 of `blocking`, since it can't start until that pane is back at a prompt.
 
 ---
+
+## Claude Code's folder-trust prompt
+
+Before starting a **`claude`** agent — in a layout pane *or* a dedicated (spawned) pane — the factory
+sets `projects[<worktree path>].hasTrustDialogAccepted = true` in Claude Code's own config:
+`$CLAUDE_CONFIG_DIR/.claude.json` if that variable is set, else `~/.claude.json`.
+
+Without it a fresh worktree can stop `claude` at *"Is this a project you created or one you trust?"*.
+herdr then answers `agent_not_ready: … blocked during startup`, no agent ever becomes ready, and the
+step targeting that pane burns its whole `(1 + 3) × layout_wait_seconds` budget (≈ 40 min) before
+parking.
+
+- The write is **read → set that one key → temp file → rename**: every other key in the file is kept,
+  and a config that doesn't parse is reported in the log (`could not trust <path> in <file>: …`) and
+  left untouched — it holds the user's whole Claude state.
+- It runs on **every** start, not once: a running `claude` rewrites this file, so a lost update costs
+  one re-trust rather than a parked run.
+- Trusting the **parent** (`~/.herdr/worktrees`) is not a substitute. Observed on identical Claude
+  versions: one host honoured the parent key for folders inside it, another did not.
+- Other harnesses (`opencode`, `codex`, …) are untouched.
 
 ## Step → pane targeting
 
@@ -364,7 +388,7 @@ Removing the worktree alone also works: `reapOrphanClaims()` drops `applied/` en
 | phase | behavior |
 |---|---|
 | within the window | logs `<KEY>: <step> waiting for layout pane <tab>/<pane> (<waited>s/<limit>s)` each tick and retries. The clock is `run_steps.started_at`, created on the first attempt so it spans ticks. |
-| window expires, credits left (limit **3**) | bumps the guard counter, **re-arms in place** with a **full fresh window**, records `layout_wait_retry` `{step, tab, pane, attempt, limit}`, logs `… not up after <waited>s — re-arming the wait (retry <a>/<limit>)`. |
+| window expires, credits left (limit **3**) | first **re-starts the layout pane's own agent** if that pane resolves by its configured label and `pane at-shell-prompt` says it is sitting at a prompt with no agent — the same `agent start` the build issues, kind and args straight off the layout pane (`… is at a shell prompt with no agent — re-starting <kind>`), trust pre-answered, and **under the name the build gave that pane** — the layout's agent panes are numbered in build order (`claude-w1`, `claude-w1-2`, …, over the layout as the hook PRUNED it), and herdr refuses a name a live agent still holds, so a layout with several same-kind agent panes could otherwise only ever re-start its first. Then bumps the guard counter, **re-arms in place** with a **full fresh window**, records `layout_wait_retry` `{step, tab, pane, attempt, limit, agentRestarted}`, logs `… not up after <waited>s — re-arming the wait (retry <a>/<limit>)`. A pane that already has an agent (busy, mid-turn, or still starting) is never touched. |
 | credits exhausted | parks: reason `layout_wait_timeout`, attention `<step>: layout pane <t>/<p> never became available`, body `<step> step (belt <belt>): configured pane <t>/<p> didn't come up with an idle agent within <N>min (3 automatic retries exhausted) — is the herdr layout for this worktree running?` |
 
 **Total wall-clock budget is `(1 + 3) × layout_wait_seconds` = 40 min by default.** The escalation body quotes a **single** window (10 min) — it is misleading; ~40 minutes have actually elapsed.
@@ -398,7 +422,8 @@ The counter is also refunded on a successful dispatch. Related: when a live layo
 | Endless wait; `tab list`/`pane list` labels differ from config | title mismatch (case, spaces, emoji), or an **untitled** tab/pane | make step `tab`/`pane` byte-identical to the layout titles; give every targeted tab **and** pane a `title` |
 | Runtime park on a target that "exists" | the target is only in a `layout_matching` layout — load-time allocation checks `default_layout` only | add the pane to `default_layout` too, or accept the runtime behavior |
 | Pane exists but has no `label` | the pane was built outside the factory (hand-split), or `layout.apply` was given an untitled pane | give the pane a `title` in the layout, or `herdr pane rename <id> <title>` by hand |
-| `could not start <kind> in <pane>` in the log + a "agent did not start" notification | that agent's herdr integration isn't installed, or the pane never reached a shell prompt (see the preceding `not back at a shell prompt` warning) | `herdr integration install <agent>`; check the pane's own `command`/setup actually finishes |
+| `could not start <kind> in <pane>: <herdr error>` in the log + an "agent did not start" notification | read the quoted herdr code: `agent_not_ready: … blocked during startup` is the harness stopping on a prompt (for claude, the folder-trust one — see above); otherwise that agent's herdr integration isn't installed, or the pane never reached a shell prompt (see the preceding `not back at a shell prompt` warning) | `herdr integration install <agent>`; check the pane's own `command`/setup actually finishes. The layout wait re-tries the start once per expired window. |
+| `could not trust <worktree> in <file>: …` in the log | Claude Code's config isn't parseable (or isn't writable), so the folder-trust key could not be set — the start goes ahead and may stop on the trust prompt | fix `$CLAUDE_CONFIG_DIR/.claude.json` (else `~/.claude.json`) — the factory never rewrites a config it can't parse |
 | Every layout build fails; `stderr` mentions `layout.apply` / the socket | herdr older than 0.7.5, or a herdr CLI/server protocol mismatch | `herdr update`; `herdr-factory doctor --deep` reports both |
 | `status: failed` row + `layout_apply_failed`, and every retry then skips on freshness | partial apply — the workspace is now multi-tab | fix the underlying herdr failure, then remove + recreate the worktree |
 | Later tabs never spawn; the hook hangs | a `blocking: true` setup command that doesn't terminate (capped at 600 s) | make setup non-blocking, or make it exit |
