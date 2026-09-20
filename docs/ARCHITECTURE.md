@@ -1893,6 +1893,10 @@ on every one of them. The render therefore has three editorial rules, all of the
   counting it, and hoist a cause **more than one** of a host's repos reports identically onto the
   machine header. The rows stay (so `d` still reaches each repo's full detail) — only the repetition
   goes. `shortProblem` cuts the detail at its ` — <hint>` half, which is written for the modal.
+  Because the section REPEATS rows that also appear under their machine, its targets carry
+  `section: "needs"`, which is part of the dashboard's `rowKey`. Without it the two focusables share
+  a key, and the highlight — restored by key across every 3 s refresh — snaps back to the section's
+  copy each poll, dragging the scroll with it. (Found by `tui-board`, not by a unit test.)
 - **`isIdleRepo(r)` / `idleLine(names, stale)`** collapse the repos with no active run, no eligible
   work and no problem into one line. A repo whose status failed to load is **not** idle (that is
   news), a repo with eligible-but-unclaimed work is **not** idle (it is one keypress from running),

@@ -129,6 +129,11 @@ interface Target {
   phase?: string;
   /** A detail too long for a card; surfaced on the action line when the card is highlighted. */
   note?: { text: string; tone: Tone };
+  /** Which part of the board this row sits in. The "needs you" section REPEATS rows that also appear
+   *  under their machine (that is the point of it), so without this the two focusables would share a
+   *  row key — and the highlight, which is restored by key across refreshes, would snap back to the
+   *  section's copy every poll, dragging the scroll with it. */
+  section?: "needs";
   /** Set on a row carried forward from an unverifiable machine: it is last-known state, so nothing
    *  may be acted on through it (the machine is not answering — the action would fail anyway, but
    *  saying so up front is the difference between "refused" and "maybe it worked"). */
@@ -210,7 +215,7 @@ export function createDashboard(
   let showIdle = false;
   let warnedAboutFleet = false;
 
-  const rowKey = (t: Target) => `${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
+  const rowKey = (t: Target) => `${t.section ?? "board"}|${t.machine}|${t.repo}|${t.kind}|${t.belt ?? ""}|${t.key ?? ""}`;
   const beltsKey = (machine: string, repo: string) => `${machine}|${repo}`;
   /** The machine as this view last saw it — how an action learns whether its target is answering. */
   const machineOf = (name: string): MachineView | undefined => lastView?.machines.find((m) => m.name === name);
@@ -481,7 +486,9 @@ export function createDashboard(
           stale: m.stale,
           note: problems.length ? { text: `⚠ ${name}: ${problems.map((p) => p.detail).join(" · ")}`, tone: "bad" } : undefined,
         },
-        problem: own.length ? `⚠ ${shortProblem(own[0]!.detail)}${more}` : undefined,
+        // No ⚠ of its own: `applyLine` renders the suffix as `   ⚠ <problem>`. The old string carried
+        // one too, which is where the issue's `▲▲ 1 problem — press d` came from.
+        problem: own.length ? `${shortProblem(own[0]!.detail)}${more}` : undefined,
       });
       if (!st) {
         specs.push({ kind: "text", content: "  (status unavailable)", fg: theme.text.tertiary });
@@ -553,8 +560,8 @@ export function createDashboard(
         // A run entry is the run: s/x/d/↵ act on it from here, so the operator never has to find it
         // again further down the board. A machine entry is not actionable (nothing to send it to).
         target: item.key
-          ? { machine: item.machine, repo: item.repo, kind: "run", key: item.key, source: item.source, phase: item.phase, stale: item.stale }
-          : { machine: item.machine, repo: "", kind: "machine", stale: true },
+          ? { section: "needs", machine: item.machine, repo: item.repo, kind: "run", key: item.key, source: item.source, phase: item.phase, stale: item.stale }
+          : { section: "needs", machine: item.machine, repo: "", kind: "machine", stale: true },
       });
     }
     specs.push({ kind: "text", content: "", fg: theme.text.tertiary });

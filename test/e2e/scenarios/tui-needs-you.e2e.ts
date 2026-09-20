@@ -41,7 +41,11 @@ async function screenWith(w: World, pane: string, match: RegExp, label: string):
   return screen;
 }
 
-const lineWith = (screen: string, token: string): string => screen.split("\n").find((l) => l.includes(token)) ?? `(no line contains "${token}")`;
+// The LAST line carrying `token`. A pane read is recent scrollback, so a full-screen TUI's buffer
+// holds several frames end to end — the last match is the newest one, and the first would be a
+// screenshot from before whatever we just waited for.
+const lineWith = (screen: string, token: string): string =>
+  screen.split("\n").findLast((l) => l.includes(token)) ?? `(no line contains "${token}")`;
 
 scenario(
   {
@@ -134,11 +138,19 @@ scenario(
     expect(status.active.find((r) => r.ticketKey === SHIP)?.prGreen, "`/status` carries the green-PR watch's own verdict").toBe(true);
 
     // ── and the board leads with them ──────────────────────────────────────────────────────────
-    const board = await screenWith(w, pane!, /needs you/, "the board leads with what needs a human");
-    expect(board.indexOf("needs you"), "the section sits ABOVE the machine headers").toBeLessThan(board.indexOf("✓ local"));
-    expect(lineWith(board, SHIP), "a green PR, named as ready to merge").toMatch(new RegExp(`✓ ${SHIP}\\s+PR #${pr} is green`));
-    expect(lineWith(board, PARK), "a parked run, with its reason rather than a count").toMatch(new RegExp(`⚠ ${PARK}\\s+parked —`));
-    expect(lineWith(board, ASK), "a run holding for an answer").toMatch(new RegExp(`\\? ${ASK}\\s+waiting for a human`));
-    expect(board, "and the section says how many there are").toMatch(/needs you · 3/);
+    // Wait for a frame carrying all THREE: the park, the question and the green land at their own
+    // paces, and a screen with only the heading on it may predate any of them.
+    const board = await screenWith(w, pane!, /needs you · 3/, "the board leads with what needs a human");
+    expect(board.lastIndexOf("needs you"), "the section sits ABOVE the machine headers").toBeLessThan(board.lastIndexOf("✓ local"));
+    // Matched against the whole screen: each of these keys also has a CARD further down its belt, so
+    // picking "the line with the key on it" would be picking between the two.
+    expect(board, "a green PR, named as ready to merge").toMatch(new RegExp(`✓ ${SHIP}\\s+PR #${pr} is green`));
+    expect(board, "a parked run, with its reason rather than a count").toMatch(new RegExp(`⚠ ${PARK}\\s+parked —`));
+    expect(board, "a run holding for an answer").toMatch(new RegExp(`\\? ${ASK}\\s+waiting for a human`));
+    // The repo row names its problem ONCE. The doubled glyph is the `▲▲ 1 problem — press d` the
+    // issue opened on: the row supplied a ⚠ that the renderer was already adding.
+    expect(lineWith(board, "app  @local"), "the repo row carries one ⚠, and a cause rather than a count").toMatch(
+      /app\s+@local\s+active \d+\/\d+\s+⚠ \d+ runs? parked/,
+    );
   },
 );

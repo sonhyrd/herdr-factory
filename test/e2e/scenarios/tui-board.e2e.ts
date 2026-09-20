@@ -57,7 +57,11 @@ async function screenWith(w: World, pane: string, match: RegExp, label: string):
 }
 
 /** The one line of the screen carrying `token` — what gets quoted into a failure message. */
-const lineWith = (screen: string, token: string): string => screen.split("\n").find((l) => l.includes(token)) ?? `(no line contains "${token}")`;
+// The LAST line carrying `token`. A pane read is recent scrollback, so a full-screen TUI's buffer
+// holds several frames end to end — the last match is the newest one, and the first would be a
+// screenshot from before whatever we just waited for.
+const lineWith = (screen: string, token: string): string =>
+  screen.split("\n").findLast((l) => l.includes(token)) ?? `(no line contains "${token}")`;
 
 scenario(
   {
@@ -129,8 +133,11 @@ scenario(
     }
 
     // ── 1. the host gate is printed ONCE, on the header — never per repo row ───────────────────
-    const gate = `cap 0/${MACHINE_CAP} working across all repos`;
+    const gate = "working across all repos";
     expect(board.split("\n").filter((l) => l.includes(gate)).length, `the host gate is on exactly one line:\n${board}`).toBe(1);
+    expect(lineWith(board, gate), "and it is the machine's own line, with this host's occupancy").toMatch(
+      new RegExp(`cap \\d+/${MACHINE_CAP} working across all repos`),
+    );
     // The repo row's old form carried the raw `machine: …` string (machineHeader strips that prefix),
     // so its absence is exactly "no repo row repeats the machine line".
     expect(board, "no repo row repeats the host-wide machine line").not.toContain("machine: cap");
@@ -140,7 +147,9 @@ scenario(
 
     // ── 2. a cause two repos share is named once, on the machine header ────────────────────────
     expect(cause, "the gate's own wording, which is what makes the two repos' problems identical").toBe(SHARED_PROBLEM);
-    expect(lineWith(board, "⚠ board:"), "the shared cause is named on the host header, not counted").toMatch(/^\s+⚠ board: set JIRA_EMAIL/);
+    const hoisted = lineWith(board, "⚠ board:");
+    expect(hoisted, "the shared cause is named, not counted").toContain("board: set JIRA_EMAIL");
+    expect(hoisted, "…on the machine header rather than on a repo row").not.toContain("@local");
     for (const repo of ["probe-a", "probe-b"]) {
       expect(lineWith(board, `${repo}  @local`), `${repo}'s row does not repeat the host's cause`).not.toContain("⚠");
       expect(lineWith(board, `${repo}  @local`), `${repo} keeps its row — a problem repo is never idle`).toContain("active 0/");
@@ -149,7 +158,10 @@ scenario(
 
     // ── 4. a repo with eligible-but-unclaimed work is not idle ─────────────────────────────────
     expect(board, "the unclaimed item is a card on the board").toContain(WAITING);
-    const idleLine = lineWith(board, "idle ·");
+    // This host's own idle line — named by its repos, because the other machine has one too and the
+    // pane buffer holds both.
+    const localIdleIn = (screen: string) => screen.split("\n").findLast((l) => /idle · idle-/.test(l)) ?? "(no `idle · idle-…` line)";
+    const idleLine = localIdleIn(board);
     expect(idleLine, "the working repo is not on the idle line").not.toContain(w.repoName);
     for (const repo of ["probe-a", "probe-b"]) expect(idleLine, `${repo} has a problem, so it is not idle`).not.toContain(repo);
 
@@ -168,14 +180,17 @@ scenario(
     w.herdr.sendKeys(pane!, "i");
     const expanded = await screenWith(w, pane!, /idle-a  @local/, "`i` expands the collapsed repos");
     expect(expanded, "idle-b comes back too").toContain("idle-b  @local");
-    expect(expanded, "and the board says why it is longer").toContain("showing idle repos");
+    expect(expanded, "and with rows of their own they are no longer on an idle line").not.toContain("idle · idle-a");
+    // (The `(showing idle repos — press i to collapse them)` note rides at the BOTTOM of the list,
+    // like the machine filter's, so an expanded seven-repo board pushes it past the pane. What the
+    // collapse is for is proved by the rows themselves coming and going.)
     w.herdr.sendKeys(pane!, "i");
     await screenWith(w, pane!, /idle ·/, "`i` collapses them again");
 
     // ── 2b. `d` on a problem row still opens the full doctor detail ────────────────────────────
     // Walk to the last focusable row and back up one: build-box's header is last, so `up` lands on
-    // probe-b — a repo whose cause was hoisted off its row, which is exactly the row that must not
-    // have lost its detail.
+    // probe-b — a repo whose cause was hoisted OFF its row, which is exactly the row that must not
+    // have lost its detail along with it.
     for (let i = 0; i < 20; i++) {
       w.herdr.sendKeys(pane!, "down");
       await delay(100);
@@ -183,19 +198,37 @@ scenario(
     w.herdr.sendKeys(pane!, "up");
     await delay(400);
     w.herdr.sendKeys(pane!, "d");
-    const detail = await screenWith(w, pane!, /Detail|diagnostics/, "`d` opens the repo's detail");
-    expect(detail, "the detail is the repo's own, and it still names the problem in full").toMatch(/probe-b|JIRA_EMAIL/);
+    const detail = await screenWith(w, pane!, /General diagnostics|⚠ Problems/, "`d` opens the repo's detail");
+    expect(detail, "and the hoisted cause is still there in full, which is what `d` is for").toContain("JIRA_EMAIL");
+    // Esc closes the modal and pops focus to the tab bar; `1` comes back down into the board.
     w.herdr.sendKeys(pane!, "escape");
+    await delay(300);
+    w.herdr.sendKeys(pane!, "escape");
+    await delay(300);
+    w.herdr.sendKeys(pane!, "1");
     await delay(400);
 
     // ── 3 (the new half): a silent machine's collapsed repos read `unverified`, never `idle` ───
     await w.machine("build-box").stop();
-    const blind = await screenWith(w, pane!, /unverified ·/, "the silent machine's collapsed repos say what they are");
-    expect(lineWith(blind, "unverified ·"), "its repo is named, carried forward from the last read").toContain("build-box");
-    expect(blind, "and it is reported as silent, not as idle").toContain("NOT known to be gone");
+    const blind = await screenWith(w, pane!, /unverifiable/, "the board reports the machine it can no longer reach");
+    // A machine that stops answering is something a human has to look at, so it leads the board.
+    expect(blind, "a silent machine is listed under `needs you`").toContain("needs you");
+    expect(lineWith(blind, "needs you ·"), "…and the section counts it").toContain("needs you · 1");
     // This machine's own board is untouched by the other's silence — its idle line still reads `idle`.
-    expect(lineWith(blind, "idle ·"), "the machine that IS answering still collapses its repos as idle").toMatch(/idle · idle-[ab]/);
-    // A machine that stops answering is something a human has to look at.
-    expect(blind, "and a silent machine leads the board").toContain("needs you");
+    expect(localIdleIn(blind), "the machine that IS answering still collapses its repos as idle").toMatch(/idle · idle-[ab]/);
+
+    // The silent machine's own rows are below the fold on a five-repo host, so narrow the board to it
+    // with `m` — which also says that every key that worked before the redesign still works.
+    w.herdr.sendKeys(pane!, "m");
+    await delay(600);
+    w.herdr.sendKeys(pane!, "down");
+    await delay(200);
+    w.herdr.sendKeys(pane!, "down");
+    await delay(200);
+    w.herdr.sendKeys(pane!, "return");
+    const carried = await screenWith(w, pane!, /unverified ·/, "the silent machine's collapsed repos say what they are");
+    expect(lineWith(carried, "unverified ·"), "its repo is named, carried forward from the last read").toContain("build-box");
+    expect(carried, "and it is reported as silent — the rows are last-known, not gone").toContain("NOT known to be gone");
+    expect(carried, "`idle` would be a claim about now, which this read cannot make").not.toContain("idle · build-box");
   },
 );
