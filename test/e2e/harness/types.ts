@@ -131,4 +131,11 @@ export interface ScenarioSpec {
    *  cannot have — and without touching a real herdr's saved machines, which are the operator's.
    *  Reached from a scenario with `w.machine(name)`. */
   fleetMachines?: Record<string, { briefs?: Record<string, string>; config?: (p: WorldPaths) => Record<string, unknown> }>;
+  /** Extra repos served by THIS machine's own server, beside the scenario's main one. Same config
+   *  dir, same state root, same target checkout — one more `repos/<name>/config.yml` over the same
+   *  defaults, with a briefs folder of its own. This is how a scenario gets a MULTI-REPO host, which
+   *  is the shape the board's idle collapse and its per-host problem hoist are about; a fleet
+   *  machine is a whole second server and cannot stand in for it. Reached from a scenario with
+   *  `w.repoPaths(name)`. */
+  extraRepos?: Record<string, { briefs?: Record<string, string>; config?: (p: WorldPaths) => Record<string, unknown> }>;
 }
