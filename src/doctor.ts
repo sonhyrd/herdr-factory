@@ -237,7 +237,13 @@ export function agentTooling(config: Config): AgentTooling {
 let cursorModelsCache: Promise<Set<string>> | undefined;
 function listCursorModels(env?: NodeJS.ProcessEnv): Promise<Set<string>> {
   cursorModelsCache ??= (async () => {
-    const r = await run("cursor-agent", ["models"], { env, timeoutMs: 30_000 });
+    // allowFail + our own message: the raw `exec failed: cursor-agent models (code 1): …` this used
+    // to surface is not a fix hint, and the issue asks every row to carry one.
+    const r = await run("cursor-agent", ["models"], { env, timeoutMs: 30_000, allowFail: true });
+    if (r.code !== 0) {
+      const said = firstLine(`${r.stdout}\n${r.stderr}`);
+      throw new Error(`\`cursor-agent models\` failed (exit ${r.code})${said ? ` — ${said}` : ""} — sign in with \`cursor-agent login\` if it wants authentication`);
+    }
     return new Set([...r.stdout.matchAll(/^(\S+) - /gm)].map((m) => m[1]!));
   })();
   return cursorModelsCache;
@@ -245,6 +251,27 @@ function listCursorModels(env?: NodeJS.ProcessEnv): Promise<Set<string>> {
 /** Test seam / fresh-run reset: the next `listCursorModels` invokes the CLI again. */
 export function resetCursorModelsCache(): void {
   cursorModelsCache = undefined;
+}
+
+/** Presence as a BOOLEAN, for a check that must branch on it rather than fail on it — `run()` turns
+ *  a spawn ENOENT into an ordinary non-zero result under `allowFail`, so a check that goes straight
+ *  to invoking a tool cannot tell "missing" from "broken" and would misdiagnose it. */
+async function isOnPath(tool: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
+  return onPath(tool, env).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** The same remediation the group's other absent-tool rows give: install it, then re-run `install`
+ *  so the SERVICE's frozen PATH picks it up (these checks resolve against that PATH, not a shell's). */
+function missingToolHint(what: string): string {
+  return `not on PATH — install ${what}, then re-run \`herdr-factory install\` so the service PATH picks it up`;
+}
+
+/** The first non-empty line a CLI printed, for quoting its own words back in a ✗. */
+function firstLine(out: string): string {
+  return out.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
 }
 
 /** The "you provide" checks that only a loaded config can gate: cursor-agent (+ its login and the
@@ -255,6 +282,11 @@ export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, e
   // cost ~2s, and running them back to back is what would push `--deep` past "a couple of seconds".
   const checks: (DoctorCheck | Promise<DoctorCheck>)[] = [];
   const usesCursor = tooling.engines.has("cursor");
+  // Presence, resolved ONCE and shared by the rows that invoke cursor-agent. Deep must establish it
+  // before interpreting anything the CLI "said": under `allowFail` a spawn ENOENT arrives as an
+  // ordinary non-zero result, so without this a MISSING binary reads as a signed-out one — and the
+  // operator is told to run `cursor-agent login`, which itself fails with command-not-found.
+  const cursorOnPath = usesCursor && deep ? isOnPath("cursor-agent", env) : undefined;
 
   // 1. cursor-agent. Its login opens a browser and blocks, so it can never be fixed unattended —
   //    naming it here, early, is the whole point.
@@ -265,10 +297,13 @@ export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, e
   } else {
     checks.push(
       attempt("cursor-agent (signed in)", async () => {
+        if (!(await cursorOnPath)) throw new Error(missingToolHint("Cursor's CLI (`cursor-agent`)"));
         const r = await run("cursor-agent", ["status"], { env, allowFail: true, timeoutMs: 30_000 });
-        const out = `${r.stdout} ${r.stderr}`;
-        const who = /logged in as (\S+)/i.exec(out)?.[1];
-        if (!who) throw new Error(`not signed in — run \`cursor-agent login\` on this host (it opens a browser)${r.code !== 0 ? "" : ` [${out.trim().split("\n")[0] ?? ""}]`}`);
+        const said = firstLine(`${r.stdout}\n${r.stderr}`);
+        const who = /logged in as (\S+)/i.exec(`${r.stdout} ${r.stderr}`)?.[1];
+        // Quote the CLI's own first line whichever way it exited — a non-zero exit (a broken
+        // install answering `error: unknown command status`) is exactly when it is worth showing.
+        if (!who) throw new Error(`not signed in — run \`cursor-agent login\` on this host (it opens a browser)${said ? ` [cursor-agent said: ${said}]` : ""}`);
         return who;
       }),
     );
@@ -283,6 +318,9 @@ export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, e
   } else {
     checks.push(
       attempt("cursor models", async () => {
+        // One root cause, one ✗: when the binary is absent the row above already says so and how to
+        // fix it, so this defers rather than repeating it as a second failure.
+        if (cursorOnPath && !(await cursorOnPath)) return "not checked — cursor-agent is not on PATH (see the row above)";
         const known = await listCursorModels(env);
         const gone = models.filter((m) => !known.has(m));
         if (gone.length > 0) throw new Error(`${gone.join(", ")} not in \`cursor-agent models\` — fix the \`--model\` id in this repo's config (a rejected id makes cursor-agent print its model list and exit)`);
@@ -316,7 +354,16 @@ export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, e
   // 4. `ocr` — pr-review's third review track shells out to it, and nothing in the install puts it
   //    there. Only checked when a prompt actually names pr-review.
   const needsOcr = [...tooling.skills.values()].some((names) => names.has("pr-review"));
-  checks.push(needsOcr ? attempt("ocr", () => onPath("ocr", env)) : { name: "ocr", ok: true, detail: "not configured — no prompt names the pr-review skill" });
+  checks.push(
+    needsOcr
+      ? // `ocr` gets a hint of its own rather than the shared `command -v` failure the other
+        //  you-provide tools show: it is the one tool here that NOTHING installs, so "where does it
+        //  come from" is the actual question a ✗ has to answer.
+        attempt("ocr", async () => {
+          if (!(await isOnPath("ocr", env))) throw new Error(`${missingToolHint("`ocr`")} (pr-review's third review track shells out to it; nothing in \`install.sh\` provides it)`);
+        })
+      : { name: "ocr", ok: true, detail: "not configured — no prompt names the pr-review skill" },
+  );
 
   return await Promise.all(checks);
 }

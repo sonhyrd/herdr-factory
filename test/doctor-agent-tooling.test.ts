@@ -9,6 +9,10 @@ import { join } from "node:path";
 import { agentTooling, agentToolingChecks, skillNamesIn, type AgentTooling, type DoctorCheck } from "../src/doctor.ts";
 import type { Config } from "../src/config.ts";
 
+/** Enough PATH for `sh` (which the presence probe spawns) and nothing else — notably no
+ *  `cursor-agent`, which installs under ~/.local/bin or /opt, never here. */
+const SYSTEM_PATH = "/usr/bin:/bin";
+
 const tmps: string[] = [];
 const origHome = process.env.HOME;
 afterEach(() => {
@@ -92,12 +96,14 @@ describe("agentTooling — what a loaded config asks of this host", () => {
 
 /** A PATH holding a fake `cursor-agent` that prints `out` — the only way to exercise the signed-in
  *  check without a real login (and without touching the host's own cursor-agent). */
-function withFakeCursorAgent(out: string): NodeJS.ProcessEnv {
+function withFakeCursorAgent(out: string, code = 0): NodeJS.ProcessEnv {
   const bin = mkdtempSync(join(tmpdir(), "doc-bin-"));
   tmps.push(bin);
-  writeFileSync(join(bin, "cursor-agent"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(out)}\n`);
+  writeFileSync(join(bin, "cursor-agent"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(out)}\nexit ${code}\n`);
   chmodSync(join(bin, "cursor-agent"), 0o755);
-  return { ...process.env, PATH: bin };
+  // /usr/bin:/bin so the PATH probe's own `sh` is still resolvable — `onPath` shells out, so a PATH
+  // of only the fake dir would report "not on PATH" for a binary that is right there.
+  return { ...process.env, PATH: `${bin}:${SYSTEM_PATH}` };
 }
 
 describe("agentToolingChecks — gates and failures", () => {
@@ -147,6 +153,37 @@ describe("agentToolingChecks — gates and failures", () => {
     expect(c.ok).toBe(false);
     expect(c.detail).toContain("cursor-agent login");
     expect(c.detail).toContain("opens a browser"); // it can never be fixed unattended — say so
+  });
+
+  it("deep: a MISSING cursor-agent is not misdiagnosed as a signed-out one", async () => {
+    // `run()` turns a spawn ENOENT into an ordinary non-zero result under `allowFail`, so a deep
+    // check that goes straight to `cursor-agent status` cannot tell "missing" from "signed out" —
+    // and would prescribe `cursor-agent login`, which itself fails with command-not-found.
+    const empty = mkdtempSync(join(tmpdir(), "doc-nobin-"));
+    tmps.push(empty);
+    const checks = await agentToolingChecks(tooling({ cursorModels: new Set(["cursor-grok-4.6-high"]) }), true, { ...process.env, PATH: `${empty}:${SYSTEM_PATH}` });
+
+    const agent = byName(checks, "cursor-agent");
+    expect(agent.ok).toBe(false);
+    expect(agent.detail).toContain("not on PATH");
+    expect(agent.detail).toContain("install");
+    expect(agent.detail, "the login hint would itself fail with command-not-found").not.toContain("cursor-agent login");
+
+    // One root cause, one ✗ — and never a raw exec dump in place of a fix hint.
+    const models = byName(checks, "cursor models");
+    expect(models.ok).toBe(true);
+    expect(models.detail).toContain("not checked");
+    expect(models.detail).not.toContain("exec failed");
+    expect(models.detail).not.toContain("ENOENT");
+  });
+
+  it("deep: a cursor-agent that is present but broken quotes its own words", async () => {
+    // A non-zero exit is exactly when the CLI's own message is worth showing; it used to be shown
+    // only when the exit was 0, so a broken install said nothing but "not signed in".
+    const env = withFakeCursorAgent("error: unknown command status", 2);
+    const c = byName(await agentToolingChecks(tooling(), true, env), "cursor-agent");
+    expect(c.ok).toBe(false);
+    expect(c.detail).toContain("error: unknown command status");
   });
 
   it("deep: a signed-in cursor-agent reports the account", async () => {

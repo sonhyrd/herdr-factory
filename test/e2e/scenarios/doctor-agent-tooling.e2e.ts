@@ -81,6 +81,21 @@ scenario(
     expect(rowOf(cursorText, "cursor models"), "its --model id is reported, and deferred to --deep").toMatch(/cursor-grok-4\.6-high/);
     expect(cursor.code, "and that ✗ fails the command, so a script can gate on it").toBe(1);
 
+    // …and on `--deep`, which is the mode that used to get this WRONG: it skipped the PATH check and
+    // read the ENOENT from `cursor-agent status` as a signed-out account, telling the operator to run
+    // `cursor-agent login` — a command that cannot work on a host with no cursor-agent. This
+    // container is the only place a genuinely absent binary meets a Cursor-asking config.
+    const deep = w.factory.cli(["doctor", "--deep"]);
+    const deepText = `${deep.stdout}${deep.stderr}`;
+    const agentRow = rowOf(deepText, "cursor-agent")!;
+    expect(agentRow, "deep must ✗ the missing binary, not the login").toMatch(/^\s*✗ cursor-agent/);
+    expect(agentRow, "…and say it isn't installed").toMatch(/not on PATH/i);
+    expect(agentRow, "…never prescribing a login that would itself be command-not-found").not.toMatch(/cursor-agent login/);
+    // One root cause, one ✗ — and never a raw exec dump where a fix hint belongs.
+    const modelsRow = rowOf(deepText, "cursor models")!;
+    expect(modelsRow, "the models row defers to it instead of repeating the failure").toMatch(/^\s*✓ cursor models/);
+    expect(modelsRow).not.toMatch(/exec failed|ENOENT/);
+
     // Put it back, and confirm the server rode through both configs.
     writeFileSync(configPath, stringify({ ...withCursor, agent: { command: "claude", flags: [] } }));
     expect(await w.factory.health(), "the server stayed up").toBeTruthy();
