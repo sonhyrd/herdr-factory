@@ -47,6 +47,8 @@ repo's guidance genuinely conflicts with them, follow this prompt and say so in 
    (its documented ones if it has them). Fix everything they report.
 6. **Commit** your work to the branch — code only, and commit incrementally as you go
    (this keeps the dispatcher's progress heartbeat alive).@@COMMIT_CONVENTIONS@@
+7. **Stop any dev server you started** before `step-done` — a server you launched by hand
+   outlives this worktree and holds its port and memory forever.
 
 Do NOT open a PR, and do NOT change the work item's status (the dispatcher owns that).
 
