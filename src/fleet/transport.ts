@@ -81,6 +81,21 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * The floor under every read budget on a machine reached through an SSH forward — including this
+ * transport's own `/health` probes, which is why it lives here rather than beside the client's other
+ * budgets (`client.ts` imports it).
+ *
+ * `baseUrl` is a loopback port, but a request to it is NOT a loopback request: it crosses the
+ * forward to the remote `serve` and back. The short numbers elsewhere (500ms for a local `/health`)
+ * are loopback numbers and are enormous on 127.0.0.1; over a forward, on a box that is merely far
+ * away — or whose server has just restarted and is still warming — they expire while the API is
+ * answering perfectly well. One constant, because three copies of "how long may a read over a
+ * forward take" is how they drift apart: a probe stricter than the read it guards would retire a
+ * healthy forward every poll and fork a replacement, which is the stampede wearing a different hat.
+ */
+export const REMOTE_MIN_READ_TIMEOUT_MS = 2500;
+
 async function answersHealth(baseUrl: string, timeoutMs: number): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
@@ -237,14 +252,20 @@ export class SshForwardTransport implements MachineTransport {
    * A held forward is re-probed rather than trusted: a ControlMaster outlives the remote server it
    * was opened over (a self-update restarts it), `-O check` still says `Master running`, and every
    * read through the forward fails forever. `exitCode` cannot see that — a backgrounded client's is
-   * 0 whether the tunnel is alive or dead — so `/health` on the loopback port is what decides, and
-   * a forward that stops answering is retired so the next `open()` (and its stale-master retry)
-   * can bring the machine back without restarting the TUI.
+   * 0 whether the tunnel is alive or dead — so `/health` is what decides, and a forward that stops
+   * answering is retired so the next `open()` (and its stale-master retry) can bring the machine
+   * back without restarting the TUI.
+   *
+   * The probe is addressed to a loopback port but it is not a loopback probe: it crosses the forward
+   * to the remote host and back, so it gets the same wide-area floor as every other read over one
+   * (`REMOTE_MIN_READ_TIMEOUT_MS`). A tighter budget here would retire a healthy-but-distant
+   * machine's forward on every poll and fork a replacement — the churn this change exists to stop.
+   * One probe per resolution, so a poll costs one round trip however many repos it reads.
    */
   private async resolve(name: string, target: string): Promise<string | null> {
     const held = this.forwards.get(name);
     if (held) {
-      if ((held.backgrounded || held.proc.exitCode === null) && (await answersHealth(held.baseUrl, 1000))) return held.baseUrl;
+      if ((held.backgrounded || held.proc.exitCode === null) && (await answersHealth(held.baseUrl, REMOTE_MIN_READ_TIMEOUT_MS))) return held.baseUrl;
       this.retire(name);
     }
     return this.open(name, target);
@@ -311,7 +332,7 @@ export class SshForwardTransport implements MachineTransport {
       // lives, so only `/health` on the forwarded port — never the client's exit — decides.
       if (code === 0) backgrounded = true;
       probes++;
-      if (await answersHealth(baseUrl, 1000)) {
+      if (await answersHealth(baseUrl, REMOTE_MIN_READ_TIMEOUT_MS)) {
         const forward = { proc, baseUrl, target, localPort: port, backgrounded };
         // `close()` can land while this forward was coming up; caching it then would leave the ssh
         // running with nobody left to stop it.

@@ -268,6 +268,7 @@ describe("fleet ssh forward — one open per machine, recoverable", () => {
 
   const spawnLog = () => join(dir, "spawns");
   const deadFlag = () => join(dir, "dead");
+  const slowFlag = () => join(dir, "slow");
   const controlLog = () => join(dir, "control-commands");
 
   /** A forward that answers /health only while the machine is "up": `touch dead` is the remote
@@ -280,7 +281,12 @@ describe("fleet ssh forward — one open per machine, recoverable", () => {
         'import { createServer } from "node:http";',
         'import { existsSync } from "node:fs";',
         `const dead = ${JSON.stringify(deadFlag())};`,
-        "const srv = createServer((_req, res) => (res.writeHead(existsSync(dead) ? 503 : 200), res.end(\"{}\")));",
+        `const slow = ${JSON.stringify(slowFlag())};`,
+        // `slow` is a machine that is merely FAR AWAY: it answers, a second and a half later.
+        'const srv = createServer((_req, res) => {',
+        '  const reply = () => (res.writeHead(existsSync(dead) ? 503 : 200), res.end("{}"));',
+        "  existsSync(slow) ? setTimeout(reply, 1500) : reply();",
+        "});",
         'srv.listen(Number(process.argv[2]), "127.0.0.1");',
         "setTimeout(() => process.exit(0), 20_000);",
       ].join("\n"),
@@ -319,6 +325,24 @@ exit 0
     expect(spawnedPorts()).toHaveLength(1);
     transport.close();
   });
+
+  it("hands back a held forward that is slow but healthy, instead of replacing it", async () => {
+    // The probe is addressed to 127.0.0.1 but it crosses the forward to the remote host and back, so
+    // it must carry the same wide-area floor as every other read over one. A budget tight enough to
+    // expire on a loaded or transatlantic box would retire a perfectly good forward every poll and
+    // fork a replacement — the churn this whole change exists to stop, arriving as latency instead.
+    countingSsh();
+    writeFileSync(slowFlag(), "");
+    const transport = new SshForwardTransport({ connectTimeoutMs: 8000, controlDir: join(dir, "control") });
+
+    const first = await transport.endpoint(remote);
+    expect(first, "a forward whose /health is slow still comes up").toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(await transport.endpoint(remote), "and the next read is handed the same one").toBe(first);
+    expect(await transport.endpoint(remote)).toBe(first);
+    expect(spawnedPorts(), "no replacement was forked for it").toHaveLength(1);
+    expect(transport.failureDetail(remote)).toBeNull();
+    transport.close();
+  }, 15_000);
 
   it("re-opens a held forward that stops answering /health", async () => {
     countingSsh();
