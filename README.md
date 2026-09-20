@@ -372,7 +372,9 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
   commits (if it commits, the run parks — read-only is enforced), it either passes the work forward
   or **bounces back to work**. Keeping all rework in the work step is deliberate.
 - **pr** — pushes the branch, opens the PR with the evidence URLs embedded, and drives the
-  automated round (CI green, bot comments addressed).
+  automated round (CI green, bot comments addressed). The body also carries forward what the
+  earlier steps wrote down — `## Assumptions` (omitted when there are none) and
+  `## Not proven by any check` — so those facts outlive the worktree teardown deletes.
 
 The run then enters the **reviewing watch**: one batched GitHub GraphQL query per tick covers
 every watched PR, and whenever the review signature changes — new unresolved threads, newly
