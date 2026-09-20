@@ -328,10 +328,14 @@ describe("what the board leads with", () => {
 
   it("names an unverifiable machine, and is empty — so not drawn — when nothing is blocked", () => {
     expect(needsYou([machineView({ repos: [withRuns("app", [activeRun()])] })])).toEqual([]);
-    const blind = needsYou([machineView({ name: "build-box", local: false, state: "unverifiable", detail: "no answer within 2000ms", stale: true })]);
+    const blind = needsYou([machineView(), machineView({ name: "build-box", local: false, state: "unverifiable", detail: "no answer within 2000ms", stale: true })]);
     expect(blind).toHaveLength(1);
     expect(blind[0]!.text).toContain("build-box unverifiable — no answer within 2000ms");
     expect(blind[0]!.key, "a machine entry points at no run").toBeUndefined();
+    expect(
+      needsYou([machineView({ state: "unverifiable" })]),
+      "on an install of one, a silent machine is just the status line's `server not running`",
+    ).toEqual([]);
   });
 
   it("a run on a silent machine is still listed, and marked as un-actionable", () => {
@@ -359,7 +363,7 @@ describe("what the board leads with", () => {
 
   it("a problem reads as its cause, not as a count and a keypress", () => {
     expect(shortProblem("issues: gh auth — run `gh auth login`")).toBe("issues: gh auth");
-    expect(shortProblem("x".repeat(80)).length, "it rides at the end of a repo row").toBeLessThanOrEqual(52);
+    expect(shortProblem("x".repeat(80)).length, "it rides at the end of a repo row").toBeLessThanOrEqual(64);
   });
 
   it("only a repo with no run, no eligible work and no problem is idle", () => {

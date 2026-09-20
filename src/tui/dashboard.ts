@@ -446,7 +446,10 @@ export function createDashboard(
       }
     };
     const suffix = badge ? `  @${m.name}` : "";
-    const shared = sharedProblems(m);
+    // Hoisting a shared cause onto the machine header only works when there IS a header: a
+    // one-machine install draws none, so the rows keep saying it themselves. (`badge` is the fleet
+    // flag — the same condition machineHeader is drawn under.)
+    const shared = badge ? sharedProblems(m) : new Set<string>();
     // Idle repos (no run, no eligible work, no problem) collapse to one line — 17 of 19 rows on a
     // real three-host fleet say nothing but "this repo is being served", which one line says for all
     // of them. `i` brings the full list back for someone confirming a specific repo is there.

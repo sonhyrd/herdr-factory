@@ -167,7 +167,7 @@ export function machineHeader(m: MachineView, readAt: number): { text: string; t
  *  appends for the modal. Truncated, because this rides at the end of a repo row. */
 export function shortProblem(detail: string): string {
   const cause = detail.split(" — ")[0]!.trim();
-  return cause.length > 52 ? `${cause.slice(0, 51)}…` : cause;
+  return cause.length > 64 ? `${cause.slice(0, 63)}…` : cause;
 }
 
 /** Problem details that MORE THAN ONE of this machine's repos report identically — host-wide causes
@@ -221,7 +221,10 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
   const asking: NeedsYouItem[] = [];
   const blind: NeedsYouItem[] = [];
   for (const m of machines) {
-    if (m.state === "unverifiable") {
+    // A silent machine is news when there are others still answering. On an install of ONE it is
+    // just "the server is down", which the status line says at the top of the screen already — and
+    // repeating it here would put a permanent section above a board that is telling you the same.
+    if (m.state === "unverifiable" && machines.length > 1) {
       blind.push({ text: `✗ ${m.name} unverifiable — ${m.detail ?? "no answer"}`, tone: "bad", machine: m.name, repo: "" });
     }
     for (const r of m.repos) {
