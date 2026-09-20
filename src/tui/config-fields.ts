@@ -91,6 +91,7 @@ const LIMITS: [string, string][] = [
   ["max_active_workspaces", "3"],
   ["attention_renotify_seconds", "3600"],
   ["stall_seconds", "2700"],
+  ["idle_nudge_seconds", "300"],
   ["max_bounces", "6"],
   ["max_capture_attempts", "5"],
   ["step_budget_seconds", "3600"],

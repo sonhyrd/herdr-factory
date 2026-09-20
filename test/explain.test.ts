@@ -35,7 +35,7 @@ function ob(overrides: {
       ledger: [],
       ...overrides.intents,
     },
-    watches: { step: "work", guards: [], engine: [], bounceCaps: [], ...overrides.watches },
+    watches: { step: "work", guards: [], engine: [], bounceCaps: [], idleNudge: null, ...overrides.watches },
   };
 }
 

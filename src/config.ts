@@ -672,6 +672,12 @@ export const RepoConfigSchema = z
         // clean break. A belt step ref overrides with `budget_seconds`; a step whose descriptor
         // declares no default (custom) falls back to step_budget_seconds below.
         stall_seconds: z.coerce.number().int().positive().default(2700),
+        // PROACTIVE nudge, in front of the watches above (it replaces none of them). A step whose
+        // pane has sat continuously at its prompt this long gets ONE "if you're done, write the
+        // handoff and run step-done" message — the commonest wedge is an agent that finished and
+        // forgot, which otherwise costs the full stall/budget window plus an operator's attention.
+        // 0 disables it.
+        idle_nudge_seconds: z.coerce.number().int().nonnegative().default(300),
         // SAFETY BACKSTOP for the fix↔evidence/review rework loop — not the intended terminator. The
         // loop is meant to end when evidence/review pass (aligned) or the fix agent asks a human; this
         // cap only catches genuine oscillation. Max times a run may bounce back to any ONE earlier step
@@ -1224,6 +1230,7 @@ export interface Config {
     maxActiveWorkspaces: number;
     attentionRenotifySeconds: number;
     stallSeconds: number;
+    idleNudgeSeconds: number;
     maxBounces: number;
     maxCaptureAttempts: number;
     stepBudgetSeconds: number;
@@ -1674,6 +1681,7 @@ export function loadConfig(repoName: string): Loaded {
       maxActiveWorkspaces: parsed.limits.max_active_workspaces,
       attentionRenotifySeconds: parsed.limits.attention_renotify_seconds,
       stallSeconds: parsed.limits.stall_seconds,
+      idleNudgeSeconds: parsed.limits.idle_nudge_seconds,
       maxBounces: parsed.limits.max_bounces,
       maxCaptureAttempts: parsed.limits.max_capture_attempts,
       stepBudgetSeconds: parsed.limits.step_budget_seconds,

@@ -319,7 +319,7 @@ function build(opts: { multi?: boolean } = {}) {
   const config: Config = {
     repoName: "demo",
     repo: { path: "/main-checkout", baseRef: "origin/master" },
-    limits: { maxActiveWorkspaces: 3, attentionRenotifySeconds: 3600, stallSeconds: 2700, maxBounces: 3, maxCaptureAttempts: 5, stepBudgetSeconds: 3600, tickIntervalSeconds: 60, reconcileConcurrency: 8, maxClaimsPerTick: 10, layoutWaitSeconds: 600 },
+    limits: { maxActiveWorkspaces: 3, attentionRenotifySeconds: 3600, stallSeconds: 2700, idleNudgeSeconds: 300, maxBounces: 3, maxCaptureAttempts: 5, stepBudgetSeconds: 3600, tickIntervalSeconds: 60, reconcileConcurrency: 8, maxClaimsPerTick: 10, layoutWaitSeconds: 600 },
     sources: sources.map((s) => ({ name: s.name, type: s.type, pollIntervalSeconds: s.pollIntervalSeconds, maxActiveWorkspaces: s.maxActiveWorkspaces, cfg: {} })),
     belts,
     layouts: [],

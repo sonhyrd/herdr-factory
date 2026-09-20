@@ -48,17 +48,24 @@ interface Story {
 /** The per-code attention narratives. Keyed by `attention_reason_code`; enriched from the
  *  obligations facts where they carry more than the frozen reason text. An unknown (plugin) code
  *  falls back to the reason text + the guard's derived rescue class. */
-function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: string): Story {
+function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: string, now: number): Story {
   const code = ob.run.attentionReasonCode ?? "";
   const step = ob.run.step ?? ob.watches.step ?? "?";
   const reason = ob.run.attentionReason ?? "needs attention";
   const backstop = "The park is a backstop, not a verdict: a genuine step-done or bounce from the parked step still un-parks the run on its own.";
+  // The fact that separates a WEDGED agent from a merely slow one: the engine already sent this
+  // step's idle agent the "if you're done, signal" nudge, and it still never signalled.
+  const nudgedAt = ob.watches.idleNudge?.nudgedAt ?? null;
+  const nudgeLine =
+    nudgedAt != null
+      ? `The engine already nudged this idle agent ${ago(now, nudgedAt)} and it still never signalled — that is a wedged agent, not a slow one.`
+      : "";
   switch (code) {
     case "step_budget":
       return {
         headline: `The run is parked: the ${step} step ran past its time budget (${reason}).`,
         body: [
-          "The commonest cause is an agent that finished but never ran its step-done command — resume re-prompts an idle agent, so it completes instead of re-parking.",
+          nudgeLine || "The commonest cause is an agent that finished but never ran its step-done command — resume re-prompts an idle agent, so it completes instead of re-parking.",
           backstop,
         ],
         next: [resumeCmd, `If it parks here repeatedly, raise the step's budget_seconds.`],
@@ -66,7 +73,7 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
     case "step_stalled":
       return {
         headline: `The run is parked: the ${step} step stopped committing (${reason}).`,
-        body: [backstop],
+        body: [nudgeLine, backstop].filter(Boolean),
         next: [resumeCmd, "If the work legitimately needs long silent stretches, raise limits.stall_seconds."],
       };
     case "read_only_violation":
@@ -327,7 +334,7 @@ export function explainRun(input: ExplainInput): string[] {
   const { ob, repoName, now } = input;
   const resumeCmd = `herdr-factory --repo ${repoName} resume ${ob.run.key}`;
   const teardownCmd = `herdr-factory --repo ${repoName} teardown ${ob.run.key}`;
-  const story = ob.run.phase === "attention" ? attentionStory(ob, resumeCmd, teardownCmd) : phaseStory(ob, input, resumeCmd);
+  const story = ob.run.phase === "attention" ? attentionStory(ob, resumeCmd, teardownCmd, input.now) : phaseStory(ob, input, resumeCmd);
 
   const where = ob.run.phase === "running" && ob.run.step ? `${ob.run.step} step` : ob.run.phase;
   const lines: string[] = input.heading === false ? [] : [`${ob.run.key} — run #${ob.run.id} on belt ${ob.run.belt ?? "?"} (${where})`, ""];
