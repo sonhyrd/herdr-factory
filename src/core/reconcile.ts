@@ -6,11 +6,12 @@ import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type SourceRuntime } from "./deps.ts";
 import type { LayoutAgent, StepConfig } from "../config.ts";
-import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
+import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, ReviewSig, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
+import { fmtDur } from "./explain.ts";
 import { branchName } from "./branch.ts";
 import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
@@ -2219,6 +2220,44 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
   deps.log("info", `${run.ticketKey}: PR #${prNumber} -> reviewing`);
 }
 
+// --- "ready to merge" notification (the factory NEVER merges) --------------------------------
+// Waiting for a human to press Merge is the biggest single cost in the factory, and nothing used to
+// tell the operator a PR was ready. When a watched PR goes green — open, not a draft, no unresolved
+// review threads, and every check CONCLUDED successfully (pending ≠ green) — notify once, through
+// the same `deps.herdr.notify` path as attention/auth so Collie carries it to the phone.
+//
+// The episode clock lives in `watch_state` keyed (run, 'pull_request', 'pr_green') — no new run
+// column: `basedAt` is when the CURRENT green episode started (null ⇒ not green), and `sig` is the
+// "operator already told" mark for that episode — both cleared the moment it stops being green. So:
+// once per green, never once per tick; a red patch
+// (or a new commit, which puts the checks back to pending) clears the episode, and the next green
+// notifies again. attentionRenotifySeconds throttles nothing here on purpose — a *new* green is news
+// however soon it lands, and the episode rule already makes repeats impossible.
+const GREEN_WATCH = { step: "pull_request", watch: "pr_green" } as const;
+
+async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig): Promise<void> {
+  const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
+  const green = pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
+  if (!green) {
+    // The episode ENDS: clear the clock and the "told them" mark together, so the next green is news
+    // again. (Clearing the mark on red — rather than keying it to the episode's start stamp — is what
+    // makes red → green → red → green two notifications even when both greens land in the same second.)
+    if (st && (st.basedAt != null || st.sig != null)) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { basedAt: null, sig: null });
+    return;
+  }
+  const now = deps.now();
+  const since = st?.basedAt ?? now;
+  if (st?.basedAt == null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { basedAt: since });
+  if (st?.sig != null) return; // already told the operator about THIS green
+
+  const title = pr.title ?? run.summary ?? "";
+  const body = `${run.ticketKey} is ready to merge — PR #${pr.number}${title ? ` "${title}"` : ""} in ${deps.ghRepo}, green for ${fmtDur(now - since)} · ${pr.url}`;
+  await deps.herdr.notify(`herdr-factory: ${run.ticketKey} ready to merge`, body).catch(() => {});
+  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: "notified" });
+  deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "pr_green", detail: { number: pr.number, greenFor: now - since } });
+  deps.log("info", `${run.ticketKey}: PR #${pr.number} is green and mergeable — notified the operator (the factory never merges)`);
+}
+
 async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx: TickCtx): Promise<void> {
   const repo = deps.config.repoName;
   // Prefer the tick's batched snapshot (state + signature in one shared GraphQL request);
@@ -2234,6 +2273,7 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
   // The watch has NO time limit (there is no watch_hours) — it rides until the PR merges or closes.
   const sig = snap?.sig ?? (await deps.github.reviewSignature(deps.ghRepo, pr.number));
   const actionable = sig.unresolved > 0 || sig.failing > 0;
+  await noteGreenPr(deps, run, pr, sig);
   // A review state we haven't handled yet — the trigger to (re)wake the resolver.
   const fresh = actionable && sig.sig !== run.lastThreadSig;
 

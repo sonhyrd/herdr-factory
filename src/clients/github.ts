@@ -13,10 +13,26 @@ interface ThreadsResp {
   };
 }
 interface CheckRollup {
-  statusCheckRollup?: { name?: string; context?: string; conclusion?: string; state?: string }[];
+  statusCheckRollup?: RollupContext[];
 }
 
 const FAILING = /FAIL|ERROR|TIMED_OUT|CANCELLED|FAILURE/;
+/** Not concluded yet. A CheckRun reports `conclusion: null` until it finishes, a StatusContext
+ *  reports state PENDING/EXPECTED — both land here, and both mean "not green YET". */
+const PENDING = /^(|PENDING|EXPECTED|QUEUED|IN_PROGRESS|WAITING|REQUESTED|ACTION_REQUIRED)$/;
+
+type RollupContext = { name?: string; context?: string; conclusion?: string | null; state?: string | null };
+
+/** Split a status-check rollup into the failing check NAMES (they feed the signature hash, so the
+ *  resolver re-wakes when WHICH check is red changes) and a count of checks still running. Shared by
+ *  the batched GraphQL path and the single-PR path so both agree bit-for-bit. */
+function rollupCounts(contexts: RollupContext[]): { failing: string[]; pending: number } {
+  const verdict = (c: RollupContext) => c.conclusion ?? c.state ?? "";
+  return {
+    failing: contexts.filter((c) => FAILING.test(verdict(c))).map((c) => c.name ?? c.context ?? "check"),
+    pending: contexts.filter((c) => PENDING.test(verdict(c))).length,
+  };
+}
 
 /** GitHub's ISO-8601 timestamps → epoch SECONDS (the clock the store and `Run.createdAt` use);
  *  undefined for a missing/unparseable value, so a caller can tell "older than the run" from
@@ -80,11 +96,11 @@ export class GitHubClient {
   /** Look up a PR by number — the durable identity once a run has adopted one. Unlike `--head`,
    *  this keeps resolving after the head branch is deleted (e.g. GitHub auto-delete-on-merge). */
   async prByNumber(repo: string, prNumber: number): Promise<PrInfo | null> {
-    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean }>(
-      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft"],
+    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean; title?: string }>(
+      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft,title"],
       { allowFail: true },
     ).catch(() => null);
-    return pr && pr.number ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft } : null;
+    return pr && pr.number ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft, title: pr.title } : null;
   }
 
   /**
@@ -106,7 +122,7 @@ export class GitHubClient {
       const fields = chunk
         .map(
           (n) =>
-            `pr${n}: pullRequest(number: ${n}) { number state url isDraft ` +
+            `pr${n}: pullRequest(number: ${n}) { number state url isDraft title ` +
             `reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { id } } } } ` +
             `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ` +
             `__typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } } }`,
@@ -118,6 +134,7 @@ export class GitHubClient {
         state: string;
         url: string;
         isDraft?: boolean;
+        title?: string;
         reviewThreads?: { nodes?: { isResolved: boolean; comments?: { nodes?: { id: string }[] } }[] };
         commits?: {
           nodes?: {
@@ -138,16 +155,15 @@ export class GitHubClient {
         const unresolvedIds = (pr.reviewThreads?.nodes ?? [])
           .filter((t) => t.isResolved === false)
           .map((t) => t.comments?.nodes?.[0]?.id ?? "x");
-        const failing = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [])
-          .filter((c) => FAILING.test(c.conclusion ?? c.state ?? ""))
-          .map((c) => c.name ?? c.context ?? "check");
+        const { failing, pending } = rollupCounts(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
         const sig = createHash("sha1").update(JSON.stringify({ t: unresolvedIds, c: failing })).digest("hex");
         out.set(pr.number, {
           number: pr.number,
           state: pr.state as PrState,
           url: pr.url,
           isDraft: !!pr.isDraft,
-          sig: { unresolved: unresolvedIds.length, failing: failing.length, sig },
+          title: pr.title,
+          sig: { unresolved: unresolvedIds.length, failing: failing.length, pending, sig },
         });
       }
     }
@@ -173,11 +189,9 @@ export class GitHubClient {
       ["pr", "view", String(prNumber), "--repo", repo, "--json", "statusCheckRollup"],
       { allowFail: true },
     ).catch(() => ({}) as CheckRollup);
-    const failing = (rollup.statusCheckRollup ?? [])
-      .filter((c) => FAILING.test(c.conclusion ?? c.state ?? ""))
-      .map((c) => c.name ?? c.context ?? "check");
+    const { failing, pending } = rollupCounts(rollup.statusCheckRollup ?? []);
 
     const sig = createHash("sha1").update(JSON.stringify({ t: unresolvedIds, c: failing })).digest("hex");
-    return { unresolved: unresolvedIds.length, failing: failing.length, sig };
+    return { unresolved: unresolvedIds.length, failing: failing.length, pending, sig };
   }
 }

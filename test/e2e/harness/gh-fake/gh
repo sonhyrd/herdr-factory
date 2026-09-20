@@ -239,6 +239,7 @@ function prGraphql(pr) {
     state: pr.state,
     url: pr.url,
     isDraft: !!pr.isDraft,
+    title: pr.title ?? "",
     reviewThreads: threadsGraphql(pr),
     commits: { nodes: [{ commit: { statusCheckRollup: rollupGraphql(pr) } }] },
   };

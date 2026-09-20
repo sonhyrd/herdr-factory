@@ -138,7 +138,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -164,6 +164,7 @@ function build(opts: { multi?: boolean } = {}) {
     reviewSig: 0,
     agentStart: 0,
     notify: 0,
+    notified: [] as [string, string][], // (title, body) of every notification — the ready-to-merge text is asserted
     eligibleQueries: 0, // jira listEligible calls that actually reached the backend
   };
     // Panes in a herdr layout tree — the fake answers layoutApply with that many ids.
@@ -274,7 +275,7 @@ function build(opts: { multi?: boolean } = {}) {
     agentFocus: async (id) => { calls.agentFocus.push(id); },
     focusedPane: async () => state.focusedPane,
     reportPaneDisplay: async (p, d) => { calls.paneDisplay.push([p, d.agentName, d.title ?? null]); },
-    notify: async () => { calls.notify += 1; },
+    notify: async (title, body) => { calls.notify += 1; calls.notified.push([title, body]); },
   };
   const github: GitHubApi = {
     prForBranch: async () => asPrInfo(state.pr),
@@ -2196,7 +2197,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-10", "reviewing", null, { lastThreadSig: "old" });
     state.pr = { number: 10, state: "OPEN", url: "u" };
-    state.sig = { unresolved: 2, failing: 0, sig: "newsig" };
+    state.sig = { unresolved: 2, failing: 0, pending: 0, sig: "newsig" };
     state.paneState = "idle";
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.agentSend.length).toBe(1); // re-prompted the live pr-agent pane
@@ -2219,7 +2220,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     const run = seed(store, worktree, "K-10b", "reviewing", null, { prNumber: 10, resolverActive: true, lastThreadSig: "s0" });
     expect(store.countOccupying("demo")).toBe(1); // occupying while it was resolving
     state.pr = { number: 10, state: "OPEN", url: "u" };
-    state.sig = { unresolved: 0, failing: 0, sig: "s0" }; // resolved — nothing to do
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" }; // resolved — nothing to do
     state.paneState = "idle";
     await reconcileRun(deps, store.getRun(run.id)!);
     const got = store.getRun(run.id)!;
@@ -2241,11 +2242,73 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(store.countOccupying("demo")).toBe(1); // only the newly-claimed run; the watch holds no slot
   });
 
+
+  // --- "ready to merge" notification (issue #52) — the factory still never merges ---------------
+  it("reviewing + PR green (no threads, no failing, nothing pending) → notifies the operator ONCE, with the URL", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-GREEN", "reviewing", null, { prNumber: 20, lastThreadSig: "s0" });
+    state.pr = { number: 20, state: "OPEN", url: "https://gh/pr/20", title: "Fix the thing" };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+    expect(calls.notified[0]![0]).toContain("K-GREEN ready to merge");
+    expect(calls.notified[0]![1]).toContain("https://gh/pr/20");
+    expect(calls.notified[0]![1]).toContain("PR #20");
+    expect(calls.notified[0]![1]).toContain("Fix the thing");
+    // Idempotent: a second tick on the same green says nothing more.
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+    expect(store.getRun(run.id)!.phase).toBe("reviewing"); // nothing merged, nothing torn down
+  });
+
+  it("reviewing + a check still pending → no notification until it concludes", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-PEND", "reviewing", null, { prNumber: 21, lastThreadSig: "s0" });
+    state.pr = { number: 21, state: "OPEN", url: "u" };
+    state.sig = { unresolved: 0, failing: 0, pending: 1, sig: "s0" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" }; // checks finished green
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+  });
+
+  it("reviewing + an unresolved review thread → no notification until the thread is resolved", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-THRD", "reviewing", null, { prNumber: 22, lastThreadSig: "s1" });
+    state.pr = { number: 22, state: "OPEN", url: "u" };
+    state.sig = { unresolved: 1, failing: 0, pending: 0, sig: "s1" }; // already-handled signature → no resolver wake
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+  });
+
+  it("reviewing + draft PR → never notified (it isn't up for review)", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-DRFT", "reviewing", null, { prNumber: 23, lastThreadSig: "s0" });
+    state.pr = { number: 23, state: "OPEN", url: "u", isDraft: true };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+  });
+
+  it("reviewing + red → green → red → green → exactly two notifications", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-FLAP", "reviewing", null, { prNumber: 24, lastThreadSig: "sig-red" });
+    state.pr = { number: 24, state: "OPEN", url: "u" };
+    const red = { unresolved: 0, failing: 1, pending: 0, sig: "sig-red" };
+    const green = { unresolved: 0, failing: 0, pending: 0, sig: "sig-green" };
+    for (const sig of [red, green, green, red, green]) {
+      state.sig = sig;
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(calls.notify).toBe(2);
+  });
+
   it("reviewing + still working → does not pile on", async () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-11", "reviewing", null, { lastThreadSig: "old" });
     state.pr = { number: 11, state: "OPEN", url: "u" };
-    state.sig = { unresolved: 1, failing: 0, sig: "newsig" };
+    state.sig = { unresolved: 1, failing: 0, pending: 0, sig: "newsig" };
     state.paneState = "working";
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.agentSend.length).toBe(0);
