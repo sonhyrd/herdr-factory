@@ -109,11 +109,12 @@ export interface OrphanListener {
   cwd: string;
 }
 
-/** Every LISTENing process in the host (`lsof -nP -iTCP -sTCP:LISTEN`), as {pid, command, port}.
- *  The default (columnar) output is parsed: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME,
- *  with NAME (`*:4100`) second-to-last and `(LISTEN)` last. */
+/** Every LISTENing process on the host, as {pid, command, port}. The columnar output is parsed:
+ *  COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME, with NAME (`*:4100`) second-to-last and
+ *  `(LISTEN)` last. `+c 0` keeps the full command name — lsof truncates it to 9 chars by default,
+ *  which turns the one field an operator identifies the process by into `MainThrea`. */
 async function listeningProcesses(): Promise<{ pid: number; command: string; port: number }[]> {
-  const r = await run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], { allowFail: true, timeoutMs: 15_000 });
+  const r = await run("lsof", ["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN"], { allowFail: true, timeoutMs: 15_000 });
   const out: { pid: number; command: string; port: number }[] = [];
   for (const line of r.stdout.split("\n").slice(1)) {
     const f = line.trim().split(/\s+/);

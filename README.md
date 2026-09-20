@@ -1182,6 +1182,32 @@ silently. Omit `layouts` (and a belt's
 `default_layout`/`layout_matching`) and steps just spawn their own dedicated panes — zero layout
 setup required.
 
+#### Dev servers: tell teardown which port is yours (`hf-port`)
+
+A dev server started in a layout pane is **reparented** when the workspace closes, so without help
+it outlives its own worktree — holding its port (the next run's server then silently moves up the
+range, and an evidence pass can film a stale server on old code) and its whole RSS, which is
+capacity the scheduler believes it has and does not.
+
+Teardown kills it for you if it can find it. Tell it the port by writing one line from whatever
+already picks it — a `setup-worktree.sh`, a layout `setup.command`, or the dev pane's own command:
+
+```sh
+echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"
+```
+
+The worktree's git dir is the right home: it is per-worktree, it is not the checkout the agent
+edits, and it survives until teardown clears the dir. At teardown the factory reads `hf-port`
+**before** removing anything, and once the workspace is closed kills whatever still LISTENs on that
+port (the listener's process group — pnpm is the parent and the server its child — so helpers go
+with it). It is never a pattern kill (`pkill`/`killall` would take out other runs' servers on the
+same host), and never fatal: no file, an unreadable one, or a port nothing is listening on is one
+log line and teardown carries on.
+
+Already leaked? `herdr-factory doctor --deep` lists any listener running inside `~/.herdr/worktrees`
+with no live run — the orphans, with pid, port and cwd. It only reports; teardown is the only thing
+that kills, and only ever its own run's port.
+
 ### Prompts
 
 A step's body is the engine's built-in **base prompt** for its primitive (per source type under

@@ -165,6 +165,30 @@ of `blocking`, since it can't start until that pane is back at a prompt.
 
 ---
 
+## Dev-server panes: write `hf-port` or the server outlives the run
+
+A `command:` pane running a dev server is **reparented** when the run's workspace closes at
+teardown, so by default it survives its own worktree — holding its port (the next run's server
+silently moves up the range, and an evidence pass can film a **stale server on old code**) and its
+whole RSS, which the scheduler still counts as available.
+
+Teardown will kill it, but only if it knows the port. Have whatever picks the port write it into
+the worktree's own git dir — `setup-worktree.sh`, the layout's `setup.command`, or the dev pane's
+command itself:
+
+```sh
+echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"
+```
+
+Teardown reads `hf-port` **before** it removes anything and, once the workspace is closed, kills
+whatever still LISTENs on that port — the listener's **process group**, so a `pnpm dev` parent's
+children (the actual server, its esbuild helpers) go with it. It is **never a pattern kill**
+(`pkill -f`/`killall` would take out other runs' servers on the same host), and never fatal: no
+file, an unreadable one, or a port nothing is listening on is one log line.
+
+Already-leaked servers: `herdr-factory doctor --deep` lists them (pid, port, cwd) and never kills —
+see [troubleshooting.md](./troubleshooting.md) §4.
+
 ## Claude Code's folder-trust prompt
 
 Before starting a **`claude`** agent — in a layout pane *or* a dedicated (spawned) pane — the factory

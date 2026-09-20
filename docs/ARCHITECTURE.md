@@ -1550,8 +1550,11 @@ which silently leaks the workspace + checkout dir. So:
 ```
 0. git -C <worktreePath> rev-parse --abbrev-ref HEAD  → the branch it is on RIGHT NOW (read first —
                                                         the checkout is about to be destroyed)
+0b. read <absolute git dir>/hf-port                   → the dev-server port this run reserved (also
+                                                        read first — the git dir dies with the dir)
 1. herdr worktree remove --workspace <id> --force   → workspace + dir + git registration (primary)
 2. if workspaceExists(<id>) still true → herdr workspace close <id>   → close panes + workspace
+2b. kill the LISTENER on hf-port (group TERM → grace → KILL)          → reap the run's dev server
 3. rmrf <worktreePath> (guarded: never the main checkout)             → clear any orphaned dir
 4. git worktree prune                                                → drop the stale registration
 5. git branch -D <each of: run.branch, run.worktree_name, the observed HEAD branch — never a
@@ -1568,6 +1571,34 @@ claimed under nor the one it ended on. **Protected** branches — the `base_ref`
 checkout has checked out — are skipped with a warning: a worktree that ended up on one is an
 accident, and deleting a shared branch is not teardown's job. The remote/PR branch is GitHub's
 domain (merge auto-delete or left as-is).
+
+### The dev server dies with its run (the `hf-port` handshake, `core/dev-server.ts`)
+
+Steps 1–5 touch workspaces, dirs and refs — never processes. A dev server started inside a layout
+pane is **reparented** when the workspace closes, so it outlived its own worktree and kept its port
+and its whole RSS forever: capacity the scheduler believes it has and does not, and a stale server
+on old code still answering on the conventional port (which is how an evidence pass films the wrong
+thing, and how the next run's server silently moves up its range).
+
+The handshake is one line on each side:
+
+- **The target repo** writes the port it picked into the worktree's own git dir —
+  `echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"` — from whatever already chooses it
+  (a `setup-worktree.sh`, or the dev pane's command in `config.yml`). The git dir is the right home:
+  per-worktree, not the checkout the agent edits, and alive until step 3's `rmrf`.
+- **Teardown** reads it at step 0b and, at step 2b, kills whatever still LISTENs on that port:
+  `lsof -nP -ti tcp:<port> -sTCP:LISTEN` → group `SIGTERM` → grace → `SIGKILL` on whatever is left.
+
+Two rules hold this in place. It kills the **listener's process group**, not a parent pid: pnpm is
+the parent and the dev server is its child — that split is exactly why the orphans survived — and
+the group kill reaps the `esbuild`/cli helpers too (never our own group). And it is **never a
+pattern kill**: no `pkill -f`, no `killall`, or a host running three or four runs would lose its
+siblings' servers. Only the pid(s) holding this run's own port.
+
+A missing, unreadable or implausible `hf-port`, and a port nothing is listening on, are each **one
+log line and carry on** — teardown must never fail because a server was already gone. `doctor
+--deep` reports what already leaked; it never kills, because teardown is the only thing that
+kills and only ever its own run's port.
 
 The terminal status write-back (`merged`/`aborted`/`done`) is **enqueued in the transition
 outbox before cleanup** and attempted immediately — teardown never blocks on it, and a failed
@@ -2172,6 +2203,11 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   the worktree is deregistered). `worktree remove` can exit 0 yet leak the workspace+dir, so
   the fallbacks are active, not defensive-only. This sequence lives once in
   `removeRunWorktree` (teardown + belt deletion share it).
+- **Teardown kills the run's own dev server, and only that** (§9): the port comes from
+  `<git dir>/hf-port`, read BEFORE the `rmrf`; the kill targets the LISTENER's process group after
+  the workspace is closed. Never a pattern kill (`pkill -f`/`killall` would take out sibling runs
+  on the same host), and never fatal — a missing port file or a dead server is one log line.
+  `doctor --deep` reports orphaned worktree listeners; nothing but teardown kills.
 - **A run is identified by its WORKTREE, never by its branch** (§7, *Branch tracking*).
   `runs.worktree_name` is frozen at claim; `runs.branch` follows the worktree (an agent may rename
   it to the repo's convention). Anything that must find or clean up a run — the layout hook's
