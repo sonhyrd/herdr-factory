@@ -2096,6 +2096,12 @@ that stops answering `/health` re-opened, the probe count, ControlPath length
 fallback, unmultiplexed fallback, ssh's stderr surfaced), and end to end against **two real `serve`
 processes** — at the CLI (`fleet-cli`) and through the real TUI in a real PTY (`tui-fleet`, where
 `x` on a key BOTH machines are working may only tear down the one the card belongs to), §13.
+Those two reach the machine by endpoint override, which is read BEFORE the transport does anything;
+`fleet-forward` is the one that goes THROUGH it — a machine declared `ssh: true` gets no override, so
+the shipped transport spawns the harness's fake `ssh` (`test/e2e/harness/ssh-fake`, a loopback proxy
+onto that machine's own `serve`) and the scenario restarts the remote under a live ControlMaster,
+under a TUI kept alive across polls: one forward per machine, `-O cancel` on the forward it replaces,
+and the board back on a fresh port **without the TUI being restarted**.
 
 The TUI's chrome for all this appears **only when there is a fleet**: with one machine the dashboard
 renders exactly as it did before this layer existed, which is what keeps a single-machine install

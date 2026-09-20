@@ -1,0 +1,132 @@
+#!/usr/bin/env node
+// The E2E harness's fake `ssh`. Installed first on PATH inside a scenario world, so the shipped
+// `SshForwardTransport` really spawns it — argv, ControlPath, `/health` polling, tear-down and the
+// stale-master retry are all the production ones. Only the hop is fake: a container has no second
+// host, so the "forward" is a loopback TCP proxy onto the fleet machine's own `serve` port.
+//
+// This is the seam that lets a scenario cover what `HERDR_FACTORY_FLEET_ENDPOINTS` deliberately
+// skips: a machine listed with no endpoint override goes through the real transport, and lands here.
+//
+// PLAIN JavaScript on purpose: extensionless with a shebang, so node cannot strip types from it, and
+// it avoids `require` and top-level `await` so it runs identically whether node reads it as CommonJS
+// or ESM (see gh-fake/gh).
+//
+// Contract, argv shapes and the config schema: see ./README.md.
+// Config: $HF_SSH_FORWARDS (JSON). Logs: the `spawnLog` and `controlLog` it names.
+
+const argv = process.argv.slice(2);
+
+/** The local end of `-L <local>:127.0.0.1:<remote>`, which is the only forward this transport asks
+ *  for. Absent = not a forward request, which for a fake with no other job is a failure. */
+function forwardPort(args) {
+  const i = args.indexOf("-L");
+  if (i < 0) return 0;
+  return Number((args[i + 1] || "").split(":")[0]) || 0;
+}
+
+function main(fs, net, cp) {
+  const cfg = JSON.parse(fs.readFileSync(process.env.HF_SSH_FORWARDS, "utf8"));
+  const append = (file, line) => {
+    try {
+      fs.appendFileSync(file, `${line}\n`);
+    } catch {}
+  };
+  const pidFile = (port) => `${cfg.runDir}/ssh-proxy-${port}.pid`;
+  /** Is the remote behind this target dead? (The scenario's switch — see README.) */
+  const down = (target) => {
+    const e = cfg.targets[target];
+    return !!e && fs.existsSync(e.down);
+  };
+
+  // The proxy itself — this same file, re-exec'd. It is what `ControlPersist` leaves behind: the
+  // client that started it exits 0 while the forward keeps answering.
+  if (argv[0] === "--hf-proxy") {
+    const [, local, remote, downFlag] = argv;
+    const live = new Set();
+    // Once this forward has seen the remote go down it NEVER carries traffic again, even after the
+    // remote comes back. That is the whole nature of a stale ControlMaster: the connection it
+    // multiplexes died with the server, and no amount of waiting revives it — only a new forward on
+    // a new connection works. A proxy that healed itself would let a transport that never re-probes
+    // pass this scenario.
+    let dead = false;
+    const srv = net.createServer((sock) => {
+      if (dead || fs.existsSync(downFlag)) return (dead = true), sock.destroy();
+      const up = net.connect(Number(remote), "127.0.0.1");
+      live.add(sock).add(up);
+      const drop = () => (live.delete(sock), live.delete(up));
+      up.on("error", () => (drop(), sock.destroy()));
+      sock.on("error", () => (drop(), up.destroy()));
+      sock.on("close", drop);
+      sock.pipe(up).pipe(sock);
+    });
+    // Refusing only NEW connections is not enough: the caller's HTTP client keeps its socket alive
+    // between polls, and a pooled connection opened while the remote was up would go on answering
+    // `/health` long after it died. A server that goes away takes its established sockets with it.
+    setInterval(() => {
+      if (!dead && !fs.existsSync(downFlag)) return;
+      dead = true;
+      for (const sock of live) sock.destroy();
+      live.clear();
+    }, 200).unref?.();
+    srv.on("error", () => process.exit(1));
+    srv.listen(Number(local), "127.0.0.1");
+    setTimeout(() => process.exit(0), 600_000); // never outlive the scenario
+    return;
+  }
+
+  // `-O <cmd>` — a control command over the ControlPath, not a forward. Logged verbatim: which one
+  // it is (`cancel` the forward vs `exit` the shared master) and which port it names is the whole
+  // assertion for "a replaced forward is torn down".
+  const o = argv.indexOf("-O");
+  if (o >= 0) {
+    const cmd = argv[o + 1];
+    append(cfg.controlLog, argv.join(" "));
+    // `Master running` exactly when the remote is down — which is the whole point of the real
+    // transport's stale-master rule: `-O check` only pings the LOCAL socket, so a master that
+    // outlived the server behind it still answers. That pair (master running, forward failed) is
+    // what makes one failing open cost TWO connect timeouts, which is what let the TUI's polls
+    // overlap and stampede.
+    if (cmd === "check") process.exit(down(argv[argv.length - 1]) ? 0 : 255);
+    if (cmd === "cancel") {
+      const p = pidFile(forwardPort(argv));
+      try {
+        process.kill(Number(fs.readFileSync(p, "utf8")), "SIGTERM");
+        fs.unlinkSync(p);
+      } catch {}
+    }
+    process.exit(0);
+  }
+
+  const target = argv[argv.length - 1];
+  const entry = cfg.targets[target];
+  if (!entry) {
+    console.error(`ssh: Could not resolve hostname ${target}: harness has no such fleet machine`);
+    process.exit(255);
+  }
+  const local = forwardPort(argv);
+  if (!local) {
+    console.error("ssh: harness fake was not asked for a local forward");
+    process.exit(255);
+  }
+  append(cfg.spawnLog, JSON.stringify({ ev: "start", target, port: local, pid: process.pid, t: Date.now() }));
+  const exit = () => (append(cfg.spawnLog, JSON.stringify({ ev: "exit", target, port: local, pid: process.pid, t: Date.now() })), process.exit(0));
+
+  if (down(target)) {
+    // The remote is down: a real ssh here CONNECTS and its forward simply never answers, so the
+    // client stays alive until the caller's deadline kills it. Staying alive is the point — it is
+    // what makes "how many forwards did the TUI have open at once" observable, which is exactly the
+    // `ps` the stampede was measured with.
+    process.on("SIGTERM", exit);
+    process.on("SIGINT", exit);
+    setTimeout(exit, 60_000);
+    return;
+  }
+  const child = cp.spawn(process.argv[1], ["--hf-proxy", String(local), String(entry.port), entry.down], { detached: true, stdio: "ignore" });
+  child.unref();
+  try {
+    fs.writeFileSync(pidFile(local), String(child.pid));
+  } catch {}
+  exit(); // ControlPersist: the client returns 0 the moment the forward is up
+}
+
+Promise.all([import("node:fs"), import("node:net"), import("node:child_process")]).then(([fs, net, cp]) => main(fs, net, cp));
