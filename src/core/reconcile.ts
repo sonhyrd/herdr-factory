@@ -1,6 +1,6 @@
 import { arbitrateClaim, releaseClaim } from "./claim-guard.ts";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import * as Effect from "effect/Effect";
 import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
@@ -2220,16 +2220,31 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
 // baked step-done command carries the still-valid --pass stamp (neither a resume nor a nudge ever
 // bumps the pass).
 //
-// Both callers — the human `resume` and the proactive idle nudge below — want IDENTICAL behaviour,
-// so it lives here once: a drift between "what resume sends" and "what the watchdog-preempting
-// nudge sends" is a silent bug nobody would see until an agent answered one and not the other.
+// Both callers — the human `resume` and the proactive idle nudge below — send the IDENTICAL text to
+// the identical set of pane states, so that lives here once: a drift between "what resume sends" and
+// "what the watchdog-preempting nudge sends" is a silent bug nobody would see until an agent
+// answered one and not the other.
+//
+// What the two callers do NOT share is the handshake, and they must not:
+//
+//  * `fresh` — resume forces an unmemoized pane read (a one-shot operator action arriving right
+//    after the agent finished); the per-tick nudge rides the ~5s agents memo.
+//  * `confirm` — `agentSend({ confirm: true })` is `agent prompt --wait --until working --timeout
+//    20s`, and BOTH callers run inside the run lock. For a human resume that is fine (one action,
+//    one run). For the per-tick nudge it is actively self-defeating: the lock it pins for up to 20s
+//    is the same lock the `step-done` it is trying to elicit needs, so the agent's signal comes
+//    back `run busy — the next pass will advance the belt` and the step advances a tick later than
+//    it should. A scripted/quiet agent that never reports `working` makes that the COMMON case, not
+//    the rare one. The nudge is therefore fire-and-forget: `nudged` then means "herdr accepted the
+//    submission", not "the agent demonstrably woke up", and the next tick's pane state tells us the
+//    rest for free.
 async function nudgeStepAgent(
   deps: Deps,
   run: Run,
   stepName: string,
   paneId: string,
   lead: string,
-  opts: { fresh?: boolean } = {},
+  opts: { fresh?: boolean; confirm?: boolean } = {},
 ): Promise<{ nudged: boolean; worker?: string }> {
   try {
     const worker = await deps.herdr.paneState(paneId, opts.fresh ? { fresh: true } : undefined);
@@ -2238,9 +2253,9 @@ async function nudgeStepAgent(
       paneId,
       `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief. ` +
         `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`,
-      { confirm: true }, // the recorded `nudged` flag now means "the agent demonstrably woke up"
+      { confirm: opts.confirm === true },
     );
-    deps.log(nudged ? "info" : "warn", `${run.ticketKey}: nudge of the ${stepName} agent (pane ${paneId}) ${nudged ? "landed" : "was not confirmed"}`);
+    deps.log(nudged ? "info" : "warn", `${run.ticketKey}: nudge of the ${stepName} agent (pane ${paneId}) ${nudged ? "submitted" : "was not accepted"}`);
     return { nudged, worker };
   } catch {
     /* best-effort — herdr unreachable / pane gone; the caller's own recovery owns it */
@@ -2645,7 +2660,7 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
         run.step,
         paneId,
         `A human resumed ${run.ticketKey} after it was parked (${run.attentionReason ?? "attention"}).`,
-        { fresh: true },
+        { fresh: true, confirm: true }, // the recorded `nudged` then means "the agent demonstrably woke up"
       ));
       // A human resume is a fresh start for the step — including its idle-nudge episode, so an
       // agent that sat idle through the park can be nudged again if it idles after the resume.
@@ -2742,9 +2757,36 @@ async function teardown(deps: Deps, run: Run, outcome: Outcome, src: SourceRunti
   );
 }
 
+/** Is this process standing inside `dir`? The one question teardown has to ask before it removes a
+ *  worktree — see the hand-over in teardownImpl. Resolved, and matched on a path SEGMENT boundary
+ *  so `/w/run-1` never counts as inside `/w/run-10`. */
+function runningInside(dir: string | null): boolean {
+  if (!dir) return false;
+  const root = resolve(dir);
+  const here = resolve(process.cwd());
+  return here === root || here.startsWith(root + sep);
+}
+
 async function teardownImpl(deps: Deps, run: Run, outcome: Outcome, src: SourceRuntime | undefined): Promise<void> {
   const repo = deps.config.repoName;
   deps.store.updateRun(run.id, { phase: "tearing_down", outcome });
+
+  // NEVER saw off the branch we are standing on. A terminal signal (`step-done` on a belt's last
+  // step, a `bounce` that ends the run, an operator's `teardown`) is applied IN-PROCESS by the CLI
+  // the agent runs — and that CLI lives inside the run's own worktree, in a pane of the workspace
+  // the next line would remove. `herdr worktree remove --force` HUPs every pane in that workspace,
+  // so it kills THIS process mid-call: the run lock it holds is then never released and sits stale
+  // for its whole 300s TTL while every tick logs "busy (nudge in flight)" and the run never reaches
+  // `ended_at`. (It reproduces on any non-PR belt whose last step signals done from its own pane —
+  // a PR belt hides it because teardown lands on the merge watch, which only a tick runs.)
+  //
+  // The tick loop runs OUTSIDE every worktree, and `tearing_down` is re-entered by reconcileRun
+  // (idempotently, from the top), so the safe move is to stamp the phase and hand over. The cost is
+  // one tick of latency on a self-signalled teardown; the alternative is a wedged run.
+  if (runningInside(run.worktreePath)) {
+    deps.log("info", `${run.ticketKey}: teardown (${outcome}) deferred to the next tick — this process is inside the worktree it would remove`);
+    return;
+  }
 
   // Write the terminal lifecycle state back to the source (never blocks cleanup — the outbox
   // keeps retrying after the run ends). No-op for Jira (merged/aborted/done are unmapped → no

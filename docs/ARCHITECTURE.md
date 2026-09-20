@@ -1500,10 +1500,10 @@ watch expires 45-60 minutes later and parks the run for a human who types `resum
 finish in three. So a step whose watches evaluated to *none* and whose pane has been continuously
 `isReadyForInput` for `limits.idle_nudge_seconds` (default 300, `0` disables) is re-prompted once,
 with the same message `resume` sends — both callers go through one `nudgeStepAgent` helper, because
-a drift between them would be a silent bug. The nudge parks nothing; it only tries to make the park
-unnecessary.
+a drift in the TEXT between them would be a silent bug. The nudge parks nothing; it only tries to
+make the park unnecessary.
 
-Two rules keep it cheap and non-destructive:
+Three rules keep it cheap and non-destructive:
 
 - **Once per idle EPISODE, not per tick.** The mark is one `watch_state` row (`run`, the step,
   `idle_nudge`) — no new run column, the same shape as the `pr_green` mark: `based_at` = when the
@@ -1515,6 +1515,15 @@ Two rules keep it cheap and non-destructive:
   one-shot interactive action; this runs every tick for every running step, so it rides the ~5s
   agent-list memo — otherwise it re-adds the O(runs) herdr call per tick the batched snapshot work
   exists to avoid (asserted in the `idle-nudge` e2e lane, the way `graphqlCallCount` is for the PR watch).
+- **Fire-and-forget, never `confirm`.** `agentSend({ confirm: true })` is `agent prompt --wait
+  --until working --timeout 20s`, and both callers run inside the run lock. For a human resume that
+  is fine — one action, one run. For the per-tick nudge it is self-defeating: the lock it would pin
+  for up to 20s is the same lock the `step-done` it is trying to elicit needs, so the agent's signal
+  comes back `run busy — the next pass will advance the belt` and the step advances a tick late. An
+  agent that never reports `working` (a quiet harness) makes that the common case. So the idle nudge
+  submits and moves on; its `nudged` flag means "herdr accepted the submission", and the next tick's
+  pane state says the rest for free. Only `resume` keeps `{ fresh: true, confirm: true }`, where
+  `nudged` still means "the agent demonstrably woke up".
 
 A `working` pane is never nudged (injecting a foreign turn interleaves two conversations) and a gone
 pane is the respawn machinery's job. Each nudge records an `idle_nudge` event, and `explain`'s
@@ -1599,7 +1608,20 @@ repos), acquired with a TTL via the CLI.
 
 ## 9. Teardown
 
-herdr-first, but **verify-and-fall-back** — because `herdr worktree remove` can
+**First: never saw off the branch we stand on.** Every terminal signal — a `step-done` on a belt's
+last step, a `bounce` that ends the run, an operator's `teardown` — is applied **in-process by the
+CLI the agent runs**, and that CLI's cwd is the run's own worktree, in a pane of the workspace the
+sequence below removes. `herdr worktree remove --force` HUPs every pane in that workspace, so it
+kills the very process making the call, mid-call: the run lock that process holds is never released
+and sits stale for its whole 300s TTL while every tick logs `busy (nudge in flight)`, and the run
+never reaches `ended_at`. `teardownImpl` therefore stamps `phase = tearing_down` with the outcome
+and **hands over** whenever `process.cwd()` is inside `run.worktree_path`; `reconcileRun` re-enters
+`tearing_down` idempotently from the top, and the tick loop runs outside every worktree. The cost is
+one tick of latency on a self-signalled teardown. A PR belt never noticed this, because its teardown
+lands on the merge watch, which only a tick runs — it is a non-PR belt whose last step signals done
+from its own pane that wedges.
+
+Then: herdr-first, but **verify-and-fall-back** — because `herdr worktree remove` can
 deregister the git worktree and then error before closing the workspace (it exits 0
 with an error body, and once the git worktree is gone the command can't recover),
 which silently leaks the workspace + checkout dir. So:

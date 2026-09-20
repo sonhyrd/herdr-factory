@@ -2168,6 +2168,32 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.branchDelete).toContain("fix/K-9-s");
   });
 
+  // A terminal signal is applied IN-PROCESS by the CLI the agent runs, and that CLI's cwd is the
+  // run's own worktree. `herdr worktree remove --force` HUPs every pane in the workspace — killing
+  // that very process mid-call, so its run lock sits stale for the whole 300s TTL and the run never
+  // reaches ended_at. Teardown must hand over to the tick loop, which runs outside every worktree.
+  it("teardown DEFERS when this process is standing inside the worktree it would remove", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-CWD", "reviewing", null, {});
+    state.pr = { number: 11, state: "MERGED", url: "u" };
+    const cwd = process.cwd();
+    try {
+      process.chdir(worktree); // exactly where an agent's `step-done`/`teardown` CLI runs
+      await reconcileRun(deps, store.getRun(run.id)!);
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(store.getRun(run.id)!.phase, "the outcome is stamped and the hand-over is visible").toBe("tearing_down");
+    expect(store.getRun(run.id)!.outcome).toBe("merged");
+    expect(calls.worktreeRemove, "nothing was removed from under the running process").toEqual([]);
+    expect(store.getRun(run.id)!.endedAt).toBeNull();
+
+    // …and the next tick, running outside the worktree, finishes it.
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("done");
+    expect(calls.worktreeRemove).toContain("w1");
+  });
+
   it("teardown kills the dev server on the port the run reserved (hf-port), before the dir goes", async () => {
     const { deps, store, state, worktree, calls } = build();
     // The handshake the target repo's setup/dev command writes: the chosen port in the WORKTREE's
