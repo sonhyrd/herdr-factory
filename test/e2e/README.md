@@ -97,7 +97,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `evidence` | the opt-in evidence station captures, publishes through the `local` publisher, and the resident server serves the bytes |
 | `evidence-publish-retry` | a failing publisher retries in the background, flags the run's `problem`, and delivers once `intents/recover` is called |
 | `capture-cap` | a flaky capture loop parks at the cap — and the station's own verdict still wins |
-| `pr-review-watch` | a draft PR keeps the step-done gate, a ready one hands off without it, and a new review thread wakes a resolver that holds a slot only while working |
+| `pr-review-watch` | a draft PR keeps the step-done gate, a ready one hands off without it, a new review thread wakes a resolver that holds a slot only while working, and a green PR notifies the operator once per green — while the factory never merges it |
 | `pr-closed-park` | a PR closed without merging parks for a human and keeps its worktree |
 | `teardown-dev-server` | issue #48: a real listener in its own process group, with its cwd in the worktree and its port in `<git dir>/hf-port`, is dead and its port free once the run tears down — and a run with **no** `hf-port` still ends `merged` with its worktree and branch reaped |
 | `belt-matrix` | priority order, a `match` predicate, first-match-wins, an `active: false` belt that takes nothing, and the per-source cap |
