@@ -1877,6 +1877,33 @@ upload shows even while its `evidence` step reads _done_. It's computed server-s
 (`/status` `active[].problem`, from `undeliveredEvidenceUploadsForRun` where a failure has been
 recorded) so any `/status` reader sees it; the needs-a-human red (attention/failed) still outranks it.
 
+**What the board says, and how often.** A fleet board is mostly repos with nothing happening in
+them: on three hosts, 17 of 19 rows carried no work, and the host-wide `machine.yml` gate was printed
+on every one of them. The render therefore has three editorial rules, all of them pure functions in
+`tui/fleet-view.ts` so they unit-test as data:
+
+- **`needsYou(machines)`** builds the section that heads the board — green PRs waiting on a merge,
+  runs parked for `attention`, runs in `waiting_for_human`, and `unverifiable` machines, in that
+  order. It reads the whole fleet, not the filtered view: a PR waiting on another box is still
+  waiting. Empty ⇒ the section is not drawn at all, because a heading that usually reads "nothing"
+  teaches an operator to skip the top of the screen. The green half needs a fact the API had to start
+  carrying: `active[].prGreen`, read straight off the `pr_green` watch state (`watch_state`, step
+  `pull_request`) — a DB read on the quick path, never a GitHub call on the 3 s poll.
+- **`sharedProblems(m)` / `shortProblem(detail)`** name a problem on its row by its cause rather than
+  counting it, and hoist a cause **more than one** of a host's repos reports identically onto the
+  machine header. The rows stay (so `d` still reaches each repo's full detail) — only the repetition
+  goes. `shortProblem` cuts the detail at its ` — <hint>` half, which is written for the modal.
+- **`isIdleRepo(r)` / `idleLine(names, stale)`** collapse the repos with no active run, no eligible
+  work and no problem into one line. A repo whose status failed to load is **not** idle (that is
+  news), a repo with eligible-but-unclaimed work is **not** idle (it is one keypress from running),
+  and on an `unverifiable` machine the line reads `unverified`, never `idle` — the collapsed rows are
+  a remembered read, and "idle" would be a claim about now. `i` expands them.
+
+`tui/kanban.ts` adds **`compactBoard(lanes, width)`** for the same reason: a belt holding one or two
+cards renders one line per card (`● 54  work  48m  nudge an idle agent…`) instead of spending five
+column headers and a rule to say it. Cells keep their lane/card indices, so hit-testing and target
+resolution are identical to the grid's, and the grid returns the moment work is spread across steps.
+
 **Theme.** `src/tui/theme.ts` is the only module in `src/tui` that names a color, and it resolves
 which palette to build at **module import** — i.e. once, on the TUI's startup path, before the
 renderer exists: `HERDR_FACTORY_THEME`, else `[theme] name` from herdr's own `config.toml`
@@ -1966,7 +1993,7 @@ the TUI's fleet dashboard is the next.
 | `fleet/client.ts` | **`MachineClient`** — the whole set a UI needs (status, eligible, timeline, obligations, health, claim, teardown, resume, retry-now, tick, reload), resolved through the transport on every call. It is what the TUI reads and acts through for *every* machine, this one included; `tui/api.ts` keeps only the local hot-reload nudge the config editor fires. Reads answer `null` for an unreachable machine; actions answer `{ ok: false, error }`. Nothing throws for unreachability: that is data. `failureDetail()` passes the transport's reason (ssh's stderr) through to the view. |
 | `fleet/shapes.ts` | The API response shapes, as a zero-import leaf — moved out of `tui/api.ts` (which re-exports them) so a UI or a CLI reader can depend on what the server answers without dragging in reconcile. |
 | `fleet/read.ts` | The **merged view** (`readFleet`), the **routing rule** (`routeRun`), and the primitive both the CLI and the TUI read through: `readMachines(clients, read)` — every machine in parallel under its own budget, each answering `ok` with whatever the caller went there for, or `unverifiable` with the time it last answered (and the transport's reason when it has one). WHAT is read differs per surface (the CLI wants statuses, the TUI also wants eligible work); the timeout, the verdict and the last-seen memo must not, or one surface will eventually report a machine it could not reach as a machine with nothing on it. |
-| `tui/fleet-view.ts` | The **TUI's** window onto the fleet: the merged per-machine view the Dashboard renders (repos, runs, eligible work), the carry-forward that keeps an unverifiable machine's last known rows on screen, the header/status formatting, and `clientFor` — the one route an action may take. Eligible work is read in a second phase, as the single-machine dashboard always has, so a lagging source query can never turn a healthy machine `unverifiable`. |
+| `tui/fleet-view.ts` | The **TUI's** window onto the fleet: the merged per-machine view the Dashboard renders (repos, runs, eligible work), the carry-forward that keeps an unverifiable machine's last known rows on screen, the header/status formatting, the board's editorial rules (`needsYou`, `sharedProblems`/`shortProblem`, `isIdleRepo`/`idleLine` — see below), and `clientFor` — the one route an action may take. Eligible work is read in a second phase, as the single-machine dashboard always has, so a lagging source query can never turn a healthy machine `unverifiable`. |
 
 Two invariants carry `read.ts`, and both exist because the alternative misleads an operator:
 
