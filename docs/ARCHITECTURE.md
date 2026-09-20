@@ -1494,6 +1494,33 @@ per-step **budget** (the ref's `budget_seconds`, else the primitive's default, e
 `step_budget_seconds`). Past the budget while the
 agent isn't actively `working`, or stalled past `stall_seconds`, the run → `attention`.
 
+**In front of both: the idle nudge.** The commonest wedge is an agent that finished its work — or
+drifted off — and never ran `step-done`: perfectly alive, sitting at its prompt, invisible until a
+watch expires 45-60 minutes later and parks the run for a human who types `resume` and watches it
+finish in three. So a step whose watches evaluated to *none* and whose pane has been continuously
+`isReadyForInput` for `limits.idle_nudge_seconds` (default 300, `0` disables) is re-prompted once,
+with the same message `resume` sends — both callers go through one `nudgeStepAgent` helper, because
+a drift between them would be a silent bug. The nudge parks nothing; it only tries to make the park
+unnecessary.
+
+Two rules keep it cheap and non-destructive:
+
+- **Once per idle EPISODE, not per tick.** The mark is one `watch_state` row (`run`, the step,
+  `idle_nudge`) — no new run column, the same shape as the `pr_green` mark: `based_at` = when the
+  pane was first seen idle, `sig` = the branch HEAD at the moment the nudge went out. The episode
+  ends — and the row clears — when the pane goes `working` again, or when HEAD moves (a turn can
+  start and finish between two ticks, so `working` alone would miss it). Idle → nudge → work → idle
+  is two nudges; idle for an hour is one. A `resume` clears the row too: the step starts over.
+- **Memoized pane state, never `fresh: true`.** The resume path forces a fresh read because it is a
+  one-shot interactive action; this runs every tick for every running step, so it rides the ~5s
+  agent-list memo — otherwise it re-adds the O(runs) herdr call per tick the batched snapshot work
+  exists to avoid (asserted in the `idle-nudge` e2e lane, the way `graphqlCallCount` is for the PR watch).
+
+A `working` pane is never nudged (injecting a foreign turn interleaves two conversations) and a gone
+pane is the respawn machinery's job. Each nudge records an `idle_nudge` event, and `explain`'s
+`step_budget` / `step_stalled` narratives report it — "the engine already nudged this idle agent N
+ago and it still never signalled" is what tells an operator this is a wedged agent, not a slow one.
+
 **Liveness never acts on uncertainty.** herdr being unreachable (`HerdrUnreachableError`) defers
 both the watchdog and the dead-pane check to a later tick — a false "worker: gone" must not park
 a healthy run, and a false "pane dead" is worse: the respawn would put a **duplicate agent** into
@@ -1704,7 +1731,9 @@ about to revert. It's driven two ways:
       (`resolver_active`); parked `attention`/`waiting_for_human` runs and idle PR-watches hold no
       slot, so neither human-blocked runs nor long-lived PRs-in-review starve the belt. The PR watch
       has no time limit — there is no `watch_hours`.)
-      / `attention_renotify_seconds` / `stall_seconds` / `max_bounces`
+      / `attention_renotify_seconds` / `stall_seconds`
+      / `idle_nudge_seconds` (the proactive idle nudge's window — default 300, `0` disables)
+      / `max_bounces`
       / `max_capture_attempts` (evidence capture attempts per pass before `attention`)
       / `step_budget_seconds` (fallback per-step budget — used when a step sets no `budget_seconds`
       and its primitive declares no default; the primitive defaults are `work` 5400 / `evidence` 2400

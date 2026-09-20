@@ -342,6 +342,8 @@ A step's guards are declarations on its descriptor; the watch harness walks them
 
 `heartbeat` is declared **before** `budget` on the descriptors so a stall diagnosis wins when both windows have expired.
 
+**The idle nudge sits in front of all of them** and is not a guard — it never parks. When a running step's watches evaluate to `none` and its pane has been continuously `isReadyForInput` (`idle`/`done`) for `limits.idle_nudge_seconds` (default **300**, `0` disables), the engine sends it the same message `resume` sends — "continue the step; if it is already complete, write your handoff note and run the step-done command now" — pointed at `.memory/herdr-factory/prompt-<step>.md`, whose baked `--pass` stamp is still valid (a nudge never bumps the pass). Once per idle **episode**, marked in a `watch_state` row (`run`, step, `idle_nudge`): `based_at` = first seen idle, `sig` = the HEAD when the nudge went out. The episode ends — and the row clears — when the pane goes `working` again, when HEAD moves, or on a `resume`. A `working` pane is never nudged; a gone pane belongs to the respawn path. It rides the memoized pane state, so it costs no extra herdr call per tick. Each nudge records an `idle_nudge` event (`detail`: `step`, `pane`, `nudged`, `idleSeconds`), and `explain` reports it in the `step_budget` / `step_stalled` narratives.
+
 `read_only` deserves its own note (RWR-18204): the baseline **tracks** live HEAD while `based_at` is null — absorbing the previous step's trailing handoff-window commits — and **freezes** the first pass on which this step's own pane reads `working`. Only a HEAD move after the freeze trips. So a prior step's late commit does not park a read-only review step.
 
 Two engine-universal watches are not GuardSpecs:

@@ -490,6 +490,13 @@ Both forms end with the ready-made
 |---|---|---|---|---|
 | `step_budget` | `budget` watch (watchdog stage) | `<step> step over budget (worker: <paneState>)` | **yes** — a genuine `step-done` **or** `bounce` from the parked step | `resume <KEY>` (re-bases the budget clock, refunds capture/layout counters, nudges an idle pane). Raise the step's `budget_seconds` if it parks repeatedly. A `working` pane is never parked by a timer — the trip is held as `extend` |
 | `step_stalled` | `heartbeat` watch, only on steps producing `commits` | `<step> step stalled (worker: <paneState>)` | **yes** | No new commits for `limits.stall_seconds` (default 2700) while the pane isn't `working`. Same fix as budget |
+
+Both `step_budget` and `step_stalled` should now be **rare for a merely forgetful agent**: an idle
+pane is re-prompted once after `limits.idle_nudge_seconds` (default 300) long before either window
+expires, and `explain <KEY>` says so — *"The engine already nudged this idle agent N ago and it still
+never signalled — that is a wedged agent, not a slow one."* When you see that line, `resume` will
+probably not help either: the agent is stuck, not slow. Check the pane itself. A park with **no**
+such line, on the other hand, is an agent that was genuinely working (or `idle_nudge_seconds: 0`).
 | `read_only_violation` | `read_only` watch, **`pre_advance`** stage | `<step> is read-only but committed (HEAD moved)` | **yes** — a `step-done` also clears the enforcement baseline | Inspect `detail.baseline` → `detail.head`. If the commit was legitimate/foreign, `step-done` or `resume` (which re-bases `read_only`) clears it. The baseline *tracks* HEAD until this step's own agent is first seen `working`, so a prior step's trailing commit should not park it |
 | `capture_limit` | capture-attempt counter past `limits.max_capture_attempts` (5) | `capture attempt N over cap (C) on <step>` | **yes** | `resume` refunds `capture_cap`. Real cause is usually a flaky app or an undemonstrable change — fix the app or bounce the work back |
 | `layout_wait_timeout` | layout wait after `1 + 3` windows | `<step>: layout pane <tab>/<pane> never became available` | **respawn** (bounded, limit 3, counter shared with the in-place re-arm) | §2.3. `resume` refunds the respawn budget. The commonest configuration cause — an untargeted **first** step killing the layout build — is now rejected at load, so a park here points instead at the plugin link (`herdr plugin link`), a title that doesn't match the layout's real tab/pane, or a belt whose layout comes only from a `layout_matching` rule (unchecked at load) |
@@ -813,6 +820,11 @@ Compare `age_sec` for `budget` against the step's `budget_seconds`, and for `hea
 `limits.stall_seconds`. `read_only` with `based_at IS NOT NULL` = the baseline is **frozen** (only a
 HEAD move after that trips); `NULL` = still tracking. Rows are never deleted — `sig IS NULL AND
 based_at IS NULL` means "deliberately cleared", not "absent".
+
+`idle_nudge` is the proactive nudge's episode, not a watch that can park: `based_at` = when the pane
+was first seen at its prompt, `sig` = the branch HEAD at the moment the one nudge of that episode
+went out (`NULL` = the `limits.idle_nudge_seconds` window has not elapsed yet). Both `NULL` = no open
+episode (the pane is `working`, HEAD moved, or the run was resumed).
 
 **Q9 — human questions and their poll clocks**
 

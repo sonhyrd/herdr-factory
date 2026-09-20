@@ -95,6 +95,7 @@ Full key tree — `!` = required, everything else optional with the default show
 ```
 repo!                     { path! , base_ref="origin/main" , github=<git origin> }
 limits                    { max_active_workspaces=3 , attention_renotify_seconds=3600 , stall_seconds=2700 ,
+                            idle_nudge_seconds=300 ,
                             max_bounces=6 , max_capture_attempts=5 , step_budget_seconds=3600 ,
                             tick_interval_seconds=60 , reconcile_concurrency=8 , max_claims_per_tick=10 ,
                             source_poll_interval_seconds=<unset> , layout_wait_seconds=600 }
@@ -161,6 +162,7 @@ Every field is defaulted (the whole block has `.prefault({})`, so omitting it is
 | `max_active_workspaces` | positive | **3** | Repo-wide ceiling on claimed workspaces. |
 | `attention_renotify_seconds` | positive | **3600** | Re-notify interval for an item still needing attention. |
 | `stall_seconds` | positive | **2700** | Heartbeat / commit-stall window before a step is declared stalled. |
+| `idle_nudge_seconds` | **non-negative** (0 legal) | **300** | How long a running step's pane may sit at its prompt before the engine re-prompts it **once** ("if the step is already complete, write your handoff and run step-done"). Sits in front of the watchdogs; `0` disables it. |
 | `max_bounces` | **non-negative** (0 legal) | **6** | Bounces before escalation; per-belt override. |
 | `max_capture_attempts` | **non-negative** (0 legal) | **5** | Evidence capture attempts before escalation. |
 | `step_budget_seconds` | positive | **3600** | Last-resort step budget (only when the descriptor has no default). |
