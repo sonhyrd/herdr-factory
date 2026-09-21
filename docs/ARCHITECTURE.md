@@ -1210,7 +1210,10 @@ re-advance, and each pass's re-rendered prompt stamps its `step-done`/`bounce` c
 call, a server+fallback double-apply, an agent re-running a remembered command from a previous
 pass — is **rejected** instead of completing (or rewinding) a pass it doesn't belong to; a
 `step-done` naming a non-active step is likewise rejected loudly (or acknowledged as a no-op when
-that step is already done) rather than recorded and silently wiped by the next entry's re-base.
+that step is already done) rather than recorded and silently wiped by the next entry's re-base. The
+one exception is the belt's PR-opening step while the run is in `reviewing`: the hand-off to the PR
+watch clears `run.step` before that agent signals, so its `step-done` is accepted there — and it has
+to be, because the ready-to-merge watch waits on it.
 When a rework pass completes, its `feedback-<step>.md` is archived as
 `feedback-<step>-addressed-pass<N>.md`, so a later pass's re-render can't resurrect
 already-addressed findings. The bounce re-dispatch goes through `spawnStep` — the single dispatch
