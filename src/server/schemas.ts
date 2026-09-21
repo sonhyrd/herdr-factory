@@ -160,6 +160,10 @@ const StatusResponse = z
         // The pr_green watch's mark for this run's current head: the PR is green and waiting on a
         // human to merge. The dashboard's "needs you" section leads with these.
         prGreen: z.boolean().optional(),
+        // Where this run lives on the web, resolved from config (no network): the PR, and the work
+        // item. The dashboard's o/O open them and the #NN refs link to them.
+        prUrl: z.string().nullable().optional(),
+        itemUrl: z.string().nullable().optional(),
       }),
     ),
     // Repo-level problems for the dashboard's red per-repo light: runs parked for attention,

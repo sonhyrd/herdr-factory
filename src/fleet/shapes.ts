@@ -35,6 +35,12 @@ export interface ActiveRun {
    *  draft, has no unresolved threads and every check concluded green — i.e. it is waiting on a human
    *  to press Merge (the factory never merges). Absent on older servers. */
   prGreen?: boolean;
+  /** The run's PR on the web, once it has one. Built server-side from the resolved PR repo, so a
+   *  remote machine's run carries a URL the dashboard can open LOCALLY (the TUI's `o`). */
+  prUrl?: string | null;
+  /** The work item on the web (GitHub issue, Jira browse, Sentry issue) — the source descriptor's
+   *  `itemUrl`, from config alone. Null for a source with no addressable item (local_markdown). */
+  itemUrl?: string | null;
 }
 
 export interface RepoStatus {

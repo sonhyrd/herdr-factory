@@ -55,6 +55,7 @@ import { MIN_COLUMN_WIDTH, buildLanes, compactBoard, layoutKanban, looseLane, ty
 import { formatWorkItemDetail } from "./work-detail.ts";
 // A LEAF module (type-only imports) — safe in the TUI's eager startup graph.
 import { explainRun } from "../core/explain.ts";
+import { linkRefs, openUrl, rowUrl } from "./open-url.ts";
 
 function fmtTime(ts: number): string {
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or milliseconds
@@ -135,6 +136,11 @@ interface Target {
    *  row key — and the highlight, which is restored by key across refreshes, would snap back to the
    *  section's copy every poll, dragging the scroll with it. */
   section?: "needs";
+  /** Where this row lives on the web (run rows only), resolved by the machine that OWNS the run and
+   *  carried with it — so a remote run's PR opens in THIS machine's browser. `o` opens `prUrl`
+   *  (falling back to the work item while there is no PR), `O` always opens `itemUrl`. */
+  prUrl?: string | null;
+  itemUrl?: string | null;
   /** Set on a row carried forward from an unverifiable machine: it is last-known state, so nothing
    *  may be acted on through it (the machine is not answering — the action would fail anyway, but
    *  saying so up front is the difference between "refused" and "maybe it worked"). */
@@ -242,14 +248,29 @@ export function createDashboard(
   }
   const boardWidth = () => Math.max(MIN_WIDTH, contentWidth() - BOARD_INDENT);
 
+  /** OSC 8 hyperlinks on the `#NN` refs in a line, so Cmd/Ctrl-click opens the PR — including over
+   *  SSH, where there is no local browser for `o` to spawn. opentui carries a chunk's `link` through
+   *  to the escape sequence; a terminal that does not advertise `hyperlinks` gets the same plain
+   *  text, so this is additive everywhere. Returns a single chunk when there is nothing to link. */
+  function linked(content: string, color: string, url: string | null | undefined): TextChunk[] {
+    if (!url || !renderer.capabilities?.hyperlinks) return [fg(color)(content)];
+    return linkRefs(content).map((seg) => {
+      const chunk = fg(color)(seg.text);
+      if (seg.ref) chunk.link = { url };
+      return chunk;
+    });
+  }
+
   /** Build a board line's styled content: pad to each cell's x, then emit its segments. The highlighted
    *  card swaps its 2-char gutter for "▶ " and lifts its primary text to the accent — status color stays
    *  on the icon either way. A hovered cell gets the subtle background tint, per cell rather than per row. */
   function boardContent(node: LineNode, cells: KanbanCell[], selectedCell: number): StyledText {
     const chunks: TextChunk[] = [];
     let cursor = 0;
-    const push = (value: string, color: string, hovered: boolean) => {
+    const targets = node.spec.kind === "board" ? node.spec.targets : [];
+    const push = (value: string, color: string, hovered: boolean, url?: string | null) => {
       const chunk = fg(color)(value);
+      if (url && renderer.capabilities?.hyperlinks) chunk.link = { url };
       chunks.push(hovered ? bg(theme.hoverBg)(chunk) : chunk);
       cursor += value.length;
     };
@@ -259,11 +280,15 @@ export function createDashboard(
       if (start > cursor) push(" ".repeat(start - cursor), theme.text.tertiary, false);
       const selected = index === selectedCell;
       const hovered = index === node.hoverCell && cell.card !== null;
+      // A card's work key IS its `#NN`/`KEY-12` ref, so that segment carries the link (there is no
+      // literal `#NN` on a card for the text-line matcher to find).
+      const target = targets[index];
+      const keyText = cell.card !== null ? cell.segments.find((sg) => sg.tone === "primary")?.text : undefined;
       cell.segments.forEach((segment, i) => {
         const isGutter = i === 0 && cell.card !== null;
         const value = isGutter && selected ? "▶ " : segment.text;
         const tone = selected && (segment.tone === "primary" || isGutter) ? "accent" : segment.tone;
-        push(value, toneColor(tone), hovered);
+        push(value, toneColor(tone), hovered, keyText !== undefined && segment.text === keyText && target ? rowUrl(target, "pr") : null);
       });
     });
     return new StyledText(chunks);
@@ -278,10 +303,15 @@ export function createDashboard(
     const isHi = current?.node === node;
     const gutter = spec.target ? (isHi ? "▶ " : "  ") : "";
     const base = isHi ? theme.accent : spec.fg;
+    const chunks = linked(gutter + spec.content, base, spec.target ? rowUrl(spec.target, "pr") : null);
     if (spec.problem) {
       // The red problem suffix keeps its own color regardless of highlight — a warning must not
       // blend into the accent when the row is selected.
-      node.text.content = new StyledText([fg(base)(gutter + spec.content), fg(theme.status.bad)(`   ⚠ ${spec.problem}`)]);
+      node.text.content = new StyledText([...chunks, fg(theme.status.bad)(`   ⚠ ${spec.problem}`)]);
+      return;
+    }
+    if (chunks.length > 1) {
+      node.text.content = new StyledText(chunks);
       return;
     }
     node.text.content = gutter + spec.content;
@@ -506,7 +536,7 @@ export function createDashboard(
             kind: "text",
             content: `  ${staleRunLine(run)}`,
             fg: theme.text.tertiary,
-            target: { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, stale: true },
+            target: { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, stale: true },
           });
         }
         if (active.length === 0) specs.push({ kind: "text", content: "  (no runs when it last answered)", fg: theme.text.tertiary });
@@ -529,7 +559,7 @@ export function createDashboard(
             return item && { machine: m.name, repo: name, kind: "eligible", key: item.key, source: item.source, belt: item.belt };
           }
           const run = beltRuns.find((r) => r.ticketKey === card.key);
-          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
+          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, note: runNote(run) };
         });
       }
       // Runs whose belt is no longer configured have no steps to make columns from — one full-width lane.
@@ -538,7 +568,7 @@ export function createDashboard(
         if (boards++) blank();
         pushBoard([looseLane("unassigned (no belt)", unassigned.map(toBoardRun), nowSec)], (card) => {
           const run = unassigned.find((r) => r.ticketKey === card.key);
-          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, note: runNote(run) };
+          return run && { machine: m.name, repo: name, kind: "run", key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, note: runNote(run) };
         });
       }
     }
@@ -563,7 +593,7 @@ export function createDashboard(
         // A run entry is the run: s/x/d/↵ act on it from here, so the operator never has to find it
         // again further down the board. A machine entry is not actionable (nothing to send it to).
         target: item.key
-          ? { section: "needs", machine: item.machine, repo: item.repo, kind: "run", key: item.key, source: item.source, phase: item.phase, stale: item.stale }
+          ? { section: "needs", machine: item.machine, repo: item.repo, kind: "run", key: item.key, source: item.source, phase: item.phase, prUrl: item.prUrl, itemUrl: item.itemUrl, stale: item.stale }
           : { section: "needs", machine: item.machine, repo: "", kind: "machine", stale: true },
       });
     }
@@ -904,6 +934,20 @@ export function createDashboard(
     ));
   }
 
+  /** `o` / `O` — the row's PR (falling back to its work item while there is no PR) / its work item,
+   *  in a browser. An unverifiable machine's row still opens: the URL is last-known state, but
+   *  reading a web page is not an action sent to that machine. With no display to open into, the URL
+   *  lands on the action line instead of failing where nobody can see it. */
+  function doOpen(t: Target, which: "pr" | "item"): void {
+    const url = rowUrl(t, which);
+    if (!url) {
+      setAction(`${t.key ?? t.repo}: no ${which === "item" ? "work item" : "PR or work item"} URL — this source has no web page for it`, theme.text.secondary);
+      return;
+    }
+    const res = openUrl(url, (m) => setAction(m, theme.status.bad));
+    setAction(res.message, res.opened ? theme.text.secondary : theme.text.primary);
+  }
+
   /** `m` — narrow the board to one machine, or widen it back to the whole fleet. A one-machine
    *  install says so rather than opening a picker with a single entry. */
   async function pickMachine(): Promise<void> {
@@ -973,6 +1017,11 @@ export function createDashboard(
       case "d":
         if (t?.kind === "repo") void openDetail(t);
         else if (t?.kind === "run") void openWorkItemDetail(t);
+        key.preventDefault();
+        break;
+      case "o":
+      case "O":
+        if (t?.kind === "run") doOpen(t, key.shift || key.name === "O" ? "item" : "pr");
         key.preventDefault();
         break;
       case "r":
