@@ -741,7 +741,11 @@ layout_hook:
 Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
 `machine at capacity (n/N)` / `low memory: <free> MB < <min> MB — not claiming` once when a gate engages
 (and `machine admission resumed — claiming again` when it clears); `status`, `doctor`, and the dashboard's
-repo row show the limits in effect. Unknown keys or bad values are rejected; `herdr-factory reload` re-reads
+repo row show the limits in effect. The machine-wide lock is **waited** on (~10 s) rather than skipped:
+every repo ticks on the same cadence, so a repo that gave up on contention used to lose the same race
+every tick and never claim. A repo that still can't get in logs `machine claim lock held (another repo is
+claiming) — claims deferred N ticks (machine claim lock)`, and `status` / `explain <key>` report the same
+count until it claims again. Unknown keys or bad values are rejected; `herdr-factory reload` re-reads
 the file (an invalid edit is refused and the running limits stay). Absent file = unchanged behaviour.
 
 ### `work_sources` (≥ 1)

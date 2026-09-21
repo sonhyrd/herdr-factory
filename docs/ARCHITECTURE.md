@@ -687,7 +687,8 @@ concurrently to the one DB; WAL + busy_timeout + the per-repo single-instance lo
 
 ```sql
 CREATE TABLE repos(name TEXT PRIMARY KEY, repo_path TEXT, base_ref TEXT, github TEXT,
-  last_tick_at INTEGER, enabled INTEGER DEFAULT 1);
+  last_tick_at INTEGER, enabled INTEGER DEFAULT 1,
+  claim_deferrals INTEGER NOT NULL DEFAULT 0);  -- consecutive ticks Phase B gave up on `machine:claim` (v39)
 
 CREATE TABLE runs(                       -- ONE attempt at a work item (history kept)
   id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL,
@@ -1026,8 +1027,15 @@ before claiming. `max_active_workspaces`: the machine count (`countOccupyingAll`
 without the repo filter, over the one shared DB) and the whole claim section run under the
 **`machine:claim`** heartbeat lock. That closes the cross-repo race: repos tick on separate timers and
 Phase B awaits the network (`listEligible`, `claimImpl`) between counting and `createRun`, so two
-repos could each read `1/2` and both claim. A repo that finds the lock held logs `machine claim lock
-held (another repo is claiming) — claiming next tick` and skips its claims this pass. Under the lock,
+repos could each read `1/2` and both claim. The lock is WAITED on (~10 s of 500 ms polls), not
+try-locked: `serve` ticks every repo on one cadence and in one order, so a repo that skipped on
+contention hit the same mid-hold instant every tick and never claimed again (issue #72 — one repo
+starved four hours). Holders release in seconds (a count plus at most `max_claims_per_tick` claims),
+so every repo gets its turn inside one tick. A repo whose wait is spent logs `machine claim lock held
+(another repo is claiming) — claims deferred N ticks (machine claim lock)` and defers its claims to
+the next pass; N is the CONSECUTIVE deferral count, durable in `repos.claim_deferrals` (cleared the
+moment the repo reaches its claim section) so the out-of-process `status` / `explain` surfaces report
+the starvation instead of it staying silent. Under the lock,
 `occupying >= cap` ⇒ `touchTick` + return; otherwise the remaining headroom caps `slots` alongside
 the repo cap and `max_claims_per_tick`. The manual `claimTicket` takes the same lock and throws
 `machine at capacity (n/N)` rather than overshoot (server up or down — it's a DB lock). Gate
