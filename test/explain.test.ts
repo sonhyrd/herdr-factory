@@ -378,6 +378,48 @@ describe("explainRun — the deliver lane (owed to the world)", () => {
   });
 });
 
+// The tree guard (issue #66): a step that never commits must start from — and finish on — the tree
+// it was pinned to. Both halves surface here, because a refused step-done parks nothing: without
+// this line an operator sees a running step that simply never finishes.
+describe("explainRun — the tree guard", () => {
+  it("running: a refused step-done says what is blocking the step and how to clear it", () => {
+    const text = joined(
+      explainRun({
+        ob: ob({
+          run: { step: "review" },
+          watches: {
+            step: "review",
+            guards: [
+              {
+                kind: "read_only",
+                escalationReason: "read_only_violation",
+                rescue: "terminal-signal",
+                facts: { baselineSig: "abc1234", frozenAt: NOW - 600, treeRefusedAt: NOW - 120, treeRefusedWhy: "the worktree has uncommitted changes" },
+              },
+            ],
+          },
+        }),
+        repoName: REPO,
+        now: NOW,
+      }),
+    );
+    expect(text).toContain("step-done was REFUSED 2m ago: the worktree has uncommitted changes");
+    expect(text).toContain("commit or revert");
+  });
+
+  it("attention: a dirty_tree park names the step and points at the rework command", () => {
+    const text = joined(
+      explainRun({
+        ob: ob({ run: { phase: "attention", step: "evidence", attentionReason: "evidence cannot start — the worktree has uncommitted changes", attentionReasonCode: "dirty_tree" } }),
+        repoName: REPO,
+        now: NOW,
+      }),
+    );
+    expect(text).toContain("the evidence step never commits");
+    expect(text).toContain(`herdr-factory --repo ${REPO} rework HF-1 <step>`);
+  });
+});
+
 describe("explainRun — shape", () => {
   it("heading:false drops the identity line for the TUI detail", () => {
     const lines = explainRun({ ob: ob({}), repoName: REPO, now: NOW, heading: false });
@@ -400,6 +442,7 @@ describe("explainRun — shape", () => {
       "step_budget",
       "step_stalled",
       "read_only_violation",
+      "dirty_tree",
       "capture_limit",
       "layout_wait_timeout",
       "bounce_limit",

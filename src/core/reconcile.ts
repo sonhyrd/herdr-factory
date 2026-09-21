@@ -2142,6 +2142,10 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
     }
     const next = nextStep(belt, step.name);
     if (next) {
+      // TREE GUARD before ANY of the next step's entry bookkeeping (the pointer move, the enter
+      // effect, the pass bump): a park here leaves the run on the step that just finished, so the
+      // resume re-runs this same advance once the tree is clean.
+      if (await parkIfTreeDirty(deps, run, next)) return;
       deps.store.updateRun(run.id, { phase: "running", step: next.name });
       // enter(next) effect: a belt may move the source status on entering a step (e.g. entering the
       // QA/review step). No engine default for a non-first step, so it fires only if configured.
@@ -2168,9 +2172,6 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
       // pane died and the configured label isn't resolvable), the spawn branch + layout-wait
       // machinery own the retry on later ticks, instead of the kept pane_id masking the pass as
       // dispatched and the budget watchdog parking it on a misleading "over budget (worker: gone)".
-      // Before any of the next step's entry bookkeeping: a park here leaves the run ON the
-      // completed step, so the resume re-runs this same advance once the tree is clean.
-      if (await parkIfTreeDirty(deps, run, next)) return;
       const prevPass = deps.store.getRunStep(run.id, next.name)?.pass ?? 0;
       // startedAt here is the PASS bookkeeping clock (the layout-wait window for an undispatched
       // pass, per-attempt dispatch timing) — the budget's own clock lives in watch_state and
