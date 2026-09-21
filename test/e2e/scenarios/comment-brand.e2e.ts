@@ -111,8 +111,11 @@ scenario(
     // The whole rollout hinges on this. The seeded line says `host=<hostname>`; this factory now
     // calls itself `contabo`. If the alias did not fold onto the raw hostname, the host would read
     // its own dead claim as a foreign one and fence itself off the item forever.
-    await w.waitFor(() => bodies(OWN_LEGACY).includes(`[${BRAND} release id=${OLD_OWN_RUN} host=${ALIAS}]`), {
-      label: "our own legacy claim is released under the new name",
+    // …and the release names the host the CLAIM carries, not the alias: alias folding is read-side
+    // only. Spelled `host=contabo` it would pair with `host=<hostname>` in this host's view alone —
+    // every other host would read two different hosts and stay fenced on the item forever.
+    await w.waitFor(() => bodies(OWN_LEGACY).includes(`[${BRAND} release id=${OLD_OWN_RUN} host=${RAW_HOST}]`), {
+      label: "our own legacy claim is released under the token it was written with",
       timeoutMs: 120_000,
     });
     await w.waitFor(() => w.db.run(String(OWN_LEGACY)) !== undefined, { label: "…and the item is then claimed", timeoutMs: 120_000 });
@@ -124,7 +127,7 @@ scenario(
     // Order matters: the release of the stale claim comes BEFORE the new claim, or there is a
     // window in which two open claims by the same host exist on one item.
     const owned = bodies(OWN_LEGACY);
-    expect(owned.indexOf(`[${BRAND} release id=${OLD_OWN_RUN} host=${ALIAS}]`)).toBeLessThan(
+    expect(owned.indexOf(`[${BRAND} release id=${OLD_OWN_RUN} host=${RAW_HOST}]`)).toBeLessThan(
       owned.indexOf(`[${BRAND} claim id=${ownRun.id} host=${ALIAS}]`),
     );
     // ── 3. another host's legacy claim still fences us — and nothing is posted ───────────────────
@@ -263,6 +266,12 @@ scenario(
     expect(run.id, "the seeded legacy question is addressed to this world's first run").toBe(FIRST_RUN);
 
     // ── 1. the legacy question is OURS: no second question is posted ─────────────────────────────
+    // The phase flips before the externalId is persisted, so wait for the adoption rather than
+    // racing it — an unset external_id here would read as "adopted nothing" and fail spuriously.
+    await w.waitFor(() => !!(w.db.humanQuestions(run.id)[0] as { external_id?: string } | undefined)?.external_id, {
+      label: "the engine records which comment it is watching",
+      timeoutMs: 60_000,
+    });
     const question = w.db.humanQuestions(run.id)[0] as { id: number; external_id: string };
     expect(question.id, "…and to its first question").toBe(FIRST_QUESTION);
     expect(questionComments().length, "the human is asked once, not once per brand").toBe(1);
@@ -282,10 +291,13 @@ scenario(
 
     // ── 3. a real human reply resumes it, and the NEXT question is written in the new brand ──────
     w.setAgentScript({ steps: { ask: { signal: "ask-human", text: "And for anonymous API callers?" } } });
-    asked.addComment(ASK, "Yes — logged-out too.", "a.human");
+    // The reply brackets something of the human's own that STARTS with the brand marker — under an
+    // unanchored match this would be discarded as our own artifact and the run would wait forever.
+    const replyId = asked.addComment(ASK, "Yes — logged-out too, see [hf-204] for context.", "a.human");
     w.db.dueNow("human_reply_poll", run.id);
     await w.waitFor(() => w.db.humanQuestions(run.id).length === 2, { label: "the reply lands and the agent asks again", timeoutMs: 180_000 });
     expect(w.db.eventTypes(key)).toContain("human_reply");
+    expect(w.db.event(key, "human_reply")!.data.externalId, "the `[hf-204]`-bearing comment IS the reply the engine took").toBe(replyId);
     await w.waitFor(() => questionComments().length === 2, { label: "the second question is posted", timeoutMs: 120_000 });
     expect(questionComments()[1]!.body, "a question the FACTORY writes now carries the configured brand").toContain(
       `[${BRAND} question: ${REPO}/${FIRST_RUN}/2]`,

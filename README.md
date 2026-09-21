@@ -874,8 +874,9 @@ comment thread is paged (100 per call), so an old claim comment is never missed.
 
 **Rolling out a brand or a host alias across a fleet** is safe host by host: readers accept **both** the
 configured brand and the legacy `herdr-factory` one, and a host recognises its own pre-alias claims (posted
-under its raw hostname) as its own. So a half-migrated fleet arbitrates on one shared ledger, and two hosts
-never both think they own an item. Writers only ever use the configured brand.
+under its raw hostname) as its own. A release is always written with the host name the claim it frees
+actually carries, so every other host pairs the two as well. So a half-migrated fleet arbitrates on one
+shared ledger, and two hosts never both think they own an item. Writers otherwise use the configured brand.
 
 ### Comment brand — `source_comments` (optional)
 
@@ -887,7 +888,9 @@ source_comments:
   brand: hf     # default: herdr-factory
 ```
 
-`brand` (letters, digits, `.`, `_`, `-` — it is embedded in markers and re-parsed) drives **every** comment
+`brand` (letters, digits, `.`, `_`, `-` — it is embedded in markers and re-parsed; a short one is fine,
+the factory matches `[<brand>]`/`[<brand> ` and never a bare prefix, so `[hf-204]` in a human's reply is
+still a human's reply) drives **every** comment
 the factory authors: the [claim ledger](#several-factories-on-one-source-claim_guard) lines
 (`[hf claim id=112 host=contabo]`), the question marker (`[hf question: …]`), the prefix on notes
 (`[hf] …`) including the `⚠ hf parked this run for attention: …` note a work error posts, the

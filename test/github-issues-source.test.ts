@@ -300,6 +300,20 @@ describe("GithubIssuesSource — human loop", () => {
     expect((await src.pollHumanReply(poll))!.body).toContain("Use the new flag.");
   });
 
+  it("a short brand does not swallow a human reply that brackets something of its own (issue #70)", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const src = makeSource(fake, {}, undefined, "hf");
+    const q = await src.askHuman({ repo: "demo", runId: 4, questionId: 9, key: "7", step: "fix", question: "Which flag wins?" });
+    const poll = { key: "7", questionId: 9, externalId: q.externalId, externalCreatedAt: q.externalCreatedAt };
+    // `[hf-204]` STARTS with the brand marker's prefix. Matching that prefix unanchored would read a
+    // human's answer as one of our own artifacts and leave the run waiting for an answer it had.
+    fake.addComment(7, "Use the new flag, see [hf-204] for context.", "operator");
+    const reply = await src.pollHumanReply(poll);
+    expect(reply, "a human reply that merely LOOKS like a marker is still a reply").not.toBeNull();
+    expect(reply!.body).toContain("[hf-204]");
+  });
+
   it("askHuman/pollHumanReply on a gone issue throw StaleItemError (escalates instead of polling forever)", async () => {
     fake = makeFakeGithub();
     fake.addIssue(7);

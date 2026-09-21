@@ -126,6 +126,18 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
     expect(bearsHerdrMarker("[hf] question: demo/1/2]")).toBe(false); // a default-brand factory never wrote it
   });
 
+  it("the marker match is anchored, so a SHORT brand never eats a human's own bracketed text", () => {
+    // Everything the writers emit is `[<brand>]` or `[<brand> ` — nothing else is ours.
+    expect(bearsHerdrMarker("[hf] ⚠ parked for attention", "hf")).toBe(true);
+    expect(bearsHerdrMarker("[hf question: demo/1/2]\nWork item: #7", "hf")).toBe(true);
+    expect(bearsHerdrMarker(claimMarker({ runId: 1, host: "contabo" }, "hf"), "hf")).toBe(true);
+    expect(bearsHerdrMarker("[herdr-factory] a note from a host that has not switched yet", "hf")).toBe(true);
+    // …and these are a HUMAN's words. Read as ours, the reply is dropped and the run waits forever.
+    expect(bearsHerdrMarker("Use the new flag, see [hf-204] for context.", "hf")).toBe(false);
+    expect(bearsHerdrMarker("tracked in [hfoo/bar#12]", "hf")).toBe(false);
+    expect(bearsHerdrMarker("see [herdr-factory-docs] for the rest")).toBe(false);
+  });
+
   it("a ledger mixing legacy and branded lines resolves exactly as an all-legacy one would", () => {
     const mixed: LedgerComment[] = [
       { id: "100", body: legacy("claim", 1, "mac") },
@@ -155,7 +167,7 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
     expect(claimWinner([...comments, { id: "102", body: releaseMarker({ runId: 5, host: "contabo" }, "hf") }], view)).toBeNull();
   });
 
-  it("our own LEGACY stale claim is released after the rename (no self-fencing across the switch)", async () => {
+  it("our own LEGACY stale claim is released after the rename — under the host token AS WRITTEN, so EVERY host sees it freed", async () => {
     const t = fakeTracker();
     t.post("K-1", legacy("claim", 7, "vmi3481757")); // posted before host_alias/brand were set
     const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
@@ -163,9 +175,16 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
     expect(await arbitrateClaim(f.deps, f.src, run)).toBeNull();
     expect(t.comments("K-1").map((c) => c.body)).toEqual([
       legacy("claim", 7, "vmi3481757"),
-      releaseMarker({ runId: 7, host: "contabo" }, "hf"),
+      // NOT `host=contabo`: alias folding is read-side only. A release spelled with the alias pairs
+      // with the claim in OUR view and in nobody else's — see the cross-host check below.
+      releaseMarker({ runId: 7, host: "vmi3481757" }, "hf"),
       claimMarker({ runId: run.id, host: "contabo" }, "hf"),
     ]);
+    // The assertion whose absence hid this: ANOTHER host, same brand, its own (empty) alias set.
+    const elsewhere = { brand: "hf", host: "other-box", aliases: [] as string[] };
+    expect(openClaims(t.comments("K-1"), elsewhere).some((c) => c.runId === 7), "run 7 is freed for every host, not just the one that renamed itself").toBe(false);
+    // …and it still reads the fresh claim, so the release did not over-free.
+    expect(openClaims(t.comments("K-1"), elsewhere).map((c) => c.runId)).toEqual([run.id]);
   });
 
   it("another host's LEGACY claim still fences a branded factory", async () => {
@@ -207,7 +226,7 @@ describe("claim ledger — arbitrateClaim", () => {
     const f = factory(t, "mac");
     for (let i = 0; i < 3; i++) {
       const run = f.newRun("K-1");
-      expect(await arbitrateClaim(f.deps, f.src, run)).toEqual({ runId: 42, host: "dead-host", commentId: 100 });
+      expect(await arbitrateClaim(f.deps, f.src, run)).toEqual({ runId: 42, host: "dead-host", rawHost: "dead-host", commentId: 100 });
       expect(f.store.getRun(run.id)).toBeUndefined();
     }
     expect(t.comments("K-1")).toHaveLength(1); // no claim/release noise, and the dead claim stays open

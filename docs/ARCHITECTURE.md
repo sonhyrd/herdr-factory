@@ -1077,10 +1077,16 @@ marker prefix, so reply polling ignores them (INV-6). Guard off ⇒ zero extra c
 is bilingual: `openClaims`/`claimWinner` take a `LedgerView` and parse the configured brand's lines
 ALONGSIDE the legacy `herdr-factory` ones, and fold the `hostAliases` tokens (this host's raw hostname,
 when `host` came from an alias) onto the resolved host — otherwise a renamed host would see its own old
-claim as a foreign one and fence itself forever, and a release written under one name would not match a
-claim written under the other. Writers only ever emit the configured brand and the resolved host. The
-same bilingual rule covers `bearsHerdrMarker` (INV-6) and the sources' askHuman idempotence scan — a
-question posted before the switch must not be asked twice.
+claim as a foreign one and fence itself forever. Folding is **read-side only**: each open claim also
+carries the `rawHost` exactly as the line spelled it, and the stale-claim release is written with THAT
+token, never the folded one. A release spelled `host=<alias>` against a claim spelled `host=<hostname>`
+pairs in the renaming host's view and in **no other host's** — their `LedgerView` has different aliases,
+so they read two different hosts, never pair them, and stay fenced on the item forever, which is exactly
+what "nothing else can free those" forbids. Writers otherwise emit the configured brand and the resolved
+host. The same bilingual rule covers `bearsHerdrMarker` (INV-6) and the sources' askHuman idempotence
+scan — a question posted before the switch must not be asked twice. The INV-6 match is **anchored**: an
+artifact of ours is the brand token followed by `]` or a space, because a bare `[<brand>` prefix also
+matches a human's own bracketed text (`see [hf-204] for context`) and would silently discard their reply.
 **Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
 ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
 `base_ref` with no `<remote>/` prefix, and never on the worktree-reopen path). Nothing else touches

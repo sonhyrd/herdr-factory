@@ -386,7 +386,9 @@ strings to before the key existed.
 
 READERS are bilingual and always will be: the ledger parser, `bearsHerdrMarker` (INV-6) and the askHuman
 idempotence scan accept the configured brand AND the legacy `herdr-factory` spelling, so a fleet switches
-host by host without double-claiming or re-asking a question.
+host by host without double-claiming or re-asking a question. The INV-6 match is anchored to `[<brand>]`
+or `[<brand> ` — a human reply that merely starts a bracket with the brand (`see [hf-204] …`) is still a
+reply, so a SHORT brand is safe.
 
 ### 3.12 `branch` (top-level and per-belt)
 
@@ -433,7 +435,7 @@ ledger, and the layout hook's view of this host's herdr plugins.
 |---|---|---|---|
 | `max_active_workspaces` | int ≥ 0 | unset | Ceiling on **occupying** runs across ALL repos in the shared DB (same posture as the repo cap: parked / `waiting_for_human` / idle PR-watch hold no slot). `0` ⇒ this host claims nothing new. Also enforced on manual `claim` |
 | `min_free_memory_mb` | int ≥ 0 | unset | Skip Phase B claims while available memory is below it. Linux `MemAvailable`; macOS `vm_stat` free + inactive + speculative; else `os.freemem()` |
-| `host_alias` | string trimmed, `^[A-Za-z0-9._-]+$` (error: ``host_alias` may only contain letters, digits, '.', '_' and '-'``) | unset (`os.hostname()`) | What this host calls itself in the claim ledger (`host=` in claim/release markers) — keeps raw hostnames off a shared tracker. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its raw hostname BEFORE the alias was set are folded onto the alias, so a rename never makes a host fence itself |
+| `host_alias` | string trimmed, `^[A-Za-z0-9._-]+$` (error: ``host_alias` may only contain letters, digits, '.', '_' and '-'``) | unset (`os.hostname()`) | What this host calls itself in the claim ledger (`host=` in claim/release markers) — keeps raw hostnames off a shared tracker. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its raw hostname BEFORE the alias was set are folded onto the alias (READ-side only — the release that frees one is written with the hostname it carries, so other hosts pair them too), so a rename never makes a host fence itself |
 | `layout_hook.ignore_pane_labels` | string[] | `[Sidebar]` | Pane labels the layout hook's freshness gate treats as plugin furniture, not arrangement. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar` ⇒ a pane labelled `Sidebar`) makes every new workspace 2 panes, which would decline **every** layout build on that host. Matched trimmed + case-insensitively; `[]` discounts none. A pane the USER opened still declines the build |
 
 Errors: `invalid machine config (<path>):\n  <key>: <zod message>` — from `doctor` (row `machine limits

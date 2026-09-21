@@ -168,16 +168,37 @@ export function markerPrefixes(brand: string = DEFAULT_BRAND): string[] {
   return brand === LEGACY_BRAND ? [HERDR_MARKER] : [markerPrefix(brand), HERDR_MARKER];
 }
 
+/** Every brand token a reader accepts (configured + legacy, deduped) — shared with the claim
+ *  ledger's own parser so both read the same set. */
+export function markerBrands(brand: string = DEFAULT_BRAND): string[] {
+  return brand === LEGACY_BRAND ? [LEGACY_BRAND] : [brand, LEGACY_BRAND];
+}
+
+/** A brand is embedded in a regex by both readers; the config charset excludes regex metacharacters,
+ *  but escaping keeps that a validation detail rather than an injection. */
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+}
+
+/** What an artifact of ours looks like on a line: the brand token IMMEDIATELY followed by `]`
+ *  (a note: `[hf] …`) or a space (`[hf question: …`, `[hf claim id=…`). Anchoring matters — a bare
+ *  `[hf` prefix also matches text a HUMAN wrote (`see [hf-204] for context`), and INV-6 would then
+ *  discard their reply as our own artifact and leave the run waiting for an answer it already had.
+ *  The default brand is long enough to have hidden this; a short custom brand is the whole point. */
+function markerRe(brand: string = DEFAULT_BRAND): RegExp {
+  return new RegExp(`\\[(?:${markerBrands(brand).map(escapeRe).join("|")})[\\] ]`);
+}
+
 /** INV-6's filter primitive: does this comment body carry a herdr marker OUTSIDE blockquotes?
  *  Quote-reply UIs (GitHub's "Quote reply") prepend the question — marker included — as `> ` lines
  *  into a genuine human reply; a marker appearing only inside quotes must NOT disqualify it.
  *  Legacy-aware: an artifact written under the old brand is still ours. */
 export function bearsHerdrMarker(body: string, brand: string = DEFAULT_BRAND): boolean {
-  const prefixes = markerPrefixes(brand);
+  const re = markerRe(brand);
   return body
     .split(/\r?\n/)
     .filter((line) => !line.trimStart().startsWith(">"))
-    .some((line) => prefixes.some((p) => line.includes(p)));
+    .some((line) => re.test(line));
 }
 
 /**
