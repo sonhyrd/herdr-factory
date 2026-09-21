@@ -18,6 +18,22 @@ export function rowUrl(row: OpenableRow, which: "pr" | "item"): string | null {
   return row.prUrl ?? row.itemUrl ?? null;
 }
 
+/** Split a line at its `#NN` refs, so a renderer can hang an OSC 8 link on the refs alone and leave
+ *  the rest of the line plain. Returns ONE non-ref segment when the line carries no ref, which is
+ *  the caller's signal that there is nothing to link and the cheap plain-string path will do. */
+export function linkRefs(content: string): { text: string; ref: boolean }[] {
+  const out: { text: string; ref: boolean }[] = [];
+  let last = 0;
+  for (const m of content.matchAll(/#\d+/g)) {
+    if (m.index > last) out.push({ text: content.slice(last, m.index), ref: false });
+    out.push({ text: m[0], ref: true });
+    last = m.index + m[0].length;
+  }
+  if (out.length === 0) return [{ text: content, ref: false }];
+  if (last < content.length) out.push({ text: content.slice(last), ref: false });
+  return out;
+}
+
 export type Opener =
   /** Hand the URL to this command. */
   | { kind: "spawn"; command: string; args: string[] }

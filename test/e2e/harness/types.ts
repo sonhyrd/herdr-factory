@@ -143,6 +143,10 @@ export interface ScenarioSpec {
     {
       briefs?: Record<string, string>;
       config?: (p: WorldPaths) => Record<string, unknown>;
+      /** This machine's repo `env` file — same shape and same late evaluation as the scenario's own
+       *  `env`. A fleet machine polling a fake backend needs its own copy (`GITHUB_API_URL`), and it
+       *  has a config dir of its own, so it cannot inherit the main repo's. */
+      env?: Record<string, string> | ((p: WorldPaths) => Record<string, string>);
       /** More repos on THAT machine's own server, so a fleet read of it really fans out per repo
        *  (`Promise.all` over its repos, in both the status and the eligible phase) — which is the
        *  shape the transport's one-open-per-machine rule is about. */

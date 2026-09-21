@@ -55,7 +55,7 @@ import { MIN_COLUMN_WIDTH, buildLanes, compactBoard, layoutKanban, looseLane, ty
 import { formatWorkItemDetail } from "./work-detail.ts";
 // A LEAF module (type-only imports) — safe in the TUI's eager startup graph.
 import { explainRun } from "../core/explain.ts";
-import { openUrl, rowUrl } from "./open-url.ts";
+import { linkRefs, openUrl, rowUrl } from "./open-url.ts";
 
 function fmtTime(ts: number): string {
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or milliseconds
@@ -254,18 +254,11 @@ export function createDashboard(
    *  text, so this is additive everywhere. Returns a single chunk when there is nothing to link. */
   function linked(content: string, color: string, url: string | null | undefined): TextChunk[] {
     if (!url || !renderer.capabilities?.hyperlinks) return [fg(color)(content)];
-    const chunks: TextChunk[] = [];
-    let last = 0;
-    for (const m of content.matchAll(/#\d+/g)) {
-      if (m.index > last) chunks.push(fg(color)(content.slice(last, m.index)));
-      const chunk = fg(color)(m[0]);
-      chunk.link = { url };
-      chunks.push(chunk);
-      last = m.index + m[0].length;
-    }
-    if (chunks.length === 0) return [fg(color)(content)];
-    if (last < content.length) chunks.push(fg(color)(content.slice(last)));
-    return chunks;
+    return linkRefs(content).map((seg) => {
+      const chunk = fg(color)(seg.text);
+      if (seg.ref) chunk.link = { url };
+      return chunk;
+    });
   }
 
   /** Build a board line's styled content: pad to each cell's x, then emit its segments. The highlighted

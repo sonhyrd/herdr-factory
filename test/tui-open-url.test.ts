@@ -1,7 +1,7 @@
 // The dashboard's `o` / `O`: which URL a row resolves to, and how this host is meant to open it.
 // Both are pure — the spawn itself is one line behind them (src/tui/open-url.ts).
 import { describe, expect, it } from "vitest";
-import { chooseOpener, rowUrl } from "../src/tui/open-url.ts";
+import { chooseOpener, linkRefs, rowUrl } from "../src/tui/open-url.ts";
 import { githubIssuesDescriptor } from "../src/sources/github-issues/descriptor.ts";
 import { jiraDescriptor } from "../src/sources/jira/descriptor.ts";
 import { sentryDescriptor } from "../src/sources/sentry/descriptor.ts";
@@ -77,5 +77,29 @@ describe("chooseOpener", () => {
       command: "xdg-open",
       args: [],
     });
+  });
+});
+
+describe("linkRefs — what the OSC 8 hyperlinks are hung on", () => {
+  it("carves out every `#NN` ref and leaves the rest of the line plain", () => {
+    expect(linkRefs("✓ 75  PR #69 is green — ready to merge  (app)")).toEqual([
+      { text: "✓ 75  PR ", ref: false },
+      { text: "#69", ref: true },
+      { text: " is green — ready to merge  (app)", ref: false },
+    ]);
+  });
+
+  it("links each ref of a line that carries several", () => {
+    expect(linkRefs("#1 and #23").filter((s) => s.ref).map((s) => s.text)).toEqual(["#1", "#23"]);
+  });
+
+  it("answers one plain segment when there is no ref — the caller's cue to skip styling entirely", () => {
+    expect(linkRefs("  app  @local  active 1/2")).toEqual([{ text: "  app  @local  active 1/2", ref: false }]);
+    expect(linkRefs("issue #")).toEqual([{ text: "issue #", ref: false }]);
+  });
+
+  it("handles a ref at either end without emitting empty segments", () => {
+    expect(linkRefs("#7 opened")).toEqual([{ text: "#7", ref: true }, { text: " opened", ref: false }]);
+    expect(linkRefs("merged #7")).toEqual([{ text: "merged ", ref: false }, { text: "#7", ref: true }]);
   });
 });
