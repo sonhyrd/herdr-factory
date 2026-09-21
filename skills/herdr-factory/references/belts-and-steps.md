@@ -292,7 +292,7 @@ set of `available` products seeded from the source:
 |---|---|
 | `jira` | `work_spec`, `work_raw`, `human_reply` |
 | `local_markdown` | `work_spec`, `human_reply` |
-| `github_issues` | `work_spec`, `work_raw`, `human_reply`, `close_reference` |
+| `github_issues` | `work_spec`, `work_raw`, `human_reply`, `close_reference` (the work doc's `Closing reference:` line — absent under `kind: pull_requests`, which carries the PR's head/base branch instead) |
 | `sentry` | `work_spec`, `work_raw`, `human_reply` |
 
 For each step: every **required** consume must already be in `available`; a declared bounce must have an

@@ -2,8 +2,8 @@
 // `SentryClient` + `SentrySource` (src/clients/sentry.ts, src/clients/sentry-source.ts) end to end.
 //
 // WHY this can exist at all: the sentry source takes a configurable `base_url`, so pointing it at
-// `fake.url` swaps the whole backend without an engine seam — the same trick the jira fake uses, and
-// the reason source parity is provable for two of the four sources today.
+// `fake.url` swaps the whole backend without an engine seam — the same trick the jira fake uses.
+// (github_issues needed one: it now resolves its base from `GITHUB_API_URL` — see ./github-fake.ts.)
 //
 // WHY it is a stateful fake and not a route table (HttpStub): the sentry source's contract is a
 // LIFECYCLE, and every interesting part of it is a read-after-write. `on_merge: resolve` must be

@@ -22,7 +22,8 @@ Usage: scripts/e2e [options] [-- <extra vitest args>]
 Build the e2e image and run the end-to-end scenarios inside it.
 
 Options:
-  --scenario <name>   Run only scenarios whose name matches <name> (vitest -t filter).
+  --scenario <name>   Run only scenarios whose name matches <name> (vitest -t filter). REPEATABLE:
+                      several are OR-ed into one filter, so `--scenario a --scenario b` runs both.
   --lane real|fake    Run ONLY that lane. Default: both — real (a real headless herdr) and fake (the
                       shim, for failure injection and scale). Exported as HF_E2E_LANE.
   --tier scripted|ds4 Agent tier. scripted = the deterministic agent shim (default); ds4 = the
@@ -50,6 +51,7 @@ run: results.json, junit.xml, summary.md, suite.log and scenarios/<name>/.
 Examples:
   scripts/e2e
   scripts/e2e --scenario w2pr-happy --lane real --keep
+  scripts/e2e --scenario github-pr-parity --scenario tui-boot   # both, one run
   scripts/e2e --tier ds4 --scenario ds4-w2pr
   scripts/e2e --no-build -- --reporter=verbose
 EOF
@@ -72,8 +74,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --scenario)
       [ "$#" -ge 2 ] || { echo "e2e: --scenario needs a value" >&2; exit 2; }
-      scenario="$2"; shift 2 ;;
-    --scenario=*) scenario="${1#*=}"; shift ;;
+      scenario="${scenario:+$scenario|}$2"; shift 2 ;;
+    --scenario=*) scenario="${scenario:+$scenario|}${1#*=}"; shift ;;
     --lane)
       [ "$#" -ge 2 ] || { echo "e2e: --lane needs a value" >&2; exit 2; }
       lane="$2"; shift 2 ;;

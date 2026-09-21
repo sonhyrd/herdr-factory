@@ -280,8 +280,53 @@ describe("loadConfig — work sources + belts", () => {
     expect(gh.typeLabels.bug).toBe("Bug");
     expect(gh.defaultType).toBe("Feature");
     expect(gh.maxPages).toBe(1);
+    expect(gh.kind).toBe("issues"); // default — a source still skips PRs unless it opts in
     expect(config.belts[0]!.source).toBe("gh");
     expect(config.belts[0]!.label).toBe("factory"); // the belt's trigger/pickup label
+  });
+
+  it("github_issues: the documented `review-gh` shape loads — kind: pull_requests + a checkout step", () => {
+    setup(
+      cfg(
+        `  - type: github_issues
+    name: gh-prs
+    github_issues:
+      repo: my-org/my-app
+      kind: pull_requests
+`,
+        `  - name: review-gh
+    source: gh-prs
+    label: hf-review
+    effects: [{ on: enter, step: review, to: in_review }]
+    steps:
+      - type: custom
+        name: checkout
+        prompt_file: prompts/pr-checkout.md
+        produces: [commits]
+      - { type: review }
+`,
+      ),
+      { prompts: { "prompts/pr-checkout.md": "gh pr checkout @@KEY@@" } },
+    );
+    const { config } = loadConfig("demo");
+    expect((config.sources[0]!.cfg as GithubIssuesSourceCfg).kind).toBe("pull_requests");
+    expect(config.belts[0]!.label).toBe("hf-review");
+    expect(config.belts[0]!.watchPr).toBe(false); // no pr step — the PR already exists; nothing merges it
+    // `in_review` is the produce(pull_request) effect, so a belt with no pr step must ask for it.
+    expect(config.belts[0]!.effects).toEqual([{ trigger: { on: "enter", step: "review" }, to: "in_review", status: undefined }]);
+  });
+
+  it("github_issues: an unknown `kind` is a load error", () => {
+    setup(
+      cfg(
+        `  - type: github_issues
+    github_issues: { repo: acme/tracker, kind: pulls }
+`,
+        SHIP_BELT.replace("source: jira", "source: github_issues"),
+      ),
+      { prompts: {} },
+    );
+    expect(() => loadConfig("demo")).toThrow(/kind/);
   });
 
   describe("poll interval resolution", () => {

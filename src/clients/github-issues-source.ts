@@ -1,13 +1,21 @@
 // The github_issues work source: GitHub Issues polled by a trigger label, driven to a merged PR.
 //
+// `kind: pull_requests` flips the poll to the repo's PULL REQUESTS instead (the issues list
+// endpoint already interleaves them — the filter is simply inverted). Everything else is
+// identical: same trigger label consumed on claim, same `herdr:*` state labels, same claim
+// ledger, same comment-based human loop (a PR's comments ARE issue comments). The one
+// difference is terminal: `close_on` never applies to a PR — closing or merging stays the
+// operator's, and a review run must never do it for them.
+//
 // STATUS OF RECORD: GitHub (spec external — work_items is never touched). The lifecycle
 // projection on the issue:
-//   eligible          = open + trigger label + not a PR + no in-flight state label
+//   eligible          = open + trigger label + the configured `kind` (issue, or PR when
+//                       `kind: pull_requests`) + no in-flight state label
 //   in_development    = state label swap, then the trigger label is CONSUMED (re-add = retry)
 //   in_review         = state label swap
-//   merged | done     = strip state labels; close as completed (close_on.*) — the idempotent
-//                       backstop over the PR's `Fixes #n` auto-close (which only fires on
-//                       default-branch merges and can be disabled repo-wide)
+//   merged | done     = strip state labels; close as completed (close_on.*, ISSUES ONLY) — the
+//                       idempotent backstop over the PR's `Fixes #n` auto-close (which only fires
+//                       on default-branch merges and can be disabled repo-wide)
 //   aborted           = strip in-flight labels + add the aborted label; issue stays OPEN
 //                       (a visible, retriageable failure artifact) unless close_on.aborted
 // Every mapped transition is an idempotent GET → diff → apply (INV-2); "already there" — incl.
@@ -30,13 +38,15 @@ import {
   type WorkDocInfo,
   type WorkState,
 } from "../types.ts";
-import { classifyGone, GithubIssuesClient, labelNames, type GhComment, type GhIssue } from "./github-issues.ts";
+import { classifyGone, GithubIssuesClient, labelNames, type GhComment, type GhIssue, type GhPull } from "./github-issues.ts";
 
 /** Resolved github_issues-source config (the client/source own the shape; the descriptor maps YAML
  *  onto it). The trigger (pickup) label is NOT here — it's per-belt and arrives as an argument to
  *  listEligible/transition/health. */
 export interface GithubIssuesSourceCfg {
   repo: string; // "owner/name" the issues live in
+  /** What the trigger label is read off: the repo's issues (default) or its pull requests. */
+  kind: "issues" | "pull_requests";
   stateLabels: { inDevelopment: string; inReview: string; aborted: string };
   /** EXTRA named state labels (`state_labels.<key>: <label>`) beyond the canonical three, that a
    *  belt effect can target by key (INV-13). A `statusOverride` reaching `transition` is one of
@@ -134,6 +144,23 @@ export class GithubIssuesSource implements WorkSource {
     }
   }
 
+  /** True when the poll is over pull requests (`kind: pull_requests`). */
+  private get onPulls(): boolean {
+    return this.cfg.kind === "pull_requests";
+  }
+
+  /** The noun for this source's items, for messages that must not lie about what was polled. */
+  private get noun(): string {
+    return this.onPulls ? "pull request" : "issue";
+  }
+
+  /** Is this payload the kind we poll? The issues list/GET endpoints serve BOTH (a PR carries a
+   *  `pull_request` key), so the single membership test below is the whole opt-in: a default
+   *  source still skips PRs, an opted-in one skips issues. */
+  private wanted(issue: GhIssue): boolean {
+    return Boolean(issue.pull_request) === this.onPulls;
+  }
+
   private stateLabelFor(to: WorkState): string | undefined {
     switch (to) {
       case "in_development":
@@ -201,7 +228,7 @@ export class GithubIssuesSource implements WorkSource {
       const batch = await this.gh.listOpenIssuesByLabel(pickupLabel, page);
       let kept = 0;
       for (const issue of batch) {
-        if (issue.pull_request) continue; // the list endpoint interleaves PRs — never claimable
+        if (!this.wanted(issue)) continue; // the list endpoint interleaves issues and PRs
         // Belt-and-braces: an in-flight state label means a claim's label swap partially landed
         // (or a human hand-edited) — don't double-claim. The aborted label deliberately does NOT
         // gate here: re-adding the trigger is the whole retry affordance.
@@ -210,10 +237,13 @@ export class GithubIssuesSource implements WorkSource {
         kept += 1;
       }
       if (batch.length === 100 && kept === 0) {
-        // A FULL page yielded nothing claimable (e.g. 100 trigger-labeled PRs occupying the
-        // oldest-first slots) — eligible issues beyond this page would starve silently at the
+        // A FULL page yielded nothing claimable (e.g. 100 trigger-labeled items of the OTHER
+        // kind occupying the oldest-first slots) — eligible issues beyond this page would starve silently at the
         // max_pages cap. Surface it; the operator fixes the stray labels or raises max_pages.
-        this.log("warn", `github_issues: page ${page} of "${pickupLabel}" was entirely non-claimable (PRs/in-flight) — newer issues may be starving; check for trigger-labeled PRs or raise max_pages`);
+        this.log(
+          "warn",
+          `github_issues: page ${page} of "${pickupLabel}" was entirely non-claimable (${this.onPulls ? "issues" : "PRs"}/in-flight) — newer ${this.noun}s may be starving; check for trigger-labeled ${this.onPulls ? "issues" : "PRs"} or raise max_pages`,
+        );
       }
       if (batch.length < 100) break;
     }
@@ -222,9 +252,10 @@ export class GithubIssuesSource implements WorkSource {
 
   async describe(key: string): Promise<Ticket> {
     const n = Number(key.replace(/^#/, "")); // tolerate the "#123" spelling; canonical key is bare
-    if (!Number.isInteger(n) || n <= 0) throw new Error(`github_issues: "${key}" is not an issue number`);
+    // The article has to agree with the noun: "not an issue number" / "not a pull request number".
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`github_issues: "${key}" is not ${this.onPulls ? "a pull request" : "an issue"} number`);
     const issue = await this.gh.getIssue(n);
-    if (issue.pull_request) throw new Error(`github_issues: #${n} is a pull request, not an issue`);
+    if (!this.wanted(issue)) throw new Error(`github_issues: #${n} is ${this.onPulls ? "an issue, not a pull request" : "a pull request, not an issue"}`);
     return { key: String(n), displayKey: `#${n}`, url: issue.html_url, summary: issue.title, type: this.typeOf(issue) };
   }
 
@@ -246,7 +277,7 @@ export class GithubIssuesSource implements WorkSource {
     try {
       // Idempotent GET → diff → apply. The GET is also the stale probe: 301/410/404 end here.
       const issue = await this.gh.getIssue(n);
-      if (issue.pull_request) return { kind: "stale", detail: `#${n} is a pull request` };
+      if (!this.wanted(issue)) return { kind: "stale", detail: `#${n} is ${this.onPulls ? "an issue" : "a pull request"}` };
       // Case-folded membership (GitHub's label namespace is case-insensitive and the API returns
       // the repo's canonical casing); writes keep the configured spelling — GitHub matches them.
       const have = new Set(labelNames(issue).map((l) => l.toLowerCase()));
@@ -259,7 +290,7 @@ export class GithubIssuesSource implements WorkSource {
         // but it never consumes the trigger and never closes the issue. Validated at config-load, so
         // the label exists in stateLabelsExtra. A closed issue here is a human cancel (no PR yet at a
         // pre-PR custom status → no Fixes-#n auto-close to race) → stale/park.
-        if (issue.state === "closed") return { kind: "stale", detail: `issue #${n} was closed (${issue.state_reason ?? "no reason"}) before ${statusOverride}` };
+        if (issue.state === "closed") return { kind: "stale", detail: `${this.noun} #${n} was closed (${issue.state_reason ?? "no reason"}) before ${statusOverride}` };
         const wantCustom = this.cfg.stateLabelsExtra[statusOverride]!;
         await this.ensureLabel(wantCustom);
         if (!has(wantCustom)) {
@@ -281,7 +312,7 @@ export class GithubIssuesSource implements WorkSource {
           // (not_planned, duplicate, null — none producible by auto-close) is a human cancel →
           // stale (park).
           if (to === "in_review" && issue.state_reason === "completed") return { kind: "noop" };
-          return { kind: "stale", detail: `issue #${n} was closed (${issue.state_reason ?? "no reason"}) before ${to}` };
+          return { kind: "stale", detail: `${this.noun} #${n} was closed (${issue.state_reason ?? "no reason"}) before ${to}` };
         }
         await this.ensureLabel(want!);
         if (!has(want!)) {
@@ -318,7 +349,9 @@ export class GithubIssuesSource implements WorkSource {
       } else if (has(this.cfg.stateLabels.aborted)) {
         applied = (await this.gh.removeLabel(n, this.cfg.stateLabels.aborted)) || applied;
       }
-      const close = to === "merged" ? this.cfg.closeOn.merged : to === "done" ? this.cfg.closeOn.done : this.cfg.closeOn.aborted;
+      // `close_on` is an ISSUES-only policy: closing (or merging) a pull request stays the
+      // operator's call, so a PR run only ever strips its state labels.
+      const close = !this.onPulls && (to === "merged" ? this.cfg.closeOn.merged : to === "done" ? this.cfg.closeOn.done : this.cfg.closeOn.aborted);
       if (close && issue.state === "open") {
         await this.gh.closeIssue(n, to === "aborted" ? "not_planned" : "completed");
         applied = true;
@@ -326,7 +359,7 @@ export class GithubIssuesSource implements WorkSource {
       return { kind: applied ? "applied" : "noop" };
     } catch (e) {
       const gone = classifyGone(e);
-      if (gone) return { kind: "stale", detail: `issue #${n} ${gone}` };
+      if (gone) return { kind: "stale", detail: `${this.noun} #${n} ${gone}` };
       throw e; // transient (throw = retry me, INV-2)
     }
   }
@@ -344,7 +377,7 @@ export class GithubIssuesSource implements WorkSource {
       issue = await this.gh.getIssue(n, { full: true });
       comments = await this.gh.listComments(n, { full: true });
     } catch (e) {
-      log("warn", `${key}: could not fetch the issue for materialize: ${e instanceof Error ? e.message : String(e)}`);
+      log("warn", `${key}: could not fetch the ${this.noun} for materialize: ${e instanceof Error ? e.message : String(e)}`);
       return; // next claiming tick retries (task.md not written)
     }
     try {
@@ -357,17 +390,21 @@ export class GithubIssuesSource implements WorkSource {
     const media = new MediaCollector(this.gh, join(memDir, "attachments"), log, key);
 
     const lines: string[] = [
-      `# Issue #${n}: ${sanitize(issue.title)}`,
+      `# ${this.onPulls ? "Pull request" : "Issue"} #${n}: ${sanitize(issue.title)}`,
       "",
-      `- URL: ${issue.html_url ?? `https://github.com/${this.cfg.repo}/issues/${n}`}`,
+      `- URL: ${issue.html_url ?? `https://github.com/${this.cfg.repo}/${this.onPulls ? "pull" : "issues"}/${n}`}`,
       `- Repo: ${this.cfg.repo}`,
       `- Author: ${issue.user?.login ?? "unknown"}`,
       `- State: ${issue.state}`,
       `- Labels: ${labelNames(issue).join(", ") || "(none)"}`,
-      // The pr step copies this line into the PR body VERBATIM — linkage + auto-close on merge.
-      // Short form when the issue lives in the PR repo is the docs-guaranteed spelling; the
-      // descriptor passes prRepo so cross-repo issues get the qualified form.
-      `- Closing reference: Fixes ${this.cfg.repo === this.prRepo ? `#${n}` : `${this.cfg.repo}#${n}`}`,
+      // A PR work doc carries its BRANCHES instead of a closing reference: the head ref is what a
+      // review belt checks out (`gh pr checkout <n>`), and "Fixes #<pr>" would be nonsense.
+      ...(this.onPulls
+        ? await this.pullRefLines(n)
+        : // The pr step copies this line into the PR body VERBATIM — linkage + auto-close on merge.
+          // Short form when the issue lives in the PR repo is the docs-guaranteed spelling; the
+          // descriptor passes prRepo so cross-repo issues get the qualified form.
+          [`- Closing reference: Fixes ${this.cfg.repo === this.prRepo ? `#${n}` : `${this.cfg.repo}#${n}`}`]),
       "",
       "## Description",
       "",
@@ -382,8 +419,29 @@ export class GithubIssuesSource implements WorkSource {
     writeFileSync(join(memDir, "task.md"), `${lines.join("\n")}\n`);
   }
 
+  /** The head/base branch bullets of a PR work doc. Best-effort (INV-4): the refs live only on
+   *  the pulls endpoint, and a failed extra GET must not cost us the whole work doc — the run can
+   *  still `gh pr checkout <n>` from the number. */
+  private async pullRefLines(n: number): Promise<string[]> {
+    let pull: GhPull;
+    try {
+      pull = await this.gh.getPull(n);
+    } catch {
+      this.log("warn", `github_issues: could not read the branches of pull request #${n} — the work doc omits them`);
+      return [`- Checkout: \`gh pr checkout ${n}\``];
+    }
+    return [
+      `- Head branch: ${pull.head?.ref ?? "(unknown)"}${pull.head?.repo?.full_name && pull.head.repo.full_name !== this.cfg.repo ? ` (fork ${pull.head.repo.full_name})` : ""}`,
+      `- Base branch: ${pull.base?.ref ?? "(unknown)"}`,
+      `- Draft: ${pull.draft ? "yes" : "no"}`,
+      `- Checkout: \`gh pr checkout ${n}\``,
+    ];
+  }
+
   async workDoc(): Promise<WorkDocInfo> {
-    return { path: "task.md", kind: "GitHub issue (markdown: title, body, all comments; raw JSON in issue.json; media in attachments/)" };
+    return this.onPulls
+      ? { path: "task.md", kind: "GitHub pull request (markdown: title, body, all comments, head/base branch; raw JSON in issue.json; media in attachments/)" }
+      : { path: "task.md", kind: "GitHub issue (markdown: title, body, all comments; raw JSON in issue.json; media in attachments/)" };
   }
 
   async postNote(key: string, note: string): Promise<void> {
@@ -403,7 +461,7 @@ export class GithubIssuesSource implements WorkSource {
       return { externalId: String(posted.id), externalCreatedAt: posted.created_at };
     } catch (e) {
       const gone = classifyGone(e);
-      if (gone) throw new StaleItemError(`issue #${n} ${gone}`);
+      if (gone) throw new StaleItemError(`${this.noun} #${n} ${gone}`);
       throw e;
     }
   }
@@ -429,7 +487,7 @@ export class GithubIssuesSource implements WorkSource {
       return null;
     } catch (e) {
       const gone = classifyGone(e);
-      if (gone) throw new StaleItemError(`issue #${n} ${gone}`);
+      if (gone) throw new StaleItemError(`${this.noun} #${n} ${gone}`);
       throw e;
     }
   }
@@ -450,7 +508,9 @@ export class GithubIssuesSource implements WorkSource {
     } catch (e) {
       throw new Error(`github_issues: cannot reach ${this.cfg.repo} — bad auth, or the token lacks access (${e instanceof Error ? e.message : String(e)})`);
     }
-    if (repo.has_issues === false) throw new Error(`github_issues: issues are disabled on ${this.cfg.repo} — enable them in repo settings`);
+    // Issues being disabled only matters when we poll issues — a `kind: pull_requests` source
+    // reads PRs, which exist regardless (and whose comments are still the issue-comment API).
+    if (!this.onPulls && repo.has_issues === false) throw new Error(`github_issues: issues are disabled on ${this.cfg.repo} — enable them in repo settings`);
     if (repo.permissions && repo.permissions.push === false) {
       throw new Error(`github_issues: the token has no push/write access to ${this.cfg.repo} — labels and comments will fail`);
     }
@@ -458,7 +518,7 @@ export class GithubIssuesSource implements WorkSource {
     // can never surface work. Case-fold to match GitHub's case-insensitive label namespace.
     for (const label of pickupLabels) {
       if (!(await this.gh.labelExists(label))) {
-        throw new Error(`github_issues: trigger label "${label}" does not exist in ${this.cfg.repo} — create it (or fix the belt's \`label\`) and add it to issues you want worked`);
+        throw new Error(`github_issues: trigger label "${label}" does not exist in ${this.cfg.repo} — create it (or fix the belt's \`label\`) and add it to ${this.noun}s you want worked`);
       }
     }
   }

@@ -25,11 +25,11 @@ Belt wiring (`source:`, `label:`, `match:`, effects) lives in [belts-and-steps.m
 | | `jira` | `github_issues` | `local_markdown` | `sentry` |
 |---|---|---|---|---|
 | credentials | `JIRA_EMAIL` + `JIRA_API_TOKEN` (both required) | `GITHUB_TOKEN` (optional — falls back to `gh auth token`) | none | `SENTRY_AUTH_TOKEN` (required) |
-| pickup mechanism | Agile board + JQL (`project` + `status.todo` + belt label), 50/poll, 1 page | REST issues list (`labels=` + `state=open`), 100 × `max_pages` | folder scan, top level only | org issues search (`query` + `stats_period` + `projects`), 100/poll, 1 page |
+| pickup mechanism | Agile board + JQL (`project` + `status.todo` + belt label), 50/poll, 1 page | REST issues list (`labels=` + `state=open`), 100 × `max_pages` — issues, or PRs under `kind: pull_requests` | folder scan, top level only | org issues search (`query` + `stats_period` + `projects`), 100/poll, 1 page |
 | ordering | `ORDER BY created ASC` | `sort=created&direction=asc` (oldest first) | `names.sort()` (lexicographic) | Sentry's default for the query |
 | status of record | external — Jira | external — GitHub | internal ledger (`work_items`) | internal ledger (`work_items`) |
 | belt `label` | **required** | **required** (the *trigger* label) | **must be omitted** | **must be omitted** |
-| write-backs | status transitions, comments, ask-human comments | state labels, trigger-label consumption, close on merge/done, comments | none to the folder (only the ask-human inbox file) | none for state; optional `on_merge` note/resolve |
+| write-backs | status transitions, comments, ask-human comments | state labels, trigger-label consumption, close on merge/done (issues only — never a PR), comments | none to the folder (only the ask-human inbox file) | none for state; optional `on_merge` note/resolve |
 | custom (effect) statuses | yes — `status.<key>` | yes — `state_labels.<key>` | no | no |
 | work doc | `ticket.json` | `task.md` | `task.md` **or** `task/` | `task.md` |
 | best for | team-process Jira boards where humans watch the ticket move | OSS / repo-native workflow; labels as the whole UI | briefs you write yourself; onboarding and one-offs | production error fixing, unattended |
@@ -199,9 +199,11 @@ One token bucket per client: 5 req/s sustained, burst 10, shared by every Jira c
       bug: Bug
     default_type: Feature              # default "Feature"
     max_pages: 1                       # default 1, min 1, max 10 — pages of 100 issues per poll
+    kind: issues                       # default "issues"; "pull_requests" polls PRs instead
 ```
 
-`repo` must match `owner/name`. `state_labels` is a catch-all map (known keys `in_development`, `in_review`, `aborted`); `close_on` **is** strict. `type_labels` keys are lowercased and matched case-insensitively. `close_on` and `type_labels` are **not** editable in the TUI config editor — YAML only.
+`kind` is an enum — `issues` (default) or `pull_requests`; anything else is a load error. See
+[Claiming pull requests](#claiming-pull-requests-kind-pull_requests). `repo` must match `owner/name`. `state_labels` is a catch-all map (known keys `in_development`, `in_review`, `aborted`); `close_on` **is** strict. `type_labels` keys are lowercased and matched case-insensitively. `close_on` and `type_labels` are **not** editable in the TUI config editor — YAML only.
 
 **Startup error** when neither `github_issues.repo` nor a resolvable PR repo exists: ``work source "<name>": no GitHub repo to poll — set github_issues.repo (owner/name), or repo.github / a git origin so the default resolves``. This is the one descriptor that fails at build time.
 
@@ -212,6 +214,8 @@ One token bucket per client: 5 req/s sustained, burst 10, shared by every Jira c
 A 401 while using a memoized gh-CLI token triggers exactly one refetch (`github: 401 with a memoized gh-CLI token — refreshing it once (<METHOD> <path>)`); still 401 ⇒ `rejected` with `GitHub rejected the token (401) — refresh GITHUB_TOKEN, or run \`gh auth login\``. Only **401** is treated as an auth rejection — GitHub's 403 is ambiguous (secondary rate limit vs missing scope).
 
 Scope needed: write access on the **polled** repo (labels, comments, close), which is not necessarily the PR repo.
+
+`GITHUB_API_URL` — **optional**, not masked, in the same per-repo `env` file. The REST base every call goes to; default `https://api.github.com`. Set it for **GitHub Enterprise Server** (`https://ghe.example.com/api/v3`). There is deliberately no config key: the base and the token sent to it travel together, so they live in the same file. Validated at startup, not at first poll — a non-URL throws ``GITHUB_API_URL is not a URL: "<v>" — use the API base, e.g. https://ghe.example.com/api/v3``, and a non-`https` base throws ``GITHUB_API_URL must be https (got "<v>") — the API token is sent to it; only loopback may be http``. (Loopback-`http` is allowed for exactly one reason: the e2e suite's GitHub fake.)
 
 ### Rate limits — one token per host
 
@@ -236,12 +240,13 @@ Paging stops early when a batch returns fewer than 100. An item is eligible when
 
 1. it carries the belt's `label` (server-side filter);
 2. it is open (server-side);
-3. it is **not a pull request** — the list endpoint interleaves PRs;
+3. it matches `kind` — **not a pull request** by default, and *only* a pull request under
+   `kind: pull_requests`. The list endpoint interleaves both; this is the whole opt-in;
 4. it carries **none** of the in-flight state labels: `in_development`, `in_review`, and every extra `state_labels.<key>` (all comparisons case-folded). The `aborted` label deliberately does **not** gate.
 
 **To get one issue picked up:** add the belt's trigger label to an open issue in the polled repo and make sure it wears none of the state labels. **Re-adding the trigger label is the documented retry gesture** for an issue that was aborted or that you want re-worked.
 
-Starvation warning when a full page yields nothing claimable: `github_issues: page <n> of "<label>" was entirely non-claimable (PRs/in-flight) — newer issues may be starving; check for trigger-labeled PRs or raise max_pages`.
+Starvation warning when a full page yields nothing claimable: `github_issues: page <n> of "<label>" was entirely non-claimable (PRs/in-flight) — newer issues may be starving; check for trigger-labeled PRs or raise max_pages` (under `kind: pull_requests` the two nouns swap: `(issues/in-flight)`, `newer pull requests`, `trigger-labeled issues`).
 
 Item type precedence: GitHub's native org-level issue type → the first `type_labels` hit among the issue's labels → `default_type`.
 
@@ -254,8 +259,8 @@ Mapped states are `in_development`, `in_review`, `merged`, `aborted`, `done` —
 | `in_development` | add the `in_development` label → remove every other state label → **remove the trigger label last** |
 | `in_review` | same label swap; the trigger is not touched |
 | custom (effect status) | add `state_labels.<key>`, remove other state labels; **never** consumes the trigger, **never** closes |
-| `merged` / `done` | strip `in_development`/`in_review`/`aborted`, then `PATCH {state: closed, state_reason: completed}` iff `close_on.merged` / `close_on.done` and the issue is still open |
-| `aborted` | strip `in_development`/`in_review`, add the `aborted` label; close as `not_planned` only if `close_on.aborted` — otherwise the issue stays **open** wearing the label |
+| `merged` / `done` | strip `in_development`/`in_review`/`aborted`, then `PATCH {state: closed, state_reason: completed}` iff `close_on.merged` / `close_on.done` and the issue is still open — **never for a pull request** |
+| `aborted` | strip `in_development`/`in_review`, add the `aborted` label; close as `not_planned` only if `close_on.aborted` — otherwise the issue stays **open** wearing the label. A pull request always stays open |
 
 **Trigger consumption is last on purpose:** if the swap partially fails and retries, the still-present trigger keeps the item filtered by the in-flight guard, so it can never be double-claimed. It is skipped entirely when the belt (and thus the label) is gone.
 
@@ -267,7 +272,7 @@ Human loop: notes are `[herdr-factory] <note>` comments; ask-human's first line 
 
 ### Materialized files
 
-- `.memory/herdr-factory/task.md` (the idempotency guard, and `@@WORK_DOC@@`): `# Issue #<n>: <title>`, then bullets `URL`, `Repo`, `Author`, `State`, `Labels`, and **`Closing reference: Fixes #<n>`** (or `Fixes owner/name#<n>` cross-repo — the shipped pr prompt requires the agent to copy this line into the PR body verbatim), then `## Description`, then one `## Comment by <login> (<date>)` per non-herdr comment.
+- `.memory/herdr-factory/task.md` (the idempotency guard, and `@@WORK_DOC@@`): `# Issue #<n>: <title>` (`# Pull request #<n>: …` under `kind: pull_requests`), then bullets `URL`, `Repo`, `Author`, `State`, `Labels`, and **`Closing reference: Fixes #<n>`** (or `Fixes owner/name#<n>` cross-repo — the shipped pr prompt requires the agent to copy this line into the PR body verbatim), then `## Description`, then one `## Comment by <login> (<date>)` per non-herdr comment.
 - `.memory/herdr-factory/issue.json` — raw `{issue, comments}`.
 - `.memory/herdr-factory/attachments/attachment-<k><ext>` — media downloaded and the markdown links rewritten to point at them. Caps: 12 attachments, 50 MB each. Both issue and comments are fetched as `full+json` because only the HTML body carries the signed URLs that resolve on private repos (and those signatures expire in minutes). Only these hosts are downloaded from: `private-user-images.githubusercontent.com`, `user-images.githubusercontent.com`, `camo.githubusercontent.com`, and `github.com/user-attachments/…`, https only — anything else is left as a link, with a footnote `> note: N attachment(s) could not be downloaded — follow the original links above.`
 
@@ -281,11 +286,12 @@ Buckets are **process-wide singletons** — every repo in the process shares the
 
 | symptom | cause | fix |
 |---|---|---|
-| `github_issues: cannot reach <repo> — bad auth, or the token lacks access (<msg>)` | wrong `repo`, or token can't see it | fix `repo`; check `gh auth status` / `GITHUB_TOKEN` |
-| `github_issues: issues are disabled on <repo> — enable them in repo settings` | issues tab off | enable Issues, or point `repo` at the repo that has them |
+| `github_issues: cannot reach <repo> — bad auth, or the token lacks access (<msg>)` | wrong `repo`, or token can't see it | fix `repo`; check `gh auth status` / `GITHUB_TOKEN` / `GITHUB_API_URL` |
+| `GITHUB_API_URL is not a URL: …` / `GITHUB_API_URL must be https …` | a typo'd GHES base in the repo `env` | it is the host the token is sent to — fix it; the source refuses to build |
+| `github_issues: issues are disabled on <repo> — enable them in repo settings` | issues tab off (only checked when `kind: issues`) | enable Issues, or point `repo` at the repo that has them |
 | `github_issues: the token has no push/write access to <repo> — labels and comments will fail` | read-only token | use a PAT with write on the polled repo |
 | `github_issues: trigger label "<label>" does not exist in <repo> — create it (or fix the belt's \`label\`) and add it to issues you want worked` | belt `label` never created | create the label (case doesn't matter) and apply it |
-| poll returns nothing though a labelled issue exists | it still wears a state label, or it's a PR | remove `herdr:in-development` / `herdr:in-review`; re-add the trigger |
+| poll returns nothing though a labelled issue exists | it still wears a state label, or it's a PR and `kind` is `issues` (or the reverse) | remove `herdr:in-development` / `herdr:in-review`; re-add the trigger; check `kind` |
 | new issues never picked up | trigger-labelled PRs fill the oldest-first page | remove the label from the PRs, or raise `max_pages` |
 | run parked with `issue #<n> transferred to another repository` / `… deleted` / `… not found` | issue moved/deleted/access lost | tear the run down; the source never reopens or follows the move |
 | startup fails with `no GitHub repo to poll` | no `repo`, no `repo.github`, no git origin | set `github_issues.repo: owner/name` |
@@ -298,6 +304,57 @@ Buckets are **process-wide singletons** — every repo in the process shares the
 4. `close_on.aborted` is **false** by default — aborted issues stay open wearing `herdr:aborted`.
 5. `repo` defaults to the **PR** repo; if issues live elsewhere, set it — and expect the qualified `Fixes owner/name#<n>` closing reference.
 6. `type_labels` values feed the branch prefix by substring: `Bug` → `fix/`, `Chore` → `chore/`, everything else → `feature/`.
+
+### Claiming pull requests (`kind: pull_requests`)
+
+`github_issues.kind: pull_requests` flips the poll to the repo's **open pull requests** carrying the
+belt's trigger label. Use it to review a PR that has no ticket behind it (one an outside agent
+opened, say). The opt-in is per **source**, not per belt — a source claims issues or PRs, never
+both; to do both, declare two sources over the same repo with different `name`s.
+
+```yaml
+work_sources:
+  - type: github_issues
+    name: gh-prs
+    github_issues:
+      repo: my-org/my-app
+      kind: pull_requests
+
+belt:
+  - name: review-gh
+    source: gh-prs
+    label: hf-review              # label a PR `hf-review` → the factory reviews it
+    # No `pr` step ⇒ nothing produces a pull request, and `in_review` is the produce(pull_request)
+    # effect — so a review belt must ask for it, or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
+    steps:
+      - type: custom
+        name: checkout            # `gh pr checkout @@KEY@@`, then `set-branch` so the engine follows
+        prompt_file: prompts/pr-checkout.md
+        produces: [commits]     # the checkout is what puts the PR's commits in the worktree
+      - type: review
+```
+
+Identical to issues: the trigger label is consumed on claim, `herdr:in-development` /
+`herdr:in-review` / `herdr:aborted` land on the PR, `claim_guard` works across hosts, notes and
+ask-human questions are PR comments (a PR's comments *are* issue comments), gone-ness maps the same
+way. Three differences:
+
+| | issues | `kind: pull_requests` |
+|---|---|---|
+| `close_on` | closes the item per `merged`/`done`/`aborted` | **never applies** — closing/merging stays the operator's; a terminal transition only strips state labels |
+| `task.md` header | `# Issue #<n>: <title>` | `# Pull request #<n>: <title>` |
+| work-doc bullets | `Closing reference: Fixes #<n>` | `Head branch` / `Base branch` / `Draft` / ``Checkout: `gh pr checkout <n>` `` (best-effort: if `GET /pulls/<n>` fails, only the `Checkout` line is written and `github_issues: could not read the branches of pull request #<n> — the work doc omits them` is logged) |
+
+`in_review` needs an **effect** on a review belt: it is the engine's `produce(pull_request)` effect, and a belt with no `pr` step produces no pull request — so without `effects: [{ on: enter, step: review, to: in_review }]` the PR goes straight from `herdr:in-development` to terminal, never wearing `herdr:in-review`.
+
+Also: `health` no longer requires the repo's Issues tab (`has_issues: false` is fine), and its
+missing-label error reads `… and add it to pull requests you want worked`. `describe` on the wrong
+kind throws `github_issues: #<n> is an issue, not a pull request` (or the reverse on a default
+source); a transition that finds the wrong kind returns `stale` with `#<n> is an issue` / `… is a
+pull request`. The item's `type` comes from `type_labels`/`default_type` only — a PR has no native
+GitHub issue type — so it drives the same branch prefix, which the checkout step then replaces via
+`set-branch`.
 
 ---
 

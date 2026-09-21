@@ -299,6 +299,14 @@
                     "type": "string",
                     "pattern": "^[\\w.-]+\\/[\\w.-]+$"
                   },
+                  "kind": {
+                    "default": "issues",
+                    "type": "string",
+                    "enum": [
+                      "issues",
+                      "pull_requests"
+                    ]
+                  },
                   "state_labels": {
                     "default": {},
                     "type": "object",

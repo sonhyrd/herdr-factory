@@ -13,7 +13,7 @@ import { run } from "./exec.ts";
 import { countGithubCall, GITHUB_MUTATION_BUCKETS, githubReadBucket } from "./github-budget.ts";
 import { HttpStatusError, httpOk, httpOkBytes, type HttpError, type HttpPolicy, type HttpResponse, type TokenBucket } from "./http.ts";
 
-const API = "https://api.github.com";
+const DEFAULT_API = "https://api.github.com";
 const API_VERSION = "2022-11-28";
 const JSON_TIMEOUT_MS = 30_000;
 const MEDIA_TIMEOUT_MS = 120_000;
@@ -102,6 +102,14 @@ export interface GhIssue {
   type?: { name?: string } | null;
   [key: string]: unknown;
 }
+/** The pull-request representation (GET /pulls/{n}) — only the fields materialize needs. The
+ *  issues endpoints already serve a PR's title/body/labels/comments; this exists solely for the
+ *  branch refs, which the issue view does not carry. */
+export interface GhPull {
+  head?: { ref?: string; repo?: { full_name?: string } | null };
+  base?: { ref?: string };
+  draft?: boolean;
+}
 export interface GhComment {
   id: number;
   created_at: string;
@@ -109,6 +117,30 @@ export interface GhComment {
   body_html?: string;
   user?: { login: string } | null;
   html_url?: string;
+}
+
+/** Resolve the API base every call is made against. Default `https://api.github.com`; overridden
+ *  per repo by `GITHUB_API_URL` in that repo's env file — GitHub Enterprise Server
+ *  (`https://ghe.example.com/api/v3`), and the seam the e2e harness points at its own fake.
+ *
+ *  VALIDATED HERE, at construction, because this is the host the Bearer token is sent to: a typo
+ *  must fail loudly at startup rather than leak a credential to whatever the string resolves to.
+ *  Only https is accepted, except on loopback — which is what makes a local fake possible without
+ *  opening a plaintext hole to anywhere else. */
+export function resolveGithubApiBase(raw: string | undefined): string {
+  const v = raw?.trim();
+  if (!v) return DEFAULT_API;
+  let url: URL;
+  try {
+    url = new URL(v);
+  } catch {
+    throw new Error(`GITHUB_API_URL is not a URL: "${v}" — use the API base, e.g. https://ghe.example.com/api/v3`);
+  }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !loopback) {
+    throw new Error(`GITHUB_API_URL must be https (got "${v}") — the API token is sent to it; only loopback may be http`);
+  }
+  return v.replace(/\/+$/, ""); // paths are appended with a leading slash
 }
 
 export function labelNames(issue: GhIssue): string[] {
@@ -126,13 +158,15 @@ export class GithubIssuesClient {
   private readonly envToken: string | undefined;
   private readonly tokenCmd: () => Promise<string | null>;
   private readonly budget: GithubBudget;
+  private readonly api: string;
   private readonly log: Logger;
   private token: string | undefined; // memoized SUCCESSFUL bootstrap only (never cache a failure)
 
-  constructor(repo: string, envToken?: string, tokenCmd?: () => Promise<string | null>, budget?: GithubBudget, log: Logger = () => {}) {
+  constructor(repo: string, envToken?: string, tokenCmd?: () => Promise<string | null>, budget?: GithubBudget, log: Logger = () => {}, apiBase?: string) {
     this.repo = repo;
     this.envToken = envToken?.trim() || undefined;
     this.budget = budget ?? { read: [githubReadBucket], mutation: GITHUB_MUTATION_BUCKETS };
+    this.api = resolveGithubApiBase(apiBase);
     this.log = log;
     // Default bootstrap: the user's gh CLI session. Injectable for tests.
     this.tokenCmd =
@@ -183,7 +217,7 @@ export class GithubIssuesClient {
       };
       const res = await httpOk(
         {
-          url: `${API}${path}`,
+          url: `${this.api}${path}`,
           method,
           redirect: "manual",
           timeoutMs: JSON_TIMEOUT_MS,
@@ -241,6 +275,11 @@ export class GithubIssuesClient {
     return this.json<GhIssue>("GET", `/repos/${this.repo}/issues/${n}`, {
       accept: opts.full ? "application/vnd.github.full+json" : undefined,
     });
+  }
+
+  /** The PR view of #n — for the head/base refs a `kind: pull_requests` work doc carries. */
+  async getPull(n: number): Promise<GhPull> {
+    return this.json<GhPull>("GET", `/repos/${this.repo}/pulls/${n}`);
   }
 
   /** All comments on an issue (paginated), optionally only those updated since `since` — note

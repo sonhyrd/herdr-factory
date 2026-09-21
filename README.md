@@ -287,6 +287,52 @@ dashboard's repo light; they resume on their own at the reset, no operator actio
 tick also logs what it spent — `github: 14 call(s) this tick (11 REST, 3 gh CLI)` — so you can see
 which host is eating the shared budget.
 
+### Reviewing pull requests — `kind: pull_requests`
+
+The same source can pick up **pull requests** instead of issues. Set `github_issues.kind:
+pull_requests` and the belt's trigger label is read off the repo's open PRs — which is how you
+review a PR nobody filed a ticket for (one an outside agent opened, say):
+
+```yaml
+work_sources:
+  - type: github_issues
+    name: gh-prs
+    github_issues:
+      repo: my-org/my-app
+      kind: pull_requests # poll PULL REQUESTS carrying the belt's label, not issues
+
+belt:
+  - name: review-gh
+    source: gh-prs
+    label: hf-review # label a PR `hf-review` and the factory reviews it
+    # No `pr` step ⇒ nothing produces a pull request, and `in_review` is the produce(pull_request)
+    # effect — so a review belt must ask for it, or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
+    steps:
+      - type: custom
+        name: checkout
+        prompt_file: prompts/pr-checkout.md # `gh pr checkout @@KEY@@`, then `set-branch` so the engine follows
+        produces: [commits] # the checkout is what puts the PR's commits in the worktree
+      - type: review
+```
+
+Everything about the lifecycle is the same as for issues: the trigger label is **consumed on
+claim**, the run shows as `herdr:in-development` / `herdr:in-review` on the PR itself,
+[`claim_guard`](#several-factories-on-one-source-claim_guard) still works across hosts, and
+questions arrive as PR comments (a PR's comments are issue comments). Two differences:
+
+- **A PR run never closes or merges the PR.** `close_on` does not apply to a pull request —
+  merging stays yours. A finished run only strips its state labels; a failed one leaves the PR
+  open wearing `herdr:aborted`.
+- **The work doc is the PR.** `task.md` opens `# Pull request #<n>: <title>` and carries
+  `Head branch` / `Base branch` / `Draft` / ``Checkout: `gh pr checkout <n>` `` bullets instead of
+  a `Closing reference: Fixes #<n>` line — the head branch is what the belt's first step checks
+  out.
+
+A source set to `pull_requests` claims **only** PRs, and a default source still skips every PR, so
+issue belts are untouched. Want both? Declare two sources over the same repo (different `name`s)
+and give each its own belt and trigger label.
+
 ## Sentry — fix production errors
 
 A `sentry` source turns a Sentry project's issues (production errors) into the work queue: the
@@ -688,7 +734,12 @@ and a type block:
   [`effects`](#effects--configurable-task-progression) can target, e.g. `qa: herdr:qa`),
   `close_on` (`merged`/`done`/`aborted`, defaults `true`/`true`/`false`), `type_labels` (issue label
   → work type; GitHub's native issue type wins when present) + `default_type` (default `Feature`),
-  `max_pages` (pages of 100 per poll, default 1). Lifecycle: claiming swaps in the in-development
+  `max_pages` (pages of 100 per poll, default 1), `kind` (`issues` — the default — or
+  `pull_requests`: poll the repo's **pull requests** by the trigger label instead, see
+  [Reviewing pull requests](#reviewing-pull-requests--kind-pull_requests)). GitHub Enterprise
+  Server: put its API base in the repo's `env` as `GITHUB_API_URL` (e.g.
+  `https://ghe.example.com/api/v3`) — there is no config key, because the base and the token that
+  is sent to it travel together. Lifecycle: claiming swaps in the in-development
   label and **consumes the trigger label** (the belt's `label`) — re-adding it is the retry; success
   strips the state labels and closes the issue as completed (a backstop over the PR's `Fixes #n`
   auto-close — it never reopens); an aborted run leaves the issue **open** with the aborted
@@ -1709,6 +1760,14 @@ harness with no skill mechanism can be pointed at the folder directly.
 | `HERDR_BIN_PATH`            | path to the `herdr` binary (default: `herdr` on PATH)       |
 | `HERDR_FACTORY_THEME`       | TUI palette: a herdr theme name, or `dark`/`light` — overrides herdr's `[theme] name` |
 | `HERDR_FACTORY_FLEET_ENDPOINTS` | JSON file of `{"<machine>": "http://host:port"}` overrides for [`fleet`](#fleet--every-run-on-every-machine) — names a machine's API directly instead of forwarding over SSH (a host that moved its port off 8765; the e2e suite's second server) |
+
+Credentials and per-repo backend settings do **not** live here: they go in that repo's own `env`
+file (`~/.config/herdr-factory/repos/<name>/env`, chmod 600) — `JIRA_EMAIL` / `JIRA_API_TOKEN`,
+`SENTRY_AUTH_TOKEN`, `GITHUB_TOKEN`, and `GITHUB_API_URL` (the `github_issues` API base: default
+`https://api.github.com`, set it for **GitHub Enterprise Server**, e.g.
+`https://ghe.example.com/api/v3`). `GITHUB_API_URL` is validated at startup and must be `https`
+(only loopback may be `http`) — it is the host your token is sent to, so a typo fails loudly
+instead of leaking the credential.
 
 `HERDR_FACTORY_AUTO_UPDATE` and `HERDR_CHANNEL` are captured into the launchd/systemd **service
 environment at install time** — set them and re-run `herdr-factory install` (or the installer) to

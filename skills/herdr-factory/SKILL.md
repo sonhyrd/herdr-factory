@@ -155,7 +155,8 @@ and source auth recover on their own.
 Use these words precisely; the config and the CLI both key off them.
 
 - **work source** — where items come from: `jira`, `github_issues`, `local_markdown`, `sentry`. Named,
-  and referenced by belts.
+  and referenced by belts. A `github_issues` source with `kind: pull_requests` claims labelled **pull
+  requests** instead of issues (and never closes or merges one) — see references/work-sources.md.
 - **belt** — one source + one ordered `steps[]` pipeline. A repo runs as many as you like, in parallel.
 - **step primitive** — `work` (implements + commits) · `evidence` (films proof, can bounce) · `review`
   (read-only gate, can bounce) · `pr` (pushes, opens the PR, rides CI) · `custom` (your own station,
@@ -183,7 +184,7 @@ The values asked for most often. Everything else is in
 | required top-level keys | `repo`, `work_sources` (≥1), `belt` (≥1) — note `belt` is singular but holds a list |
 | state | `~/.local/state/herdr-factory/` — `herdr-factory.db`, `logs/`, `<repo>/logs/<date>.log` |
 | code | `~/.local/share/herdr-factory/` (hard-reset by auto-update — never edit it) |
-| credentials | per-repo `env`, `chmod 600`: `JIRA_EMAIL`+`JIRA_API_TOKEN` · `SENTRY_AUTH_TOKEN` · `GITHUB_TOKEN` (optional; `gh` login otherwise). No global secrets file. |
+| credentials | per-repo `env`, `chmod 600`: `JIRA_EMAIL`+`JIRA_API_TOKEN` · `SENTRY_AUTH_TOKEN` · `GITHUB_TOKEN` (optional; `gh` login otherwise) · `GITHUB_API_URL` (optional; the `github_issues` REST base, for GitHub Enterprise Server). No global secrets file. |
 | server | `127.0.0.1:8765` (`HERDR_FACTORY_PORT`), OpenAPI at `/doc`, Swagger UI at `/ui` |
 | several machines | `herdr-factory fleet [--json]` — every run on every machine, read in parallel over an SSH forward per remote box (nothing to configure: it is this machine plus every *enabled* `herdr machine list` entry). The **TUI Dashboard reads the same fleet**: a header per machine, an `@machine` badge per repo row, `m` to filter to one machine, and every key routed to the machine that owns the run (its confirmation names it). A machine that does not answer reads **`unverifiable` with the time it last answered**, keeping its last known rows — never as having no runs, so never claim an item because it was missing from a read where its machine was unverifiable |
 | default pipeline | `steps: [{ type: work }, { type: review }, { type: pr }]` |
@@ -192,7 +193,7 @@ The values asked for most often. Everything else is in
 | a step with no `tab`/`pane` | gets a pane spawned for it — except `evidence`, which is **silently skipped** without one, and the first step of a `default_layout` belt, which config-load **rejects** (that pane's new tab would cost the belt its layout) |
 | a shared layout, short belt | a factory-claimed worktree builds only the tabs **its** belt's steps target (plus the `setup:` tab and any tab with a pane carrying its own `prompt:`) — so a `work`→`pr` belt on a four-tab ship layout gets two tabs, not four idle ones. A hand-created worktree gets every tab. See references/layouts.md |
 | a layout pane a step targets | declares its own agent (`agent: claude` + `agent_args: […]`); herdr starts it and waits until it is ready for input. Config-load rejects a target pane that starts no agent |
-| on merge | each source decides: `jira` stays **silent** unless you set `jira.status.done`; `github_issues` **closes the issue** as completed (`close_on.merged`, default `true`); `sentry` posts a PR-link comment (`on_merge`, default `comment`). A belt `effects` entry overrides. |
+| on merge | each source decides: `jira` stays **silent** unless you set `jira.status.done`; `github_issues` **closes the issue** as completed (`close_on.merged`, default `true`; never for a `kind: pull_requests` item); `sentry` posts a PR-link comment (`on_merge`, default `comment`). A belt `effects` entry overrides. |
 | host-wide limits | optional **host-local** `~/.config/herdr-factory/machine.yml` (gitignore it in a shared config repo): `max_active_workspaces` across all repos + `min_free_memory_mb` claim floor. Gates new claims only; `status`/`doctor` show it; `reload` re-reads it. Also `layout_hook.ignore_pane_labels` (default `[Sidebar]`) — pane labels the layout hook's freshness gate discounts, so a herdr plugin that adds a pane to every new tab doesn't stop every layout from building. See references/config-reference.md §3.14 |
 | several factories, one source | one factory per source backend by default (they'd double-claim). `jira`/`github_issues` accept `claim_guard: { enabled: true }` in **every** sharing factory — claims arbitrate on the item's comments (lowest comment id wins); a host releases its OWN stale claims (run gone locally) each tick, but ANOTHER host's dead claim is never auto-cleared → post `[herdr-factory release id=<run> host=<host>]` by hand. See references/work-sources.md |
 | spawned agents | `claude --dangerously-skip-permissions` unless an `agent:` block says otherwise (that block drives SPAWNED panes; a layout pane names its own agent) |

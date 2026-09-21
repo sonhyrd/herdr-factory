@@ -105,6 +105,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `doctor-agent-tooling` | issue #49: the agent-tooling rows are gated by the CONFIG, on a host that really has no `cursor-agent` — a belt that never asks for Cursor leaves all four `not configured` (never ✗, in both modes), and the same host with a Cursor harness in its config turns the row into a ✗ that exits 1 |
 | `eligible-last-poll` | the dashboard's read budget: `/eligible` on a real `serve` answers from the TICK's last poll — 20 refreshes cost **0** source calls and log no `eligible query failed`, a claimed item is a run rather than an eligible row, and a poll that fails leaves the last good list standing |
 | `jira-parity` | a source whose status of record is the BACKEND: label pickup, ordered write-backs, a belt effect onto a custom Jira column |
+| `github-pr-parity` | issue #64: `github_issues.kind: pull_requests` — an opted-in source claims the labelled PULL REQUEST and not the labelled issue, a default source on the same repo still skips PRs (while claiming its own issue, so the negative isn't vacuous), the claim consumes the trigger and the `herdr:*` state labels land on the PR itself, and with `close_on` ALL TRUE the issues belt's terminal write-back really closes its issue while the PR belt's never even ATTEMPTS a close |
 | `jira-ask-human` | the reply channel as comments, including the marker filter that stops the factory answering itself |
 | `jira-stale-item` | a ticket that vanishes is `stale`, not an infinite retry |
 | `sentry-parity` | the mirror image: internal ledger, Sentry never moved for lifecycle, the `on_merge` note, and a release regression reopening the work |
@@ -274,11 +275,18 @@ agent never signalled" 120 seconds later — so each now has a guard that fires 
 
 ## Not built yet (the plan's later milestones)
 
-`github_issues` hardcodes `api.github.com`, so it cannot get the source-parity treatment jira and
-sentry get (both take a configurable `base_url`); it needs a `GITHUB_API_URL` seam first. The fakes
-under `harness/sources/` are stateful, not route tables: `jira-fake.ts` parses the pickup JQL and
-really moves statuses, `sentry-fake.ts` serves the issue/event shapes the materializer renders — each
-documented in its own `.md`, each verified by driving the ENGINE'S OWN client against it.
+The fakes under `harness/sources/` are stateful, not route tables: `jira-fake.ts` parses the pickup
+JQL and really moves statuses, `sentry-fake.ts` serves the issue/event shapes the materializer
+renders, `github-fake.ts` holds labels + open/closed state and interleaves PRs into the issues list
+the way the real endpoint does — each documented in its own `.md`, each verified by driving the
+ENGINE'S OWN client against it. `local_markdown` has no backend to fake, so all three external
+sources are now covered.
+
+`github_issues` was the last one that could not be: it hardcoded `api.github.com`. It now resolves
+its API base from **`GITHUB_API_URL`** in the repo's env file (`resolveGithubApiBase` in
+`src/clients/github-issues.ts`) — GitHub Enterprise Server's own knob, doubling as the harness seam.
+The resolver accepts `https` only, *except* on loopback, so the fake works without opening a
+credential-leaking hole anywhere else.
 
 The **ds4 tier** runs on the HOST, not in the image: `opencode` isn't installed in the container and
 the model server lives on the developer's machine. Run it with `HF_E2E_TIER=ds4 npx vitest run --config

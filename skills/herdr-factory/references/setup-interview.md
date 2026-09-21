@@ -382,6 +382,7 @@ Format: `KEY=value`, one per line; `#` comments and blank lines skipped; the fir
 | `jira` | `JIRA_EMAIL` (the Atlassian account email, not a username), `JIRA_API_TOKEN` (id.atlassian.com → Security → API tokens) | both |
 | `sentry` | `SENTRY_AUTH_TOKEN` (`event:read` + `event:write`) | yes |
 | `github_issues` | `GITHUB_TOKEN` | **no** — falls back to the `gh` CLI login, but give each host its own token (the rate limit is per account) |
+| `github_issues` | `GITHUB_API_URL` | **no** — the REST base, default `https://api.github.com`; set it only for GitHub Enterprise Server (`https://ghe.example.com/api/v3`). `https` only (loopback may be `http`), validated at startup |
 | `local_markdown` | — | — |
 
 `init` pre-writes this file with the keys **empty** for `jira`/`sentry` (deliberately, so `doctor` flags them) and never touches an existing one. A key present but empty (`JIRA_API_TOKEN=`) counts as missing. Process env is **not** consulted for these keys.

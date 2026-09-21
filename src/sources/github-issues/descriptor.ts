@@ -14,6 +14,11 @@ const GithubIssuesBlockSchema = z.object({
     .trim()
     .regex(/^[\w.-]+\/[\w.-]+$/, "owner/name")
     .optional(),
+  // What the belt's trigger label is read off. `issues` (default) is the classic behaviour and
+  // skips pull requests; `pull_requests` inverts the filter so a belt claims LABELLED PRs instead
+  // (e.g. a review belt that runs on PRs an outside agent opened). `close_on` does not apply to a
+  // pull request — closing/merging one stays the operator's.
+  kind: z.enum(["issues", "pull_requests"]).default("issues"),
   // The trigger label is NOT here — it's per-belt now (belt.label). It's threaded into
   // listEligible (the poll filter) AND transition (consumed on in_development) AND health.
   state_labels: z
@@ -67,6 +72,7 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
     }
     return {
       repo: b.repo,
+      kind: b.kind,
       stateLabels: {
         inDevelopment: b.state_labels.in_development,
         inReview: b.state_labels.in_review,
@@ -91,7 +97,10 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
         `work source "${ctx.sourceName}": no GitHub repo to poll — set github_issues.repo (owner/name), or repo.github / a git origin so the default resolves`,
       );
     }
-    const client = new GithubIssuesClient(repo, ctx.env.GITHUB_TOKEN, undefined, undefined, ctx.log);
+    // GITHUB_API_URL (per-repo env, optional) redirects every REST call: GitHub Enterprise Server,
+    // and the seam the e2e harness points at its own fake. Validated in the client — an unusable
+    // value throws HERE, at startup, not at the first poll.
+    const client = new GithubIssuesClient(repo, ctx.env.GITHUB_TOKEN, undefined, undefined, ctx.log, ctx.env.GITHUB_API_URL);
     return new GithubIssuesSource({ ...ctx.cfg, repo }, client, ctx.ghRepo || repo, ctx.log);
   },
   secrets: [
@@ -102,11 +111,18 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
       placeholder: "(optional — defaults to `gh auth token`)",
       hint: "optional PAT with issues:write on the polled repo; when unset, the gh CLI's login is used",
     },
+    {
+      envKey: "GITHUB_API_URL",
+      required: false,
+      placeholder: "(optional — default https://api.github.com)",
+      hint: "optional API base for GitHub Enterprise Server, e.g. https://ghe.example.com/api/v3; https only (loopback may be http)",
+    },
   ],
   tui: {
     defaultBlock: () => ({}),
     fields: [
       { label: "repo", path: ["github_issues", "repo"], placeholder: "(optional; default = PR repo)" },
+      { label: "kind", path: ["github_issues", "kind"], choices: ["issues", "pull_requests"], enumDefault: "issues" },
       { label: "state_labels.in_development", path: ["github_issues", "state_labels", "in_development"], placeholder: "herdr:in-development" },
       { label: "state_labels.in_review", path: ["github_issues", "state_labels", "in_review"], placeholder: "herdr:in-review" },
       { label: "state_labels.aborted", path: ["github_issues", "state_labels", "aborted"], placeholder: "herdr:aborted" },

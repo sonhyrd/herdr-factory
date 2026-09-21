@@ -35,6 +35,8 @@ export interface FakeIssue {
   user: { login: string };
   assignees: { login: string }[];
   pull_request?: object; // present ⇒ the "issue" is a PR
+  /** PR-only: what GET /pulls/{n} answers (the refs the issues endpoints never carry). */
+  pull?: { head: { ref: string; repo: { full_name: string } }; base: { ref: string }; draft: boolean };
   type?: { name: string } | null; // native issue type
   comments: { id: number; created_at: string; updated_at: string; body: string; user: { login: string } }[];
 }
@@ -59,6 +61,8 @@ export interface FakeGithub {
   /** Full media URL → served bytes (anything not here 404s; non-https hosts too). */
   assets: Map<string, Buffer>;
   addIssue(n: number, opts?: Partial<Omit<FakeIssue, "number" | "labels" | "comments">> & { labels?: string[] }): FakeIssue;
+  /** A PULL REQUEST #n: an issue carrying `pull_request` plus a GET /pulls/{n} view. */
+  addPull(n: number, opts?: Partial<Omit<FakeIssue, "number" | "labels" | "comments">> & { labels?: string[]; head?: string; base?: string }): FakeIssue;
   addComment(n: number, body: string, login?: string): number;
   /** Edit an existing comment: body changes, updated_at bumps, created_at stays. */
   editComment(n: number, id: number, body: string): void;
@@ -70,6 +74,7 @@ export const DEFAULT_CFG: GithubIssuesSourceCfg = {
   stateLabels: { inDevelopment: "herdr:in-development", inReview: "herdr:in-review", aborted: "herdr:aborted" },
   stateLabelsExtra: {},
   closeOn: { merged: true, done: true, aborted: false },
+  kind: "issues",
   typeLabels: { bug: "Bug", defect: "Bug", chore: "Chore", task: "Chore", enhancement: "Feature" },
   defaultType: "Feature",
   maxPages: 1,
@@ -105,10 +110,16 @@ export function makeFakeGithub(repo = "acme/tracker"): FakeGithub {
         user: opts.user ?? { login: "reporter" },
         assignees: opts.assignees ?? [],
         pull_request: opts.pull_request,
+        pull: opts.pull,
         type: opts.type ?? null,
         comments: [],
       };
       fake.issues.set(n, issue);
+      return issue;
+    },
+    addPull(n, opts = {}) {
+      const issue = fake.addIssue(n, { ...opts, pull_request: opts.pull_request ?? { url: `https://api.github.com/repos/${repo}/pulls/${n}` } });
+      issue.pull = { head: { ref: opts.head ?? `pr-${n}`, repo: { full_name: repo } }, base: { ref: opts.base ?? "main" }, draft: false };
       return issue;
     },
     addComment(n, body, login = "human") {
@@ -146,7 +157,7 @@ export function makeFakeGithub(repo = "acme/tracker"): FakeGithub {
     body_html: i.body_html ?? `<p>${i.body}</p>`,
     user: i.user,
     assignees: i.assignees,
-    html_url: `https://github.com/${repo}/issues/${i.number}`,
+    html_url: `https://github.com/${repo}/${i.pull_request ? "pull" : "issues"}/${i.number}`,
     ...(i.pull_request ? { pull_request: i.pull_request } : {}),
     ...(i.type ? { type: i.type } : {}),
   });
@@ -206,6 +217,14 @@ export function makeFakeGithub(repo = "acme/tracker"): FakeGithub {
         .sort((a, b) => a.number - b.number);
       const per = Number(u.searchParams.get("per_page") ?? "30");
       return json(list.slice((page - 1) * per, page * per).map(issueJson));
+    }
+    // GET /repos/o/r/pulls/{n} — the PR view (branch refs only live here)
+    const pullM = u.pathname.match(new RegExp(`^/repos/${esc}/pulls/(\\d+)$`));
+    if (pullM && method === "GET") {
+      const pn = Number(pullM[1]);
+      const pi = fake.issues.get(pn);
+      if (!pi?.pull) return json({ message: "Not Found" }, 404);
+      return json(pi.pull);
     }
     // per-issue routes
     const m = u.pathname.match(new RegExp(`^/repos/${esc}/issues/(\\d+)(/(comments|labels)(/(.+))?)?$`));

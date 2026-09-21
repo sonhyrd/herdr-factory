@@ -490,6 +490,65 @@ herdr-factory --repo my-repo run
 
 Notes: `match` narrows *within* a belt's label, it does not widen — a ticket labelled `agent-bug` whose type isn't a bug matches no belt and is simply left. Because `claim` takes `--belt`, a manual claim ignores both the label and the predicate. Set `active: false` on a belt to pause new claims while in-flight runs finish (strict boolean — `"false"` is rejected).
 
+## 9. `review-gh` — review a labelled pull request (no ticket)
+
+**Use this when** a PR lands from somewhere the factory did not open it — an outside agent, a contractor, a bot — and you want the factory to review it on demand. Label the PR, get a review; nothing closes or merges it.
+
+```yaml
+# yaml-language-server: $schema=../../config.schema.json
+repo:
+  path: ~/dev/my-repo # EDIT: the MAIN checkout of the repo the PRs are on
+  base_ref: origin/main
+
+work_sources:
+  - type: github_issues
+    name: gh-prs
+    github_issues:
+      repo: my-org/my-app # EDIT (optional — defaults to this checkout's origin)
+      kind: pull_requests # poll PULL REQUESTS carrying the belt's label, not issues
+
+belt:
+  - name: review-gh
+    source: gh-prs
+    label: hf-review # EDIT: label a PR with this and the factory claims it
+    # `in_review` is the produce(pull_request) effect, and there is no `pr` step here — ask for it
+    # explicitly or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
+    steps:
+      - type: custom
+        name: checkout
+        prompt_file: prompts/pr-checkout.md
+        produces: [commits] # the checkout is what puts the PR's commits in the worktree — `review` requires them
+        budget_seconds: 600
+      - { type: review }
+```
+
+**Edit these**
+- `github_issues.repo` and `belt[0].label` — the label must already exist in the repo (`gh label create hf-review`).
+- The checkout prompt — the run starts on a fresh branch off `base_ref`, so step 1 must move the worktree onto the PR's head.
+
+**File to create** — `~/.config/herdr-factory/repos/my-repo/prompts/pr-checkout.md`:
+```md
+You are in a fresh worktree for pull request **#@@KEY@@** of this repo.
+Read `@@WORK_DOC@@` — it carries the PR's title, body, every comment, and its `Head branch`.
+
+1. Run `gh pr checkout @@KEY@@` in this worktree.
+2. Tell the engine which branch you are on now:
+   `herdr-factory --repo my-repo set-branch @@KEY@@ <the head branch> --source gh-prs`
+3. Write what you checked out to `@@HANDOFF_OUT@@`, then run
+   `herdr-factory --repo my-repo step-done @@KEY@@ checkout --source gh-prs --pass 1`.
+```
+
+**Credentials** — none required beyond an authenticated `gh` (or `GITHUB_TOKEN`) with write access to the repo: the run adds/removes labels and posts comments on the PR. On GitHub Enterprise Server also set `GITHUB_API_URL=https://ghe.example.com/api/v3` in the same `env` file.
+
+**First work item**
+```sh
+gh pr edit 412 --add-label hf-review
+herdr-factory --repo my-repo run
+```
+
+Notes: claiming **consumes** `hf-review` (re-add it to re-review) and swaps in `herdr:in-development`, then `herdr:in-review`; a failed run leaves the PR open wearing `herdr:aborted`. `close_on` is ignored for a PR — the factory never closes or merges one. No `pr` step here (there is already a PR); the review's findings land wherever your `review` prompt posts them. A source is issues **or** PRs, never both: keep your issue belt on a second `github_issues` source over the same repo with its own `name`.
+
 ## Composing your own
 
 Three questions fix a belt's shape:
