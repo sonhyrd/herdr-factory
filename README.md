@@ -890,8 +890,10 @@ source_comments:
 `brand` (letters, digits, `.`, `_`, `-` — it is embedded in markers and re-parsed) drives **every** comment
 the factory authors: the [claim ledger](#several-factories-on-one-source-claim_guard) lines
 (`[hf claim id=112 host=contabo]`), the question marker (`[hf question: …]`), the prefix on notes
-(`[hf] …`), the "no answer needed" note on a moot question, and the description on state labels the
-`github_issues` source auto-creates (`managed by hf`). Unset ⇒ byte-identical strings to before.
+(`[hf] …`) including the `⚠ hf parked this run for attention: …` note a work error posts, the
+"no answer needed" note on a moot question, and the description on state labels the `github_issues`
+source auto-creates (`managed by hf`). Unset ⇒ byte-identical strings to before. The `resume` /
+`triage` command lines inside a note keep naming the real binary — they are commands, not branding.
 
 Pair it with `machine.yml`'s [`host_alias`](#machine-limits--machineyml-host-local-optional) to keep raw
 hostnames off a public tracker too.

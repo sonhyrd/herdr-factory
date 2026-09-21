@@ -3300,6 +3300,10 @@ describe("attention workflow — resume, parked slots, re-notification", () => {
     expect(calls.postNotes.length).toBe(1);
     expect(calls.postNotes[0]![0]).toBe("K-A5");
     expect(calls.postNotes[0]![1]).toContain("resume K-A5");
+    // The note's BODY carries the configured brand too (issue #70) — the default is today's text,
+    // while the `resume`/`triage` lines keep naming the real binary an operator has to type.
+    expect(calls.postNotes[0]![1]).toContain("⚠ herdr-factory parked this run for attention");
+    expect(calls.postNotes[0]![1]).toContain("herdr-factory --repo demo resume K-A5");
 
     // A file-channel source (local_markdown): its "notes" are hidden files nobody watches — the
     // same work error reports into the pane instead.

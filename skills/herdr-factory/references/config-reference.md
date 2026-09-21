@@ -378,8 +378,10 @@ dropped. AWS credentials come from the ambient chain — never from config.
 
 What the factory calls itself in **every** comment it writes to a work source: the claim/release ledger
 lines (`[<brand> claim id=<run> host=<host>]`), the question marker (`[<brand> question: <repo>/<run>/<q>]`),
-the prefix on notes (`[<brand>] …`), the moot-question `✅ <brand>: no answer needed …` note, and the
-description on state labels `github_issues` auto-creates (`managed by <brand>`). Default ⇒ byte-identical
+the prefix on notes (`[<brand>] …`) and the `⚠ <brand> parked this run for attention: …` body of the
+work-error note, the moot-question `✅ <brand>: no answer needed …` note, and the description on state
+labels `github_issues` auto-creates (`managed by <brand>`). The `resume`/`triage` command lines inside
+a note are NOT branded — they name the binary an operator types. Default ⇒ byte-identical
 strings to before the key existed.
 
 READERS are bilingual and always will be: the ledger parser, `bearsHerdrMarker` (INV-6) and the askHuman

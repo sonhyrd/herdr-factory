@@ -1163,7 +1163,7 @@ async function escalateAttention(
   const src = opts.skipSourceNote || !WORK_ERROR_REASONS.has(opts.reason) ? undefined : deps.resolveSource(run.workSource);
   if (src && src.client.spec.replyChannel === "comments") {
     await src.client
-      .postNote(run.ticketKey, `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\n${commands}`)
+      .postNote(run.ticketKey, `⚠ ${deps.config.sourceComments.brand} parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\n${commands}`)
       .catch((e) => deps.log("warn", `${run.ticketKey}: attention note not posted to ${src.name}: ${err(e)}`));
     return;
   }
