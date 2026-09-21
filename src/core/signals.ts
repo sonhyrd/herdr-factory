@@ -115,10 +115,14 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       //    is misaddressed and rejected loudly instead of being recorded then silently wiped by
       //    the next entry's re-base.
       //  - a carried pass stamp must match the step's CURRENT pass (see SIGNAL_DESCRIPTORS).
-      if (step !== run.step) {
-        if (deps.store.getRunStep(run.id, step)?.done) {
-          return { ok: true, message: `step "${step}" is already recorded done — nothing to do` };
-        }
+      // The PR-opening step is the one exception: enterReviewing hands the run to the PR watch as
+      // soon as a review-ready PR is adopted, clearing run.step while that agent is still polling
+      // CI. Its step-done still has to land — the "ready to merge" notification waits on it.
+      const prWatchDone = run.phase === "reviewing" && !!belt && belt.steps.find((s) => s.opensPr)?.name === step;
+      if (step !== run.step && deps.store.getRunStep(run.id, step)?.done) {
+        return { ok: true, message: `step "${step}" is already recorded done — nothing to do` };
+      }
+      if (step !== run.step && !prWatchDone) {
         deps.log("warn", `${body.key}: step-done for "${step}" ignored — the active step is "${run.step ?? "(none)"}"`);
         return { ok: false, message: `"${step}" is not the run's active step ("${run.step ?? "none"}") — signal ignored` };
       }

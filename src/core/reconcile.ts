@@ -2474,7 +2474,17 @@ const GREEN_WATCH = { step: "pull_request", watch: "pr_green" } as const;
 
 async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig): Promise<void> {
   const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
-  const green = pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
+  // The PR-opening step may still be RUNNING: enterReviewing hands off the moment a review-ready PR
+  // is adopted, WITHOUT waiting for step-done (see prReadyForReview). Its agent is still polling CI
+  // and bot reviews and may still push, so "ready to merge" is a lie until it signals done. Gate on
+  // the step's own `done` flag — a bounce clears it, so this also re-arms for a rework pass. Only
+  // when the step actually ran here (a row exists): an adopted/resumed run that never spawned a pr
+  // step has no row and keeps the old behaviour.
+  const prStep = deps.resolveBelt(run.belt)?.steps.find((s) => s.opensPr);
+  const prStepState = prStep ? deps.store.getRunStep(run.id, prStep.name) : undefined;
+  const stepRunning = prStepState != null && !prStepState.done;
+  const green =
+    !stepRunning && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
   if (!green) {
     if (st?.sig != null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null });
     return;

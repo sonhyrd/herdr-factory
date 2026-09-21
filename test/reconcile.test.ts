@@ -2580,6 +2580,30 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.notify).toBe(2);
   });
 
+  // --- issue #78: the pr step is still running --------------------------------------------------
+  it("reviewing + green PR but the pr step has no step_done → no notify, no pr_green, prGreen false", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-BUSY", "reviewing", null, { prNumber: 26, lastThreadSig: "s0" });
+    // enterReviewing cleared run.step while the pr agent kept polling CI: its row is live, not done.
+    store.upsertRunStep(run.id, "pr", { paneId: "w1:ppr" });
+    state.pr = { number: 26, state: "OPEN", url: "u", headOid: "sha-1" };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+    expect(store.timeline("demo", "K-BUSY").some((e) => e.type === "pr_green")).toBe(false);
+    expect(store.getWatchState(run.id, "pull_request", "pr_green")?.sig ?? null).toBeNull(); // app.ts prGreen
+
+    // The pr agent finishes: step-done lands even though run.step is null in the PR watch...
+    const res = await applySignal(deps, "step-done", { key: "K-BUSY", step: "pr", source: "jira" });
+    expect(res.ok).toBe(true);
+    expect(store.getRunStep(run.id, "pr")?.done).toBe(true);
+    // ...and the same green head is news now (step-done reconciles once; further ticks stay quiet).
+    expect(calls.notify).toBe(1);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+    expect(store.getWatchState(run.id, "pull_request", "pr_green")?.sig).toBe("sha-1");
+  });
+
   it("reviewing + still working → does not pile on", async () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-11", "reviewing", null, { lastThreadSig: "old" });
