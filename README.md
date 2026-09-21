@@ -305,6 +305,9 @@ belt:
   - name: review-gh
     source: gh-prs
     label: hf-review # label a PR `hf-review` and the factory reviews it
+    # No `pr` step ⇒ nothing produces a pull request, and `in_review` is the produce(pull_request)
+    # effect — so a review belt must ask for it, or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
     steps:
       - type: custom
         name: checkout
@@ -733,7 +736,10 @@ and a type block:
   → work type; GitHub's native issue type wins when present) + `default_type` (default `Feature`),
   `max_pages` (pages of 100 per poll, default 1), `kind` (`issues` — the default — or
   `pull_requests`: poll the repo's **pull requests** by the trigger label instead, see
-  [Reviewing pull requests](#reviewing-pull-requests--kindpull_requests)). Lifecycle: claiming swaps in the in-development
+  [Reviewing pull requests](#reviewing-pull-requests--kindpull_requests)). GitHub Enterprise
+  Server: put its API base in the repo's `env` as `GITHUB_API_URL` (e.g.
+  `https://ghe.example.com/api/v3`) — there is no config key, because the base and the token that
+  is sent to it travel together. Lifecycle: claiming swaps in the in-development
   label and **consumes the trigger label** (the belt's `label`) — re-adding it is the retry; success
   strips the state labels and closes the issue as completed (a backstop over the PR's `Fixes #n`
   auto-close — it never reopens); an aborted run leaves the issue **open** with the aborted
@@ -1754,6 +1760,14 @@ harness with no skill mechanism can be pointed at the folder directly.
 | `HERDR_BIN_PATH`            | path to the `herdr` binary (default: `herdr` on PATH)       |
 | `HERDR_FACTORY_THEME`       | TUI palette: a herdr theme name, or `dark`/`light` — overrides herdr's `[theme] name` |
 | `HERDR_FACTORY_FLEET_ENDPOINTS` | JSON file of `{"<machine>": "http://host:port"}` overrides for [`fleet`](#fleet--every-run-on-every-machine) — names a machine's API directly instead of forwarding over SSH (a host that moved its port off 8765; the e2e suite's second server) |
+
+Credentials and per-repo backend settings do **not** live here: they go in that repo's own `env`
+file (`~/.config/herdr-factory/repos/<name>/env`, chmod 600) — `JIRA_EMAIL` / `JIRA_API_TOKEN`,
+`SENTRY_AUTH_TOKEN`, `GITHUB_TOKEN`, and `GITHUB_API_URL` (the `github_issues` API base: default
+`https://api.github.com`, set it for **GitHub Enterprise Server**, e.g.
+`https://ghe.example.com/api/v3`). `GITHUB_API_URL` is validated at startup and must be `https`
+(only loopback may be `http`) — it is the host your token is sent to, so a typo fails loudly
+instead of leaking the credential.
 
 `HERDR_FACTORY_AUTO_UPDATE` and `HERDR_CHANNEL` are captured into the launchd/systemd **service
 environment at install time** — set them and re-run `herdr-factory install` (or the installer) to

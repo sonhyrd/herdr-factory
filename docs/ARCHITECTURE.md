@@ -597,7 +597,16 @@ reverse-engineered during the bash prototype.
   transferred issue answers **301** (which a followed redirect would silently chase into the
   new repo, auth + method preserved — mutating the issue there), a deleted one **410**, an
   inaccessible one **404** — all mapped to `stale`/`StaleItemError` via `classifyGone`. Auth is
-  `GITHUB_TOKEN` else the gh CLI's token (`gh auth token`, refreshed once on a 401).
+  `GITHUB_TOKEN` else the gh CLI's token (`gh auth token`, refreshed once on a 401). The REST base
+  is **`GITHUB_API_URL`** in the same per-repo env file (default `https://api.github.com`) — GitHub
+  Enterprise Server, and the seam the e2e GitHub fake needs. `resolveGithubApiBase` validates it at
+  CONSTRUCTION (a bad value fails at startup, not at the first poll) and accepts `https` only,
+  except on loopback — it is the host the credential goes to. The REST base
+  is **`GITHUB_API_URL`** in the same per-repo env file (default `https://api.github.com`) —
+  GitHub Enterprise Server, and the seam the e2e GitHub fake needs. Deliberately an env key, not a
+  config one: the base and the token sent to it travel together. `resolveGithubApiBase` validates
+  it at CONSTRUCTION (so a bad value fails at startup, not at the first poll) and accepts `https`
+  only, except on loopback — it is the host the credential goes to.
   `github-budget.ts` holds the **process-wide** budget buckets (module singletons — every repo
   runtime spends the same authenticated user's budget): reads 5/s sustained; mutations chain a
   per-minute (~60/min under GitHub's 80/min secondary cap) AND a per-hour (500/hr) bucket. It also
@@ -1742,9 +1751,12 @@ about to revert. It's driven two ways:
   (`loadEnvMap(repoDir)` reads only `<repoDir>/env`; `saveEnvValues` merges TUI edits back,
   preserving unrelated keys). The engine never interprets the keys — each source descriptor's
   secrets manifest declares what matters: `JIRA_EMAIL` + `JIRA_API_TOKEN` (required, `jira`) ·
-  `GITHUB_TOKEN` (optional, `github_issues` — falls back to the gh CLI's token). Secrets are
-  strictly per-repo; there is no shared/global secrets file. *Where* work is polled from (the
-  Atlassian site `base_url`, the GitHub `repo`) is per-repo config, not a secret.
+  `GITHUB_TOKEN` (optional, `github_issues` — falls back to the gh CLI's token) · `GITHUB_API_URL`
+  (optional, `github_issues` — the REST base; default `https://api.github.com`, set for GitHub
+  Enterprise Server). Secrets are strictly per-repo; there is no shared/global secrets file.
+  *Where* work is polled from (the Atlassian site `base_url`, the GitHub `repo`) is per-repo
+  config, not a secret — `GITHUB_API_URL` is the exception that lives here anyway, because it names
+  the host the token is sent to and the two have to move together.
 - **Host-local** — `~/.config/herdr-factory/machine.yml` (optional, `MachineConfigSchema` strict zod;
   `machine.schema.json` is written next to `config.schema.json`): `max_active_workspaces` (machine-wide
   cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), and

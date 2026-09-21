@@ -511,6 +511,9 @@ belt:
   - name: review-gh
     source: gh-prs
     label: hf-review # EDIT: label a PR with this and the factory claims it
+    # `in_review` is the produce(pull_request) effect, and there is no `pr` step here — ask for it
+    # explicitly or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
     steps:
       - type: custom
         name: checkout
@@ -536,7 +539,7 @@ Read `@@WORK_DOC@@` — it carries the PR's title, body, every comment, and its 
    `herdr-factory --repo my-repo step-done @@KEY@@ checkout --source gh-prs --pass 1`.
 ```
 
-**Credentials** — none required beyond an authenticated `gh` (or `GITHUB_TOKEN`) with write access to the repo: the run adds/removes labels and posts comments on the PR.
+**Credentials** — none required beyond an authenticated `gh` (or `GITHUB_TOKEN`) with write access to the repo: the run adds/removes labels and posts comments on the PR. On GitHub Enterprise Server also set `GITHUB_API_URL=https://ghe.example.com/api/v3` in the same `env` file.
 
 **First work item**
 ```sh

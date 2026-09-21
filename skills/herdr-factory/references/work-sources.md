@@ -215,6 +215,8 @@ A 401 while using a memoized gh-CLI token triggers exactly one refetch (`github:
 
 Scope needed: write access on the **polled** repo (labels, comments, close), which is not necessarily the PR repo.
 
+`GITHUB_API_URL` — **optional**, not masked, in the same per-repo `env` file. The REST base every call goes to; default `https://api.github.com`. Set it for **GitHub Enterprise Server** (`https://ghe.example.com/api/v3`). There is deliberately no config key: the base and the token sent to it travel together, so they live in the same file. Validated at startup, not at first poll — a non-URL throws ``GITHUB_API_URL is not a URL: "<v>" — use the API base, e.g. https://ghe.example.com/api/v3``, and a non-`https` base throws ``GITHUB_API_URL must be https (got "<v>") — the API token is sent to it; only loopback may be http``. (Loopback-`http` is allowed for exactly one reason: the e2e suite's GitHub fake.)
+
 ### Rate limits — one token per host
 
 GitHub counts its 5,000 requests/hour **per account**, not per machine or process. Several factories sharing one `gh auth` login therefore share one budget, and exhausting it breaks everything on that account at once — `gh`, the agents, the operator's own tooling — with `HTTP 403: API rate limit exceeded for user ID …`. **Recommend a separate `GITHUB_TOKEN` per host in each repo's `env`**, not a shared `gh` login.
@@ -284,7 +286,8 @@ Buckets are **process-wide singletons** — every repo in the process shares the
 
 | symptom | cause | fix |
 |---|---|---|
-| `github_issues: cannot reach <repo> — bad auth, or the token lacks access (<msg>)` | wrong `repo`, or token can't see it | fix `repo`; check `gh auth status` / `GITHUB_TOKEN` |
+| `github_issues: cannot reach <repo> — bad auth, or the token lacks access (<msg>)` | wrong `repo`, or token can't see it | fix `repo`; check `gh auth status` / `GITHUB_TOKEN` / `GITHUB_API_URL` |
+| `GITHUB_API_URL is not a URL: …` / `GITHUB_API_URL must be https …` | a typo'd GHES base in the repo `env` | it is the host the token is sent to — fix it; the source refuses to build |
 | `github_issues: issues are disabled on <repo> — enable them in repo settings` | issues tab off (only checked when `kind: issues`) | enable Issues, or point `repo` at the repo that has them |
 | `github_issues: the token has no push/write access to <repo> — labels and comments will fail` | read-only token | use a PAT with write on the polled repo |
 | `github_issues: trigger label "<label>" does not exist in <repo> — create it (or fix the belt's \`label\`) and add it to issues you want worked` | belt `label` never created | create the label (case doesn't matter) and apply it |
@@ -321,6 +324,9 @@ belt:
   - name: review-gh
     source: gh-prs
     label: hf-review              # label a PR `hf-review` → the factory reviews it
+    # No `pr` step ⇒ nothing produces a pull request, and `in_review` is the produce(pull_request)
+    # effect — so a review belt must ask for it, or the PR never wears `herdr:in-review`.
+    effects: [{ on: enter, step: review, to: in_review }]
     steps:
       - type: custom
         name: checkout            # `gh pr checkout @@KEY@@`, then `set-branch` so the engine follows
@@ -339,6 +345,8 @@ way. Three differences:
 | `close_on` | closes the item per `merged`/`done`/`aborted` | **never applies** — closing/merging stays the operator's; a terminal transition only strips state labels |
 | `task.md` header | `# Issue #<n>: <title>` | `# Pull request #<n>: <title>` |
 | work-doc bullets | `Closing reference: Fixes #<n>` | `Head branch` / `Base branch` / `Draft` / ``Checkout: `gh pr checkout <n>` `` (best-effort: if `GET /pulls/<n>` fails, only the `Checkout` line is written and `github_issues: could not read the branches of pull request #<n> — the work doc omits them` is logged) |
+
+`in_review` needs an **effect** on a review belt: it is the engine's `produce(pull_request)` effect, and a belt with no `pr` step produces no pull request — so without `effects: [{ on: enter, step: review, to: in_review }]` the PR goes straight from `herdr:in-development` to terminal, never wearing `herdr:in-review`.
 
 Also: `health` no longer requires the repo's Issues tab (`has_issues: false` is fine), and its
 missing-label error reads `… and add it to pull requests you want worked`. `describe` on the wrong

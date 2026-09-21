@@ -184,7 +184,7 @@ The values asked for most often. Everything else is in
 | required top-level keys | `repo`, `work_sources` (≥1), `belt` (≥1) — note `belt` is singular but holds a list |
 | state | `~/.local/state/herdr-factory/` — `herdr-factory.db`, `logs/`, `<repo>/logs/<date>.log` |
 | code | `~/.local/share/herdr-factory/` (hard-reset by auto-update — never edit it) |
-| credentials | per-repo `env`, `chmod 600`: `JIRA_EMAIL`+`JIRA_API_TOKEN` · `SENTRY_AUTH_TOKEN` · `GITHUB_TOKEN` (optional; `gh` login otherwise). No global secrets file. |
+| credentials | per-repo `env`, `chmod 600`: `JIRA_EMAIL`+`JIRA_API_TOKEN` · `SENTRY_AUTH_TOKEN` · `GITHUB_TOKEN` (optional; `gh` login otherwise) · `GITHUB_API_URL` (optional; the `github_issues` REST base, for GitHub Enterprise Server). No global secrets file. |
 | server | `127.0.0.1:8765` (`HERDR_FACTORY_PORT`), OpenAPI at `/doc`, Swagger UI at `/ui` |
 | several machines | `herdr-factory fleet [--json]` — every run on every machine, read in parallel over an SSH forward per remote box (nothing to configure: it is this machine plus every *enabled* `herdr machine list` entry). The **TUI Dashboard reads the same fleet**: a header per machine, an `@machine` badge per repo row, `m` to filter to one machine, and every key routed to the machine that owns the run (its confirmation names it). A machine that does not answer reads **`unverifiable` with the time it last answered**, keeping its last known rows — never as having no runs, so never claim an item because it was missing from a read where its machine was unverifiable |
 | default pipeline | `steps: [{ type: work }, { type: review }, { type: pr }]` |

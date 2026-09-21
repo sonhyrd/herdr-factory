@@ -297,6 +297,7 @@ describe("loadConfig — work sources + belts", () => {
         `  - name: review-gh
     source: gh-prs
     label: hf-review
+    effects: [{ on: enter, step: review, to: in_review }]
     steps:
       - type: custom
         name: checkout
@@ -311,6 +312,8 @@ describe("loadConfig — work sources + belts", () => {
     expect((config.sources[0]!.cfg as GithubIssuesSourceCfg).kind).toBe("pull_requests");
     expect(config.belts[0]!.label).toBe("hf-review");
     expect(config.belts[0]!.watchPr).toBe(false); // no pr step — the PR already exists; nothing merges it
+    // `in_review` is the produce(pull_request) effect, so a belt with no pr step must ask for it.
+    expect(config.belts[0]!.effects).toEqual([{ trigger: { on: "enter", step: "review" }, to: "in_review", status: undefined }]);
   });
 
   it("github_issues: an unknown `kind` is a load error", () => {
