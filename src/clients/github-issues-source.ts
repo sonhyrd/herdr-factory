@@ -252,7 +252,8 @@ export class GithubIssuesSource implements WorkSource {
 
   async describe(key: string): Promise<Ticket> {
     const n = Number(key.replace(/^#/, "")); // tolerate the "#123" spelling; canonical key is bare
-    if (!Number.isInteger(n) || n <= 0) throw new Error(`github_issues: "${key}" is not an ${this.noun} number`);
+    // The article has to agree with the noun: "not an issue number" / "not a pull request number".
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`github_issues: "${key}" is not ${this.onPulls ? "a pull request" : "an issue"} number`);
     const issue = await this.gh.getIssue(n);
     if (!this.wanted(issue)) throw new Error(`github_issues: #${n} is ${this.onPulls ? "an issue, not a pull request" : "a pull request, not an issue"}`);
     return { key: String(n), displayKey: `#${n}`, url: issue.html_url, summary: issue.title, type: this.typeOf(issue) };

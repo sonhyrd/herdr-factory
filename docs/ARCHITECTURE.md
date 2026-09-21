@@ -14,11 +14,11 @@ a schedule (a launchd job on macOS, a systemd `--user` timer on Linux) — see
 **Work sources** are the pluggable front of the engine (`work_sources`, ≥1 per repo): *where*
 work is pulled, with no pipeline attached. Four types ship today — `jira` (poll a board; status
 of record lives in Jira), `local_markdown` (a folder of `*.md` briefs; lifecycle tracked
-internally in SQLite), `github_issues` (poll a repo's open issues — or, with `kind: pull_requests`, its open pull
-requests — by trigger label; status of record lives on GitHub as labels + open/closed state), and `sentry` (poll a project's issues
-by a config query — no trigger label; lifecycle tracked internally in SQLite, and Sentry issues
-are never mutated for lifecycle). A source is just a `type` + an optional unique `name`
-(default = the type) + its backend block.
+internally in SQLite), `github_issues` (poll a repo's open issues — or, with `kind:
+pull_requests`, its open pull requests — by trigger label; status of record lives on GitHub as
+labels + open/closed state), and `sentry` (poll a project's issues by a config query — no trigger
+label; lifecycle tracked internally in SQLite, and Sentry issues are never mutated for lifecycle).
+A source is just a `type` + an optional unique `name` (default = the type) + its backend block.
 
 **Belts** are the pipelines (`belt`, ≥1 per repo): *what* to do with the work. A belt pairs a
 `source` with an ordered list of steps and carries the `workspace_name` branch template, a
@@ -598,10 +598,6 @@ reverse-engineered during the bash prototype.
   new repo, auth + method preserved — mutating the issue there), a deleted one **410**, an
   inaccessible one **404** — all mapped to `stale`/`StaleItemError` via `classifyGone`. Auth is
   `GITHUB_TOKEN` else the gh CLI's token (`gh auth token`, refreshed once on a 401). The REST base
-  is **`GITHUB_API_URL`** in the same per-repo env file (default `https://api.github.com`) — GitHub
-  Enterprise Server, and the seam the e2e GitHub fake needs. `resolveGithubApiBase` validates it at
-  CONSTRUCTION (a bad value fails at startup, not at the first poll) and accepts `https` only,
-  except on loopback — it is the host the credential goes to. The REST base
   is **`GITHUB_API_URL`** in the same per-repo env file (default `https://api.github.com`) —
   GitHub Enterprise Server, and the seam the e2e GitHub fake needs. Deliberately an env key, not a
   config one: the base and the token sent to it travel together. `resolveGithubApiBase` validates

@@ -530,6 +530,10 @@ describe("GithubIssuesSource — kind: pull_requests", () => {
     expect(await prs.describe("#2")).toMatchObject({ key: "2", displayKey: "#2", summary: "A PR" });
     await expect(prs.describe("1")).rejects.toThrow("is an issue, not a pull request");
     await expect(makeSource(fake).describe("2")).rejects.toThrow("is a pull request, not an issue");
+    // The whole point of the `noun` plumbing is that a message never lies about what was polled —
+    // including its ARTICLE ("not an pull request number" is what a hardcoded one reads like).
+    await expect(prs.describe("not-a-number")).rejects.toThrow('"not-a-number" is not a pull request number');
+    await expect(makeSource(fake).describe("not-a-number")).rejects.toThrow('"not-a-number" is not an issue number');
   });
 
   it("claim consumes the trigger label and applies the state labels to the PR", async () => {

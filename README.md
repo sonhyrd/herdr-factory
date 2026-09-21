@@ -736,7 +736,7 @@ and a type block:
   → work type; GitHub's native issue type wins when present) + `default_type` (default `Feature`),
   `max_pages` (pages of 100 per poll, default 1), `kind` (`issues` — the default — or
   `pull_requests`: poll the repo's **pull requests** by the trigger label instead, see
-  [Reviewing pull requests](#reviewing-pull-requests--kindpull_requests)). GitHub Enterprise
+  [Reviewing pull requests](#reviewing-pull-requests--kind-pull_requests)). GitHub Enterprise
   Server: put its API base in the repo's `env` as `GITHUB_API_URL` (e.g.
   `https://ghe.example.com/api/v3`) — there is no config key, because the base and the token that
   is sent to it travel together. Lifecycle: claiming swaps in the in-development
