@@ -5,7 +5,7 @@ interface StatusBody {
   sources: { name: string; type: string; auth?: { state: string } }[];
   belts: { name: string; diagnostic?: { state: string } }[];
   evidenceSso?: { state: string };
-  active: { worker: string | null }[];
+  active: { worker: string | null; prUrl?: string | null; itemUrl?: string | null }[];
   problems: { kind: string; detail: string }[];
 }
 
@@ -23,7 +23,7 @@ describe("dashboard server payloads", () => {
       belt: "ship",
       phase: "running",
       step: "work",
-      prNumber: null,
+      prNumber: 7,
       summary: "Active item",
       outcome: null,
       paneId: "pane-1",
@@ -51,7 +51,7 @@ describe("dashboard server payloads", () => {
         config: {
           repoName: "demo",
           limits: { maxActiveWorkspaces: 2 },
-          sources: [{ name: "jira", type: "jira" }],
+          sources: [{ name: "jira", type: "jira", cfg: { baseUrl: "https://org.atlassian.net" } }],
           belts: [{ name: "ship", beltType: "work_to_pull_request", source: "jira", priority: 1, label: "pickup", steps: [{ name: "work" }] }],
         },
         // An inactive belt must be invisible to the eligible payload (mirrors Phase B) so the
@@ -77,6 +77,7 @@ describe("dashboard server payloads", () => {
           clearProblem: () => false,
         },
         herdr: { paneState },
+        ghRepo: "acme/demo",
         resolveSource: (name: string) => (name === "paused-jira" ? pausedSource : source),
         now: () => 1,
         log: vi.fn(),
@@ -94,7 +95,11 @@ describe("dashboard server payloads", () => {
     expect(quick.belts).toEqual([expect.objectContaining({ name: "ship", steps: ["work"] })]);
     expect(quick.belts[0]?.diagnostic).toBeUndefined();
     expect(quick.evidenceSso).toBeUndefined();
-    expect(quick.active).toEqual([expect.objectContaining({ worker: null })]);
+    // Web URLs for the dashboard's o/O (and its OSC 8 refs) are resolved HERE, from config alone —
+    // so a run read from a REMOTE machine arrives with URLs this machine can open locally.
+    expect(quick.active).toEqual([
+      expect.objectContaining({ worker: null, prUrl: "https://github.com/acme/demo/pull/7", itemUrl: "https://org.atlassian.net/browse/HF-2" }),
+    ]);
     // Repo-level problems ride the quick path too (cheap reads, no probes) — empty when healthy.
     expect(quick.problems).toEqual([]);
     expect(authStatus).not.toHaveBeenCalled();

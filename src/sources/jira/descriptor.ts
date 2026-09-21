@@ -81,6 +81,9 @@ export const jiraDescriptor: SourceDescriptor<JiraSourceCfg> = {
   customStatusKeys(cfg) {
     return Object.keys(cfg.statusExtra);
   },
+  itemUrl(cfg, key) {
+    return `${cfg.baseUrl}/browse/${key}`;
+  },
   create(ctx) {
     return new JiraSource(ctx.cfg, new JiraApiTokenAuth(ctx.cfg.baseUrl, ctx.env.JIRA_EMAIL ?? "", ctx.env.JIRA_API_TOKEN ?? ""), ctx.brand);
   },

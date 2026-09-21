@@ -427,7 +427,7 @@ export function createApp(renderer: CliRenderer): { currentTab: () => number; at
     }
     return new StyledText([
       fg(theme.text.tertiary)(" "),
-      ...keys([["move", "↑↓"], ["column", "←→"], ["timeline", "↵"], ["tick", "t"], ["claim", "c"], ["resume/retry", "s"], ["teardown", "x"], ["detail", "d"], ["machine", "m"], ["idle repos", "i"], ["refresh", "r"]]),
+      ...keys([["move", "↑↓"], ["column", "←→"], ["timeline", "↵"], ["tick", "t"], ["claim", "c"], ["resume/retry", "s"], ["teardown", "x"], ["detail", "d"], ["open pr/item", "o/O"], ["machine", "m"], ["idle repos", "i"], ["refresh", "r"]]),
       ...tail,
     ]);
   }

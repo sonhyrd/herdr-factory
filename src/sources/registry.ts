@@ -9,7 +9,8 @@
 //  4. one entry in SOURCE_DESCRIPTORS     — below
 //  5. `npm run schema`                    — regenerate config.schema.json (test-enforced)
 //  6. register a harness in test/work-source-contract.test.ts (the charter suite)
-//  7. optional: src/prompts/<type>/<step>.md overrides; a MatchItem convenience interface +
+//  7. optional: itemUrl() — the item's web URL from config alone, for the dashboard's o/O + OSC 8 links
+//  8. optional: src/prompts/<type>/<step>.md overrides; a MatchItem convenience interface +
 //     guard in src/types.ts for user match.ts files
 // Zero other core edits — anything more means the abstraction leaked; fix the leak instead.
 import type { ZodType } from "zod";
@@ -88,6 +89,11 @@ export interface SourceDescriptor<TCfg = unknown> {
    *  extras. Empty when the source declares none (and always for internal-ledger). Given the RESOLVED
    *  camelCase cfg; local-only, no network. */
   customStatusKeys(cfg: TCfg): readonly string[];
+  /** The item's human-facing URL for `key`, built from config alone — NO network, so the dashboard's
+   *  3 s poll can carry it (the TUI's `o`/`O` open it, and the `#NN` refs render as OSC 8 links).
+   *  `ghRepo` is the resolved PR repo, for a source whose own repo defaults to it. Omitted by a
+   *  source with no addressable web item (local_markdown); null when this particular item has none. */
+  itemUrl?(cfg: TCfg, key: string, ghRepo: string): string | null;
   readonly secrets: readonly SecretSpec[];
   readonly tui: { defaultBlock(): Record<string, unknown>; fields: readonly TuiFieldSpec[] };
 }

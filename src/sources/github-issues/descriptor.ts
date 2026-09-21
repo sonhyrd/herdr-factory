@@ -90,6 +90,13 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
   customStatusKeys(cfg) {
     return Object.keys(cfg.stateLabelsExtra);
   },
+  // `kind: pull_requests` polls PRs, so its keys address /pull; GitHub redirects either way, but the
+  // link should say what it points at. GITHUB_API_URL (Enterprise) is an API base, not a web host —
+  // deriving the web origin from it is guesswork, so enterprise installs keep the github.com form.
+  itemUrl(cfg, key, ghRepo) {
+    const repo = cfg.repo ?? ghRepo;
+    return repo ? `https://github.com/${repo}/${cfg.kind === "pull_requests" ? "pull" : "issues"}/${key}` : null;
+  },
   create(ctx) {
     const repo = ctx.cfg.repo ?? ctx.ghRepo;
     if (!repo) {

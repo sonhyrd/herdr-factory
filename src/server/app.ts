@@ -24,6 +24,7 @@ import { evidenceServeDir } from "../config-paths.ts";
 import { getAuthFailure } from "../auth/gate.ts";
 import { MAX_RETRY_ATTEMPTS } from "../schedule.ts";
 import { resolveActiveRun, resolveBeltName } from "../resolve.ts";
+import { descriptorFor } from "../sources/registry.ts";
 import type { Deps } from "../core/deps.ts";
 import {
   beltApplyRoute,
@@ -238,6 +239,21 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
   const cfg = rt.deps.config;
   const active = rt.deps.store.activeRuns(cfg.repoName);
   const finished = rt.deps.store.listRuns(cfg.repoName, true).filter((r) => r.endedAt !== null);
+  // Web URLs for the dashboard's `o`/`O` and its OSC 8 refs, resolved from CONFIG only — no network
+  // on the 3 s poll. They are built HERE, on the machine that owns the run, so a remote run arrives
+  // at the fleet dashboard with URLs it can open locally.
+  const ghRepo = rt.deps.ghRepo ?? "";
+  const itemUrlFor = (sourceName: string | null, key: string): string | null => {
+    const src = cfg.sources.find((s) => s.name === sourceName);
+    if (!src) return null;
+    // A cosmetic link must never cost a status poll: an unknown type or a descriptor that trips on a
+    // half-resolved block degrades to "no URL", not a 500 on the dashboard's 3 s refresh.
+    try {
+      return descriptorFor(src.type).itemUrl?.(src.cfg, key, ghRepo) ?? null;
+    } catch {
+      return null;
+    }
+  };
   const runView = async (r: (typeof active)[number]) => {
     // Surface a stuck async upload hiding behind a "done" evidence step. An error class ⇒ at least
     // one attempt has failed (a freshly-enqueued, not-yet-attempted row is pending, not a problem).
@@ -278,6 +294,8 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
       // moment it stops being green. That is exactly "waiting on a human to merge", and it is a DB
       // read — no GitHub call on the dashboard's 3 s poll.
       prGreen: rt.deps.store.getWatchState(r.id, "pull_request", "pr_green")?.sig != null,
+      prUrl: r.prNumber != null && ghRepo ? `https://github.com/${ghRepo}/pull/${r.prNumber}` : null,
+      itemUrl: itemUrlFor(r.workSource, r.ticketKey),
     };
   };
   const sources = quick
