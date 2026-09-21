@@ -21,7 +21,7 @@ import type {
   TimelineEvent,
 } from "./shapes.ts";
 import type { Machine } from "./machines.ts";
-import type { MachineTransport } from "./transport.ts";
+import { REMOTE_MIN_READ_TIMEOUT_MS, type MachineTransport } from "./transport.ts";
 
 export interface MachineClient {
   readonly machine: Machine;
@@ -45,18 +45,10 @@ export interface MachineClient {
  *  flushes uploads inline), and killing it at a read timeout would abandon it half-done. */
 const ACTION_TIMEOUT_MS = 120_000;
 const READ_TIMEOUT_MS = 2500;
-/**
- * The floor under every read budget on a machine reached through an SSH forward.
- *
- * The short budgets below (500ms for `/health` and a quick status) are loopback numbers: they exist
- * so a local server that is down costs a blink rather than a stall, and on 127.0.0.1 they are
- * enormous. A remote machine's every round trip crosses the forward, so on a box that is merely far
- * away — or whose server has just restarted and is still warming — 500ms expires while the API is
- * answering perfectly well, and the fleet reports it `unverifiable` seconds after its own forward
- * came up. The per-machine budget in `readMachines` is the real guard against a hung box; this is
- * just enough headroom for a wide-area hop.
- */
-const REMOTE_MIN_READ_TIMEOUT_MS = 2500;
+/** The floor under every read budget on a machine reached through an SSH forward. Defined by the
+ *  transport, which has to hold its own `/health` probes to the same number: the short budgets below
+ *  (500ms for `/health` and a quick status) are loopback numbers, enormous on 127.0.0.1 and too
+ *  tight for a round trip that crosses a forward. See `REMOTE_MIN_READ_TIMEOUT_MS` there. */
 
 /** What went wrong with one HTTP read, in the words the machine's `unverifiable` row should use. */
 function httpFailure(path: string, timeoutMs: number, e: unknown): string {

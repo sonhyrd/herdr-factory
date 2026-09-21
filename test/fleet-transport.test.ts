@@ -242,3 +242,135 @@ exit 0`);
     expect(existsSync(join(dir, "control-command"))).toBe(false);
   });
 });
+
+// ── one open per machine, and a forward that can be recovered ──────────────────────────────────
+//
+// The TUI reads every configured repo concurrently and the client resolves the endpoint per call.
+// Before this, all N reads for one machine missed the empty cache and each forked its own `ssh -N`
+// on its own port (six per machine per 3s poll), the losers of that race were dropped still
+// running (hours-old orphans), and a held forward was never re-probed — so a ControlMaster that
+// outlived the remote server's restart made the machine `unverifiable` until the TUI restarted.
+
+describe("fleet ssh forward — one open per machine, recoverable", () => {
+  let dir: string;
+  let path: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "hf-ssh-"));
+    path = process.env.PATH;
+    process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+  });
+
+  afterEach(() => {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const spawnLog = () => join(dir, "spawns");
+  const deadFlag = () => join(dir, "dead");
+  const slowFlag = () => join(dir, "slow");
+  const controlLog = () => join(dir, "control-commands");
+
+  /** A forward that answers /health only while the machine is "up": `touch dead` is the remote
+   *  server restarting under a ControlMaster that keeps the tunnel looking fine. */
+  function togglingForward(): string {
+    const script = join(dir, "toggling-forward.mjs");
+    writeFileSync(
+      script,
+      [
+        'import { createServer } from "node:http";',
+        'import { existsSync } from "node:fs";',
+        `const dead = ${JSON.stringify(deadFlag())};`,
+        `const slow = ${JSON.stringify(slowFlag())};`,
+        // `slow` is a machine that is merely FAR AWAY: it answers, a second and a half later.
+        'const srv = createServer((_req, res) => {',
+        '  const reply = () => (res.writeHead(existsSync(dead) ? 503 : 200), res.end("{}"));',
+        "  existsSync(slow) ? setTimeout(reply, 1500) : reply();",
+        "});",
+        'srv.listen(Number(process.argv[2]), "127.0.0.1");',
+        "setTimeout(() => process.exit(0), 20_000);",
+      ].join("\n"),
+    );
+    return script;
+  }
+
+  /** A backgrounding `ssh` that logs every forward it is asked to open and every `-O` command. */
+  function countingSsh(): void {
+    const bin = join(dir, "ssh");
+    writeFileSync(
+      bin,
+      `#!/bin/bash
+if [[ "$*" == *"-O "* ]]; then printf '%s\\n' "$*" >> "${controlLog()}"; [[ "$*" == *"-O check"* ]] && exit 255; exit 0; fi
+port=""
+for a in "$@"; do case "$a" in *:127.0.0.1:8765) port="\${a%%:*}";; esac; done
+[[ -n "$port" ]] || exit 255
+printf '%s\\n' "$port" >> "${spawnLog()}"
+"${process.execPath}" "${togglingForward()}" "$port" >/dev/null 2>&1 &
+exit 0
+`,
+    );
+    chmodSync(bin, 0o755);
+  }
+
+  const spawnedPorts = () => (existsSync(spawnLog()) ? readFileSync(spawnLog(), "utf8").trim().split("\n") : []);
+
+  it("forks one forward for N concurrent reads of the same machine", async () => {
+    countingSsh();
+    const transport = new SshForwardTransport({ connectTimeoutMs: 5000, controlDir: join(dir, "control") });
+
+    const endpoints = await Promise.all(Array.from({ length: 6 }, () => transport.endpoint(remote)));
+
+    expect(new Set(endpoints).size).toBe(1); // one port, handed to every caller
+    expect(endpoints[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(spawnedPorts()).toHaveLength(1);
+    transport.close();
+  });
+
+  it("hands back a held forward that is slow but healthy, instead of replacing it", async () => {
+    // The probe is addressed to 127.0.0.1 but it crosses the forward to the remote host and back, so
+    // it must carry the same wide-area floor as every other read over one. A budget tight enough to
+    // expire on a loaded or transatlantic box would retire a perfectly good forward every poll and
+    // fork a replacement — the churn this whole change exists to stop, arriving as latency instead.
+    countingSsh();
+    writeFileSync(slowFlag(), "");
+    const transport = new SshForwardTransport({ connectTimeoutMs: 8000, controlDir: join(dir, "control") });
+
+    const first = await transport.endpoint(remote);
+    expect(first, "a forward whose /health is slow still comes up").toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(await transport.endpoint(remote), "and the next read is handed the same one").toBe(first);
+    expect(await transport.endpoint(remote)).toBe(first);
+    expect(spawnedPorts(), "no replacement was forked for it").toHaveLength(1);
+    expect(transport.failureDetail(remote)).toBeNull();
+    transport.close();
+  }, 15_000);
+
+  it("re-opens a held forward that stops answering /health", async () => {
+    countingSsh();
+    const transport = new SshForwardTransport({ connectTimeoutMs: 1500, controlDir: join(dir, "control") });
+    const first = await transport.endpoint(remote);
+
+    writeFileSync(deadFlag(), ""); // the remote server restarts under the ControlMaster
+    expect(await transport.endpoint(remote)).toBeNull(); // …and the machine reads unverifiable
+
+    rmSync(deadFlag()); // it comes back — with no restart of the TUI
+    const recovered = await transport.endpoint(remote);
+    expect(recovered).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(recovered).not.toBe(first);
+    transport.close();
+  }, 15_000);
+
+  it("tears down the forward it replaces instead of leaving it running", async () => {
+    countingSsh();
+    const transport = new SshForwardTransport({ connectTimeoutMs: 1500, controlDir: join(dir, "control") });
+    const first = await transport.endpoint(remote);
+    const stalePort = new URL(first!).port;
+
+    writeFileSync(deadFlag(), "");
+    await transport.endpoint(remote);
+
+    const commands = readFileSync(controlLog(), "utf8");
+    expect(commands).toContain(`-O cancel`);
+    expect(commands).toContain(`-L ${stalePort}:127.0.0.1:8765`);
+    transport.close();
+  }, 15_000);
+});

@@ -110,9 +110,15 @@ export class World {
     herdrDown: string;
     fleetEndpoints: string;
     herdrMachines: string;
+    sshForwards: string;
+    sshSpawnLog: string;
+    sshControlLog: string;
   };
   /** The other MACHINES of the fleet: one extra `serve` each (see `ScenarioSpec.fleetMachines`). */
-  private readonly fleet = new Map<string, { factory: Factory; paths: WorldPaths; spec: FleetMachineSpec }>();
+  private readonly fleet = new Map<
+    string,
+    { factory: Factory; paths: WorldPaths; spec: FleetMachineSpec; extraRepos: Map<string, { paths: WorldPaths; spec: ExtraRepoSpec }>; down: string }
+  >();
   /** Extra repos on THIS machine's server (see `ScenarioSpec.extraRepos`) — one config folder and
    *  briefs folder each, all under the same config dir and state root as the main repo. */
   private readonly extraRepos = new Map<string, { paths: WorldPaths; spec: ExtraRepoSpec }>();
@@ -158,6 +164,9 @@ export class World {
       herdrDown: join(home, "herdr-down"),
       fleetEndpoints: join(home, "fleet-endpoints.json"),
       herdrMachines: join(home, "herdr-machines.json"),
+      sshForwards: join(home, "ssh-forwards.json"),
+      sshSpawnLog: join(this.paths.art, "ssh-spawns.jsonl"),
+      sshControlLog: join(this.paths.art, "ssh-control.log"),
     };
     this.env = {
       ...(process.env as Record<string, string>),
@@ -189,6 +198,9 @@ export class World {
       HF_HERDR_LOG: this.files.herdrLog,
       HF_HERDR_DOWN: this.files.herdrDown,
       HF_HERDR_MACHINES: this.files.herdrMachines,
+      // The OTHER fleet seam: a machine declared `ssh: true` gets no endpoint override, so the real
+      // SshForwardTransport runs and spawns the harness's fake `ssh` (test/e2e/harness/ssh-fake).
+      HF_SSH_FORWARDS: this.files.sshForwards,
       HF_AGENT_SCRIPT: this.files.agentScript,
       HF_AGENT_LOG_DIR: this.files.agentLogDir,
       HF_AGENT_STATE_DIR: this.files.agentStateDir,
@@ -258,7 +270,14 @@ export class World {
         stateRoot: paths.stateRoot,
         port: machinePort,
       });
-      this.fleet.set(name, { factory, paths, spec });
+      const machineRepos = new Map<string, { paths: WorldPaths; spec: ExtraRepoSpec }>();
+      for (const [repoName, repoSpec] of Object.entries(spec.extraRepos ?? {})) {
+        machineRepos.set(repoName, {
+          paths: { ...paths, repoConfigDir: join(paths.configDir, "repos", repoName), briefs: join(home, `briefs-${name}-${repoName}`) },
+          spec: repoSpec,
+        });
+      }
+      this.fleet.set(name, { factory, paths, spec, extraRepos: machineRepos, down: join(home, `ssh-down-${name}`) });
     }
   }
 
@@ -279,6 +298,43 @@ export class World {
     const entry = this.fleet.get(name);
     if (!entry) throw new Error(`no fleet machine "${name}" in scenario "${this.spec.name}"`);
     return entry.factory;
+  }
+
+  /**
+   * The fake `ssh`'s side of one machine's forward (`fleetMachines[name].ssh`): what it was asked to
+   * open, what control commands it was sent, and the switch that kills the far end.
+   *
+   * `goDown()` is a remote server restarting UNDER a live ControlMaster — the tunnel still binds and
+   * nothing behind it answers, which is the state a transport that never re-probes can never leave.
+   */
+  sshForward(name: string): {
+    spawns(): { ev: string; target: string; port: number; pid: number; t: number }[];
+    ports(): number[];
+    maxConcurrent(): number;
+    controlCommands(): string[];
+    goDown(): void;
+    comeUp(): void;
+  } {
+    const entry = this.fleet.get(name);
+    if (!entry) throw new Error(`no fleet machine "${name}" in scenario "${this.spec.name}"`);
+    if (!entry.spec.ssh) throw new Error(`fleet machine "${name}" is reached by endpoint override, not ssh — declare it \`ssh: true\``);
+    const target = `harness@${name}`;
+    const lines = (p: string): string[] => (existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean) : []);
+    const spawns = () => lines(this.files.sshSpawnLog).map((l) => JSON.parse(l)).filter((e) => e.target === target);
+    return {
+      spawns,
+      ports: () => spawns().filter((e) => e.ev === "start").map((e) => e.port),
+      /** How many forwards were open AT ONCE — the `ps` the ssh stampede was measured with. */
+      maxConcurrent: () => {
+        let live = 0;
+        let peak = 0;
+        for (const e of spawns().sort((a, b) => a.t - b.t)) peak = Math.max(peak, (live += e.ev === "start" ? 1 : -1));
+        return peak;
+      },
+      controlCommands: () => lines(this.files.sshControlLog),
+      goDown: () => writeFileSync(entry.down, ""),
+      comeUp: () => rmSync(entry.down, { force: true }),
+    };
   }
 
   /** An extra repo's on-disk geography (`ScenarioSpec.extraRepos`) — its briefs folder is where work
@@ -312,7 +368,12 @@ export class World {
       this.files.agentLogDir,
       this.files.agentStateDir,
       join(this.paths.home, ".config", "herdr"),
-      ...[...this.fleet.values()].flatMap(({ paths }) => [paths.repoConfigDir, paths.stateRoot, paths.briefs]),
+      ...[...this.fleet.values()].flatMap(({ paths, extraRepos }) => [
+        paths.repoConfigDir,
+        paths.stateRoot,
+        paths.briefs,
+        ...[...extraRepos.values()].flatMap(({ paths: p }) => [p.repoConfigDir, p.briefs]),
+      ]),
       ...[...this.extraRepos.values()].flatMap(({ paths }) => [paths.repoConfigDir, paths.briefs]),
     ]) {
       mkdirSync(d, { recursive: true });
@@ -416,6 +477,13 @@ export class World {
     copyFileSync(ghSrc, join(b, "gh"));
     chmodSync(join(b, "gh"), 0o755);
 
+    // Only when a machine asked for it: an `ssh` on PATH that every OTHER scenario would also
+    // resolve is a surprise nobody wants, and the endpoint override means they never call ssh.
+    if ([...this.fleet.values()].some(({ spec }) => spec.ssh)) {
+      copyFileSync(join(HARNESS_DIR, "ssh-fake", "ssh"), join(b, "ssh"));
+      chmodSync(join(b, "ssh"), 0o755);
+    }
+
     if (this.lane === "fake") {
       // The fake lane's shim IS herdr: it serves every argv in-process and logs `{ts,argv}` itself, so
       // wrapping it would double-log and there is no real binary to exec.
@@ -480,13 +548,38 @@ export class World {
 
     // Each fleet machine gets the same treatment: its own config.yml (over the same defaults and the
     // same target checkout) and its own briefs. The endpoints file is what makes `fleet` reach them.
-    for (const [name, { paths, spec }] of this.fleet) {
+    for (const [, { paths, spec, extraRepos }] of this.fleet) {
       writeFileSync(join(paths.repoConfigDir, "config.yml"), render((spec.config ?? this.spec.config)(paths)));
       for (const [key, body] of Object.entries(spec.briefs ?? {})) writeFileSync(join(paths.briefs, `${key}.md`), body);
+      for (const [, { paths: p, spec: s }] of extraRepos) {
+        writeFileSync(join(p.repoConfigDir, "config.yml"), render((s.config ?? spec.config ?? this.spec.config)(p)));
+        for (const [key, body] of Object.entries(s.briefs ?? {})) writeFileSync(join(p.briefs, `${key}.md`), body);
+      }
     }
+    // A machine declared `ssh: true` is deliberately LEFT OUT of the overrides: an absent key is
+    // "no override", which is what sends it through the real SshForwardTransport and the fake `ssh`.
     writeFileSync(
       this.files.fleetEndpoints,
-      JSON.stringify(Object.fromEntries([...this.fleet].map(([name, { factory }]) => [name, `http://127.0.0.1:${factory.port}`])), null, 2),
+      JSON.stringify(
+        Object.fromEntries([...this.fleet].filter(([, m]) => !m.spec.ssh).map(([name, { factory }]) => [name, `http://127.0.0.1:${factory.port}`])),
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      this.files.sshForwards,
+      JSON.stringify(
+        {
+          runDir: this.paths.home,
+          spawnLog: this.files.sshSpawnLog,
+          controlLog: this.files.sshControlLog,
+          targets: Object.fromEntries(
+            [...this.fleet].filter(([, m]) => m.spec.ssh).map(([name, m]) => [`harness@${name}`, { port: m.factory.port, down: m.down }]),
+          ),
+        },
+        null,
+        2,
+      ),
     );
 
     if (this.spec.env) {

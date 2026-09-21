@@ -130,7 +130,23 @@ export interface ScenarioSpec {
    *  own, so the fleet reaches them without any SSH — the only part of the transport a container
    *  cannot have — and without touching a real herdr's saved machines, which are the operator's.
    *  Reached from a scenario with `w.machine(name)`. */
-  fleetMachines?: Record<string, { briefs?: Record<string, string>; config?: (p: WorldPaths) => Record<string, unknown> }>;
+  fleetMachines?: Record<
+    string,
+    {
+      briefs?: Record<string, string>;
+      config?: (p: WorldPaths) => Record<string, unknown>;
+      /** More repos on THAT machine's own server, so a fleet read of it really fans out per repo
+       *  (`Promise.all` over its repos, in both the status and the eligible phase) — which is the
+       *  shape the transport's one-open-per-machine rule is about. */
+      extraRepos?: Record<string, { briefs?: Record<string, string>; config?: (p: WorldPaths) => Record<string, unknown> }>;
+      /** Reach this machine through the REAL `SshForwardTransport` instead of naming its API in
+       *  `HERDR_FACTORY_FLEET_ENDPOINTS`: no override is written for it, and the world installs the
+       *  harness's fake `ssh` (test/e2e/harness/ssh-fake) so the forward, its `/health` re-probe and
+       *  its `ssh -O cancel` tear-down are the shipped code over a loopback proxy. Drive it from a
+       *  scenario with `w.sshForward(name)`. */
+      ssh?: boolean;
+    }
+  >;
   /** Extra repos served by THIS machine's own server, beside the scenario's main one. Same config
    *  dir, same state root, same target checkout — one more `repos/<name>/config.yml` over the same
    *  defaults, with a briefs folder of its own. This is how a scenario gets a MULTI-REPO host, which

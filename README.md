@@ -1470,6 +1470,20 @@ socket) while every forward opened through it fails. That pair — a running mas
 did not come up — is taken as a stale master: it is dropped with `-O exit` and the forward retried
 **once**, on a fresh connection. If the retry fails too, the row carries both attempts' reasons.
 
+Which leaves the case an operator actually meets: the stale master was holding a forward that
+**already worked**. So a held forward is **re-probed before it is handed out** — one `/health` per
+read, over the forward itself — rather than trusted because it is cached. A forward that has stopped
+answering is torn down and re-opened, and the stale-master retry above does the rest, so a machine
+whose server restarted under a live master **comes back on its own**: the board returns to `✓`
+without restarting the TUI. (The probe crosses the forward, so it gets the same 2500ms wide-area
+floor as every other read over one — a box that is merely far away is not a box that is down.)
+
+And **one machine is opened once**: the dashboard reads every repo concurrently, so concurrent reads
+of the same machine share a single open — one `ssh -N`, one local port, no burst of short-lived
+forwards per poll and no ControlPath race between them. A forward is never replaced or dropped
+without being torn down first, so a replaced one does not linger as an orphaned `ssh -N` client for
+the rest of the day.
+
 Two properties are worth knowing before you trust the output:
 
 - **Machines are read in parallel, each under its own timeout** (`--timeout`), so one unreachable box
