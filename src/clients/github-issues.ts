@@ -102,6 +102,14 @@ export interface GhIssue {
   type?: { name?: string } | null;
   [key: string]: unknown;
 }
+/** The pull-request representation (GET /pulls/{n}) — only the fields materialize needs. The
+ *  issues endpoints already serve a PR's title/body/labels/comments; this exists solely for the
+ *  branch refs, which the issue view does not carry. */
+export interface GhPull {
+  head?: { ref?: string; repo?: { full_name?: string } | null };
+  base?: { ref?: string };
+  draft?: boolean;
+}
 export interface GhComment {
   id: number;
   created_at: string;
@@ -241,6 +249,11 @@ export class GithubIssuesClient {
     return this.json<GhIssue>("GET", `/repos/${this.repo}/issues/${n}`, {
       accept: opts.full ? "application/vnd.github.full+json" : undefined,
     });
+  }
+
+  /** The PR view of #n — for the head/base refs a `kind: pull_requests` work doc carries. */
+  async getPull(n: number): Promise<GhPull> {
+    return this.json<GhPull>("GET", `/repos/${this.repo}/pulls/${n}`);
   }
 
   /** All comments on an issue (paginated), optionally only those updated since `since` — note

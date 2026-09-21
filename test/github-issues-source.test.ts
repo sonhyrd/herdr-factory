@@ -501,3 +501,86 @@ describe("GithubIssuesClient — rate limits + auth", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(30);
   });
 });
+
+describe("GithubIssuesSource — kind: pull_requests", () => {
+  const PR_CFG = { kind: "pull_requests" } as const;
+
+  it("an opted-in source claims labelled PRs and skips issues; a default source is the mirror image", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(1, { labels: ["herdr"] });
+    fake.addPull(2, { labels: ["herdr"], title: "Grok: tidy the widget" });
+    fake.addPull(3, { labels: ["other"] }); // not trigger-labeled
+    fake.addPull(4, { labels: ["herdr", "herdr:in-development"] }); // in-flight gate still applies
+    const prs = await makeSource(fake, PR_CFG).listEligible();
+    expect(prs.map((i) => i.key)).toEqual(["2"]);
+    const item = prs[0]!;
+    if (!isGithubIssuesItem(item)) throw new Error("unreachable");
+    expect(item).toMatchObject({ sourceType: "github_issues", key: "2", displayKey: "#2", number: 2, summary: "Grok: tidy the widget", state: "open" });
+    expect(item.url).toContain("/pull/2");
+    // Unchanged for everyone else: a default source still skips every PR.
+    expect((await makeSource(fake).listEligible()).map((i) => i.key)).toEqual(["1"]);
+  });
+
+  it("describe accepts a PR and rejects an issue (and the reverse on a default source)", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(1, { title: "An issue" });
+    fake.addPull(2, { title: "A PR" });
+    const prs = makeSource(fake, PR_CFG);
+    expect(await prs.describe("#2")).toMatchObject({ key: "2", displayKey: "#2", summary: "A PR" });
+    await expect(prs.describe("1")).rejects.toThrow("is an issue, not a pull request");
+    await expect(makeSource(fake).describe("2")).rejects.toThrow("is a pull request, not an issue");
+  });
+
+  it("claim consumes the trigger label and applies the state labels to the PR", async () => {
+    fake = makeFakeGithub();
+    fake.addPull(7);
+    const src = makeSource(fake, PR_CFG);
+    expect(await src.transition("7", "in_development")).toEqual({ kind: "applied" });
+    expect(fake.issues.get(7)!.labels.has("herdr:in-development")).toBe(true);
+    expect(fake.issues.get(7)!.labels.has("herdr")).toBe(false); // trigger consumed
+    expect(await src.transition("7", "in_review")).toEqual({ kind: "applied" });
+    expect(fake.issues.get(7)!.labels.has("herdr:in-review")).toBe(true);
+    expect(fake.issues.get(7)!.labels.has("herdr:in-development")).toBe(false);
+    expect(fake.issues.get(7)!.state).toBe("open");
+  });
+
+  it("never closes the PR — close_on does not apply to a pull request", async () => {
+    for (const to of ["merged", "done", "aborted"] as const) {
+      fake?.restore();
+      fake = makeFakeGithub();
+      fake.addPull(7, { labels: ["herdr:in-review"] });
+      // close_on ALL true — the PR must still be left open; merging stays the operator's.
+      const src = makeSource(fake, { ...PR_CFG, closeOn: { merged: true, done: true, aborted: true } });
+      await src.transition("7", to);
+      expect(fake.issues.get(7)!.state).toBe("open");
+      expect(fake.issues.get(7)!.labels.has("herdr:in-review")).toBe(false); // state labels still stripped
+      expect(fake.calls.some((c) => c.method === "PATCH")).toBe(false); // nothing even tried
+    }
+  });
+
+  it("materializes a PR work doc: head/base branch instead of a closing reference", async () => {
+    fake = makeFakeGithub();
+    fake.addPull(7, { title: "Tidy the widget", body: "Refactor.", head: "grok/tidy-widget", base: "develop" });
+    fake.addComment(7, "Please also bump the version.", "reviewer");
+    const dir = mem();
+    await makeSource(fake, PR_CFG).materialize("7", dir, () => {});
+    const task = readFileSync(join(dir, "task.md"), "utf8");
+    expect(task).toContain("# Pull request #7: Tidy the widget");
+    expect(task).toContain("- Head branch: grok/tidy-widget");
+    expect(task).toContain("- Base branch: develop");
+    expect(task).toContain("- Checkout: `gh pr checkout 7`");
+    expect(task).not.toContain("Closing reference"); // "Fixes #<pr>" would be nonsense
+    expect(task).toContain("Please also bump the version.");
+    expect(existsSync(join(dir, "issue.json"))).toBe(true);
+  });
+
+  it("health does not require the issues tab, and workDoc says pull request", async () => {
+    fake = makeFakeGithub();
+    const src = makeSource(fake, PR_CFG);
+    fake.hasIssues = false; // a PR-polling source does not care
+    await expect(src.health()).resolves.toBeUndefined();
+    fake.repoLabels.delete("herdr");
+    await expect(src.health()).rejects.toThrow("pull requests you want worked");
+    expect((await src.workDoc()).kind).toContain("pull request");
+  });
+});
