@@ -252,7 +252,7 @@ Item type precedence: GitHub's native org-level issue type → the first `type_l
 
 ### Lifecycle write-backs (source of record: GitHub)
 
-Mapped states are `in_development`, `in_review`, `merged`, `aborted`, `done` — a `todo` transition costs zero network. Every transition is `GET` → diff → apply, and that GET doubles as the stale probe. Label membership tests are case-folded; writes use your configured spelling. Missing labels are created on demand (`POST /labels` with color `5319e7`, description `managed by herdr-factory`).
+Mapped states are `in_development`, `in_review`, `merged`, `aborted`, `done` — a `todo` transition costs zero network. Every transition is `GET` → diff → apply, and that GET doubles as the stale probe. Label membership tests are case-folded; writes use your configured spelling. Missing labels are created on demand (`POST /labels` with color `5319e7`, description `managed by <brand>` — `source_comments.brand`, default `herdr-factory`).
 
 | to | what happens |
 |---|---|
@@ -579,15 +579,16 @@ work_sources:
   - type: github_issues          # or jira; local_markdown / sentry reject the key
     claim_guard:
       enabled: true              # default false
-      host: contabo              # default: the hostname (chars outside [A-Za-z0-9._-] become '-'); unique per factory
+      host: contabo              # default: machine.yml's host_alias, else the hostname (chars outside [A-Za-z0-9._-] become '-'); unique per factory
       settle_ms: 2000            # default 2000; wait between posting the claim and re-reading
     github_issues: {}
 ```
 
 The protocol, run right after the run row is inserted and before any worktree, agent, or
 status write: read the item's comments — if another factory's claim is already open, skip the item
-without posting anything; otherwise post `[herdr-factory claim id=<run> host=<host>]`, wait
-`settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
+without posting anything; otherwise post `[<brand> claim id=<run> host=<host>]` (`<brand>` =
+`source_comments.brand`, default `herdr-factory`), wait
+`settle_ms`, and re-read. Among claims with no matching `[<brand> release id=<run> host=<host>]`,
 the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
 posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
 (a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release.
@@ -597,5 +598,6 @@ Before arbitrating, a factory releases claims **it posted itself** whose run no 
 - **Stuck item, log says `claimed elsewhere by <host> (run <id>) — skipping` every tick**, and that host is gone or never finished: post a comment `[herdr-factory release id=<id> host=<host>]` on the item. Nothing reaps it for you.
 - **A release failed to post** logs `could not post claim release (post "[herdr-factory release …]" by hand to free the item)` — do exactly that.
 - **Costs:** ~`settle_ms` per claim; claim + release comments on every item (two more per lost race). Jira has no compare-and-set, so the guard relies on monotonic comment ids; the whole comment thread is paged (100 per call), so an old claim comment is never missed.
+- **Changing the brand or the host name mid-flight is safe.** Readers accept the configured brand AND the legacy `herdr-factory` one, and a host recognises claims it posted under its raw hostname before `machine.yml`'s `host_alias` renamed it. Roll either out host by host; two hosts never both own an item during the switch.
 - **Our own stale claims self-heal:** after a crash, the same host releases its old claim on the next tick it sees the item (log: `<KEY>: released our own stale claim (run <id> no longer exists here)`) and claims it afresh. Only claims bearing another host's name need the manual release below.
 - The markers carry the herdr marker, so ask-human reply polling never mistakes them for a human answer.
