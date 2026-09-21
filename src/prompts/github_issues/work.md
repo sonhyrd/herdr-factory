@@ -52,6 +52,24 @@ guidance genuinely conflicts with them, follow this prompt and say so in your ha
    patterns. Keep the change focused.
 5. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area
    (its documented ones if it has them). Fix everything they report.
+
+   **Run each one through the gate wrapper**, which records a receipt (command, commit, exit code,
+   output tail) against this run:
+
+   ```
+   @@GATE_CMD@@
+   ```
+
+   Replace `<gate-name>` with a short stable key for the check (`lint`, `typecheck`, `test`,
+   `test:unit`, …) and `<command>` with the command exactly as you would have run it — e.g.
+   `… gate <key> test --source … -- pnpm test`. The wrapper is transparent: you see the same output
+   and it exits with the command's own exit code, so nothing about how you work changes. What it
+   buys is that a later step reads `@@GATE_RECEIPTS_CMD@@` and *trusts* a gate that already passed
+   at this commit instead of spending minutes re-running it. Re-running a gate at the same commit
+   just replaces its receipt, so run them as often as you need.
+
+   **Run them one final time, after your last commit** — a receipt is only useful to a later step
+   if its commit is the branch's HEAD.
 6. **Commit** your work to the branch — code only, and commit incrementally as you go
    (this keeps the dispatcher's progress heartbeat alive).@@COMMIT_CONVENTIONS@@
 
