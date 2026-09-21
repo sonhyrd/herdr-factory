@@ -1056,6 +1056,7 @@ describe("gate receipts + the handoff template reach the agent (end-to-end rende
     expect(body).toContain("gates K-GT --source jira");
     expect(body).toContain("CURRENT");
     expect(body).toContain("STALE");
+    expect(body).toContain("DIRTY");
     expect(body).toContain("no receipt for a check the repo requires");
     expect(body).toContain("recorded command");
     expect(body).toContain("re-run it once through the wrapper");

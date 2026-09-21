@@ -37,7 +37,7 @@ findings belong in your handoff or bounce note.
    covers exactly the tree you are reviewing) or **STALE**. A CURRENT passing receipt is evidence;
    treat it as such and move on. Run a gate yourself only when:
    - there is no receipt for a check the repo requires — run it yourself through the wrapper;
-   - its receipt is STALE (the tree moved under it);
+   - its receipt is STALE (the tree moved under it) or DIRTY (the gate ran with uncommitted work);
    - you have a **concrete** suspicion about that specific check — a test you believe does not
      cover the change, a command you can see was scoped to skip the touched files. "To be sure" is
      not a reason: re-running a green suite on an unchanged commit costs minutes and can only tell
