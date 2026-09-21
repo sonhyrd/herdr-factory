@@ -1368,8 +1368,9 @@ for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
   the cap. Deliberately lossy —
   keeps the signal, drops the transcript noise. This is the next agent's primary input. The template
   is not cosmetic: free-form notes had grown to where streaming one cost 40–80 s of a step's budget
-  and the reader still had to hunt for the three facts it needed. The same cap is stated for bounce
-  notes and PR bodies, which have the same failure mode.
+  and the reader still had to hunt for the three facts it needed. The same cap is stated for PR
+  bodies, which have the same failure mode. Bounce notes are not capped — they travel via
+  `bounce-<step>.md` → `feedback-<step>.md` and the target step needs them in full.
 - **On-demand pointer to the prior session.** The dispatcher hands the next agent the
   prior step's **pane id + session id** (herdr exposes `agent_session.value` per pane via
   `agent list`; captured into `run_steps.session_id`). When the doc isn't enough, the next

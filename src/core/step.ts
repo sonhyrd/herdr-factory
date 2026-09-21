@@ -482,7 +482,7 @@ function scaffold(
     `## Next step should verify\n- <max 5 bullets, each concrete and checkable>\n` +
     "```\n\n" +
     `   Keep it under 40 lines total. Do not restate the diff, narrate your process, or pad a section to look thorough — ` +
-    `an empty section is deleted, not filled. Plus any section this step's prompt requires (verbatim findings, repro steps, verdict tables); those are exempt from the cap. The same brevity applies to a bounce note and a PR body: state the facts, stop.\n` +
+    `an empty section is deleted, not filled. Plus any section this step's prompt requires (verbatim findings, repro steps, verdict tables); those are exempt from the cap. The same brevity applies to a PR body: state the facts, stop.\n` +
     `2. Then run \`${stepDoneCmd}\` and stop. Do NOT change the work item's status — the dispatcher owns all status transitions.\n` +
     // The signal is the only thing that advances the belt, and a REJECTED one exits non-zero with the
     // reason (it used to exit 0, so an agent could stop believing a dropped signal had landed).
