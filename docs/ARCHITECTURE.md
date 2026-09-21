@@ -1363,7 +1363,9 @@ for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
 - **Structured handoff doc (default).** The outgoing agent writes
   `.memory/herdr-factory/handoff-<step>.md` against a **fixed template** the finish protocol spells
   out: a `sha: <commit>` line, then `## Did`, `## Decisions`, `## Uncertain`, `## Next step should
-  verify` — capped at 40 lines, empty sections deleted rather than padded. Deliberately lossy —
+  verify` — capped at 40 lines, empty sections deleted rather than padded, plus any section this
+  step's prompt requires (verbatim findings, repro steps, verdict tables), which is exempt from
+  the cap. Deliberately lossy —
   keeps the signal, drops the transcript noise. This is the next agent's primary input. The template
   is not cosmetic: free-form notes had grown to where streaming one cost 40–80 s of a step's budget
   and the reader still had to hunt for the three facts it needed. The same cap is stated for bounce

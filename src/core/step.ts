@@ -470,7 +470,7 @@ function scaffold(
     // streaming one cost 40-80 s of a step's budget, and the next agent still had to hunt for the
     // three facts it needed. Fixed headings + a hard cap make the note cheap to write and cheap to
     // read; anything longer belongs in the commits, which the next step can already see.
-    `1. Write your handoff note to \`${MEMORY_DIR}/handoff-${step.name}.md\` using EXACTLY this template — ` +
+    `1. Write your handoff note to \`${MEMORY_DIR}/handoff-${step.name}.md\` using this template — ` +
     // Every handoff names the commit it covers, so the next step (and a human reading the trail)
     // can tell whether the note describes the tree it is actually looking at.
     `the \`sha:\` line first (\`git rev-parse HEAD\` in this worktree), then these headings in this order:\n\n` +
@@ -482,7 +482,7 @@ function scaffold(
     `## Next step should verify\n- <max 5 bullets, each concrete and checkable>\n` +
     "```\n\n" +
     `   Keep it under 40 lines total. Do not restate the diff, narrate your process, or pad a section to look thorough — ` +
-    `an empty section is deleted, not filled. The same brevity applies to a bounce note and a PR body: state the facts, stop.\n` +
+    `an empty section is deleted, not filled. Plus any section this step's prompt requires (verbatim findings, repro steps, verdict tables); those are exempt from the cap. The same brevity applies to a bounce note and a PR body: state the facts, stop.\n` +
     `2. Then run \`${stepDoneCmd}\` and stop. Do NOT change the work item's status — the dispatcher owns all status transitions.\n` +
     // The signal is the only thing that advances the belt, and a REJECTED one exits non-zero with the
     // reason (it used to exit 0, so an agent could stop believing a dropped signal had landed).

@@ -1064,6 +1064,8 @@ describe("gate receipts + the handoff template reach the agent (end-to-end rende
       expect(body, heading).toContain(heading);
     }
     expect(body).toContain("Keep it under 40 lines total");
+    expect(body).toContain("exempt from the cap");
+    expect(body).not.toContain("EXACTLY this template");
     // And it tells the agent step-done reports the landing, so it has no reason to poll `status`.
     expect(body).toContain("advanced fix → <next step>");
   });

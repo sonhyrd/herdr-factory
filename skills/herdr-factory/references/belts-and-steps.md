@@ -118,7 +118,8 @@ agent that never got the work.
 
 Finishing is always the same protocol: write `handoff-<step>.md` — against the scaffold's **fixed
 template** (`sha:` line, then `## Did` / `## Decisions` / `## Uncertain` / `## Next step should
-verify`, under 40 lines, empty sections deleted) — then run the rendered `step-done` command, which
+verify`, under 40 lines, empty sections deleted; plus any section this step's prompt requires,
+which is exempt from the cap) — then run the rendered `step-done` command, which
 on success prints where the run landed (`advanced <step> → <next>`), so no step needs to poll
 `status` to find out. Signals carry `--pass N`; a `step-done` minted in an earlier pass is rejected with
 `stale step-done for pass N — the X step is on pass M; finish the current pass and run its own
