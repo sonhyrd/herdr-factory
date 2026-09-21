@@ -363,5 +363,7 @@ describe("claim ledger — claim path", () => {
       expect(survivors).toHaveLength(1);
       expect(claimed(a.store) + claimed(b.store)).toBe(1); // exactly one got past the guard
     }
-  });
+    // 50 iterations x two real sqlite factories x a real jitter timer: the 5 s default expires under
+    // a loaded full-suite run (it passes alone), so the timeout is a flake, not a race.
+  }, 30_000);
 });
