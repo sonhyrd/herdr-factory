@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { availableMemoryMb, describeMachine, loadMachineConfig, machineConfigPath, machineGate, machineHostAlias } from "../src/machine.ts";
+import { availableMemoryMb, claimDeferralNote, describeMachine, loadMachineConfig, machineConfigPath, machineGate, machineHostAlias } from "../src/machine.ts";
 
 const dirs: string[] = [];
 const saved = process.env.HERDR_FACTORY_CONFIG_DIR;
@@ -73,6 +73,12 @@ describe("machine.yml", () => {
     expect(machineGate({}, 99, () => 0)).toBeNull();
     expect(describeMachine({}, 3, () => 0)).toBeNull();
     expect(describeMachine(m, 2, () => 900)?.line).toBe("machine: cap 2/2 working across all repos · memory 900 MB available (floor 500 MB) — machine at capacity (2/2)");
+  });
+
+  it("claim-deferral note: silent at zero, singular at one", () => {
+    expect(claimDeferralNote(0)).toBeNull();
+    expect(claimDeferralNote(1)).toBe("claims deferred 1 tick (machine claim lock)");
+    expect(claimDeferralNote(7)).toBe("claims deferred 7 ticks (machine claim lock)");
   });
 
   it("reads a positive available-memory figure on this host", () => {

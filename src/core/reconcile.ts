@@ -9,7 +9,7 @@ import type { LayoutAgent, StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, ReviewSig, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
-import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
+import { availableMemoryMb, capacityGate, claimDeferralNote, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
 import { fmtDur } from "./explain.ts";
@@ -400,10 +400,34 @@ async function withHeartbeatLock(deps: Deps, key: string, ttlSec: number, fn: ()
   return true;
 }
 
+/**
+ * withHeartbeatLock + a bounded poll-wait: keep re-trying the acquire until `fn` runs or the wait
+ * is spent. For a lock whose holders release within SECONDS, where a plain try-lock is not merely
+ * lossy but UNFAIR — callers that contend on a fixed cadence and in a fixed order (the serve
+ * loop's per-repo ticks) have the same loser every round, so the same repo skips forever.
+ */
+async function withHeartbeatLockWaiting(deps: Deps, key: string, ttlSec: number, tries: number, delayMs: number, fn: () => Promise<void>): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    if (await withHeartbeatLock(deps, key, ttlSec, fn)) return true;
+    if (i < tries - 1) await deps.sleep(delayMs);
+  }
+  return false;
+}
+
 const tickLockTtl = (deps: Deps): number => Math.max(deps.config.limits.tickIntervalSeconds * 2, 300);
 
 /** Machine-wide: serializes every repo's machine-count + claim section when machine.yml sets a cap. */
 export const MACHINE_CLAIM_LOCK = "machine:claim";
+
+/** How long Phase B waits for the machine claim lock before deferring its claims, in 500 ms polls:
+ *  HALF a tick interval, floor 10 s. Half, so the pass still finishes well inside its own interval
+ *  and the next tick is never skipped for waiting; a whole interval's worth of holders is what the
+ *  old try-lock silently lost anyway. It scales with the tick because the number of repos sharing
+ *  the lock does: a claim section is a count plus at most `max_claims_per_tick` claims — seconds
+ *  each — and a flat 10 s is already thin for six repos on a 60 s tick. */
+const MACHINE_CLAIM_POLL_MS = 500;
+const machineClaimWaitTries = (deps: Deps): number =>
+  Math.max(1, Math.round(Math.max(10_000, (deps.config.limits.tickIntervalSeconds * 1000) / 2) / MACHINE_CLAIM_POLL_MS));
 
 /**
  * Run `fn` under the per-repo single-instance tick lock (heartbeat-extended; see
@@ -569,23 +593,32 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   // Phase B — claim new work, behind the host-local machine.yml gate (ARCHITECTURE §7 Phase B). Absent machine.yml
   // ⇒ straight to claimNewWork, exactly as before.
   const machine = deps.machine ?? {};
+  // The deferral count describes the repo's MOST RECENT Phase B pass, so every exit that is not a
+  // lock deferral clears it. Both gates below return before the lock is even taken: a count left
+  // standing by one of them would keep `status`/`explain` reporting a lock race that is not
+  // happening — and with `max_active_workspaces` removed from machine.yml, nothing would ever
+  // clear it again. Any exit added to Phase B has to keep this invariant.
+  const notDeferred = () => void deps.store.recordClaimDeferral(repo, false);
   const lowMemory = memoryGate(machine, deps.availableMemoryMb ?? availableMemoryMb);
   if (lowMemory) {
     // Admission only: running work is untouched — Phase A above already advanced it.
     noteMachineGate(deps.log, lowMemory);
+    notDeferred();
     deps.store.touchTick(repo);
     return;
   }
   if (machine.maxActiveWorkspaces === undefined) {
     noteMachineGate(deps.log, null);
+    notDeferred();
     return claimNewWork(deps);
   }
   // The machine count and the claims must be one critical section: repos tick on separate timers
   // and Phase B awaits the network between its count and its createRun, so two repos could each
   // read "1/2" and both claim (3/2). The machine claim lock (a DB lock — it also covers a CLI
-  // `tick`/`claim` in another process) serializes them; a repo that finds it held skips claiming
-  // this tick and retries next tick.
-  const ran = await withHeartbeatLock(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), async () => {
+  // `tick`/`claim` in another process) serializes them. It is WAITED on, not try-locked: `serve`
+  // ticks every repo on one cadence and in one order, so a repo that skipped on contention hit
+  // the same mid-hold instant every tick and never claimed again (issue #72 — four hours of it).
+  const ran = await withHeartbeatLockWaiting(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), machineClaimWaitTries(deps), MACHINE_CLAIM_POLL_MS, async () => {
     const occupying = deps.store.countOccupyingAll();
     const atCapacity = capacityGate(machine, occupying);
     noteMachineGate(deps.log, atCapacity);
@@ -595,10 +628,17 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
     }
     await claimNewWork(deps, machine.maxActiveWorkspaces! - occupying);
   });
-  if (!ran) {
-    deps.log("info", "machine claim lock held (another repo is claiming) — claiming next tick");
-    deps.store.touchTick(repo);
+  // Deferring is now the rare tail (a holder that outlived the whole wait), and the starvation it
+  // used to hide was silent — so the consecutive count is durable and reported by status/explain.
+  // Reaching the claim section at all clears it, capacity gate included: being full is not losing
+  // a race, and `describeMachine` already says so on its own line.
+  if (ran) {
+    notDeferred();
+    return;
   }
+  const deferrals = deps.store.recordClaimDeferral(repo, true);
+  deps.log("info", `machine claim lock held (another repo is claiming) — ${claimDeferralNote(deferrals)}`);
+  deps.store.touchTick(repo);
 }
 
 /** Phase B proper: claim new work up to the cap, walking BELTS in priority order. The cap is global

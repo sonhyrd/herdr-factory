@@ -124,6 +124,12 @@ export function machineGate(machine: MachineConfig, occupying: number, readMb: (
   return memoryGate(machine, readMb) ?? capacityGate(machine, occupying);
 }
 
+/** How Phase B's consecutive-deferral count reads wherever it is reported. The machine claim lock
+ *  is waited on now, so a non-zero count means a holder outlived the whole wait repeatedly — the
+ *  one shape of claim starvation that is otherwise invisible (issue #72). null at zero. */
+export const claimDeferralNote = (ticks: number): string | null =>
+  ticks > 0 ? `claims deferred ${ticks} tick${ticks === 1 ? "" : "s"} (machine claim lock)` : null;
+
 /** One-line machine summary for status / doctor / the TUI, or null when machine.yml sets nothing.
  *  `occupying` undefined ⇒ occupancy unknown (doctor without a DB). */
 export function describeMachine(machine: MachineConfig, occupying: number | undefined, readMb: () => number): { line: string; gate: MachineGate | null } | null {

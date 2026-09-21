@@ -904,6 +904,18 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE UNIQUE INDEX idx_gate_receipts ON gate_receipts(run_id, gate, head);
     `,
   },
+  {
+    version: 40,
+    // repos.claim_deferrals: how many CONSECUTIVE ticks this repo's Phase B gave up on the
+    // `machine:claim` lock without reaching claimNewWork. A bounded wait now makes that rare, but
+    // when it does happen it is invisible starvation (issue #72: one repo lost the same lockstep
+    // race every minute for four hours), so the count is durable state the out-of-process
+    // `status` / `explain` can read and report. Cleared by every Phase B pass that does not defer
+    // on the lock (not only a later successful claim).
+    sql: `
+      ALTER TABLE repos ADD COLUMN claim_deferrals INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 /** Apply pending migrations in a transaction. Idempotent. */
