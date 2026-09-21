@@ -176,6 +176,13 @@ Use these words precisely; the config and the CLI both key off them.
   dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from
   such a step is the separate `read_only` watch (`read_only_violation`, auto-rescued). Every handoff
   note opens with the `sha:` it covers.
+- **gate receipt** — the record of one verification command (lint / typecheck / a test suite) and the
+  commit it ran at. The `work` prompt runs its checks through `herdr-factory gate <KEY> <name> --
+  <cmd>` (a transparent wrapper: same output, same exit code) and the `review` prompt reads
+  `herdr-factory gates <KEY>`, trusting a receipt marked **CURRENT** (taken at this branch's HEAD)
+  instead of re-running the suite. It exists because every step used to re-derive the same fact by
+  paying for it again. The receipts also feed the `step_timing` event each `step-done` puts on the
+  timeline (wall / shell / model). See references/cli.md.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it
   back with fresh clocks.
 - **ask-human** — an agent asking a question through the work source; the run waits, frees its slot, and

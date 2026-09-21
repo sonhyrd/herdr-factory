@@ -116,8 +116,11 @@ keystrokes dropped into an agent that wasn't listening — counts as **not dispa
 undispatched and retries under the layout wait, instead of starting the step's budget clock against an
 agent that never got the work.
 
-Finishing is always the same protocol: write `handoff-<step>.md`, then run the rendered `step-done`
-command. Signals carry `--pass N`; a `step-done` minted in an earlier pass is rejected with
+Finishing is always the same protocol: write `handoff-<step>.md` — against the scaffold's **fixed
+template** (`sha:` line, then `## Did` / `## Decisions` / `## Uncertain` / `## Next step should
+verify`, under 40 lines, empty sections deleted) — then run the rendered `step-done` command, which
+on success prints where the run landed (`advanced <step> → <next>`), so no step needs to poll
+`status` to find out. Signals carry `--pass N`; a `step-done` minted in an earlier pass is rejected with
 `stale step-done for pass N — the X step is on pass M; finish the current pass and run its own
 step-done command`, and a `bounce` from an earlier pass is rejected at consume time with
 `issued on pass N of "X" but that step is on pass M`. `ask-human` is always available; `bounce` only
@@ -132,7 +135,11 @@ past `budget_seconds` (5400). Both guards **veto while the pane state is `workin
 never parked by a timer (logged `past <what> but still working — extending`). Both are rescued by a
 genuine later `step-done` or `bounce`. Before either can trip, an agent that has sat at its prompt for
 `limits.idle_nudge_seconds` (default **300**) is re-prompted once — see the idle nudge in
-`references/architecture.md` §10. `work` never opens a PR and never touches the item's status.
+`references/architecture.md` §10. `work` never opens a PR and never touches the item's status. Its prompt runs each of the repo's
+lint/type-check/test commands through the **gate wrapper** (`@@GATE_CMD@@` →
+`herdr-factory gate <key> <name> -- <cmd>`), which records a receipt pinned to the commit it ran at,
+and one final time after the last commit so the receipts sit at HEAD — see
+[cli.md](./cli.md#gate-receipts--gate--gates).
 
 ### evidence
 
@@ -154,12 +161,21 @@ genuine later `step-done` or `bounce`. Before either can trip, an agent that has
 - **Capture mutex.** A machine-global lock named `capture` (TTL 1200 s, acquire polls every 5 s up to
   1 h) serializes evidence steps — across belts *and across repos*, since all repos share one DB. It
   never parks; it is force-released when the step exits.
+- **Pass 2+ reuses pass 1's footage.** The shipped prompt diffs against the `sha:` its own previous
+  handoff recorded and re-films only the criteria whose files moved (plus any that were `not
+  proven`), carrying the untouched rows and their published URLs forward. It also requires **one
+  output directory per capture invocation** — Playwright clears its output dir at the start of a
+  run, so two invocations sharing one silently delete the first's videos.
 - Read-only (see below) and, per the shipped prompt, bounces on any acceptance criterion it cannot
   prove — but recaptures rather than bounces for its own weak takes.
 
 ### review
 
-Read-only fresh-eyes gate; exactly one of pass-forward or bounce. **Read-only is enforced by HEAD
+Read-only fresh-eyes gate; exactly one of pass-forward or bounce. Its prompt reads the **gate
+receipts** (`@@GATE_RECEIPTS_CMD@@`) before running anything itself: a CURRENT passing receipt (one
+taken at the branch's present HEAD) is evidence, a CURRENT *failing* one is a bounce, and a gate is
+re-run only when its receipt is missing, STALE, or there is a concrete suspicion about that specific
+check. This is what stops each step re-paying for the previous step's suites. **Read-only is enforced by HEAD
 movement**, not by sandboxing: at spawn the engine records the branch HEAD, then *keeps tracking* live
 HEAD (absorbing the prior step's trailing commits) until this step's pane is first observed `working`, at
 which point the baseline **freezes**. Only a post-freeze HEAD change trips, parking
