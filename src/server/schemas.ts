@@ -222,6 +222,9 @@ export const BounceBody = z
     pass: z.coerce.number().int().positive().optional(),
   })
   .openapi("BounceBody");
+// The OPERATOR's rework: no `step`/`pass` stamp (a person is not a belt step whose pass could go
+// stale) — just the target and the note that is rendered into that step's rework banner.
+export const ReworkBody = z.object({ key: z.string(), toStep: z.string(), source: z.string().optional(), reason: z.string().min(1) }).openapi("ReworkBody");
 // No step field: the attempt always applies to the run's current running step (the engine validates
 // it is a gathersEvidence step), so the agent can't misattribute it.
 export const CaptureAttemptBody = z.object({ key: z.string(), step: z.string(), source: z.string().optional() }).openapi("CaptureAttemptBody");
@@ -317,6 +320,18 @@ export const bounceRoute = createRoute({
   request: { params: RepoParam, ...jsonBody(BounceBody) },
   responses: {
     200: { description: "Bounce recorded", content: { "application/json": { schema: BounceResponse } } },
+    ...repoErrors,
+  },
+});
+
+export const reworkRoute = createRoute({
+  method: "post",
+  path: "/repos/{repo}/rework",
+  tags: ["repo"],
+  summary: "An operator sends a live run back to an earlier step for another pass",
+  request: { params: RepoParam, ...jsonBody(ReworkBody) },
+  responses: {
+    200: { description: "Rework applied (or refused, with the reason)", content: { "application/json": { schema: BounceResponse } } },
     ...repoErrors,
   },
 });

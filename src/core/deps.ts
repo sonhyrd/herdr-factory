@@ -357,6 +357,9 @@ export interface GitApi {
   worktreePrune(repoCwd: string): Promise<void>;
   originUrl(repoCwd: string): Promise<string>;
   headSha(repoCwd: string): Promise<string | null>;
+  /** The worktree's uncommitted work as a diff stat (+ the porcelain listing, which is the only
+   *  one that shows untracked files), or null when the tree is clean — the tree guard's input. */
+  dirtyStat(repoCwd: string): Promise<string | null>;
 }
 
 export type Logger = (level: "info" | "warn" | "error", msg: string) => void;

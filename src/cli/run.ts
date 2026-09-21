@@ -29,6 +29,8 @@ const EVENT_LABEL: Record<string, string> = {
   layout_wait_retry: "waiting for layout pane",
   idle_nudge: "↯ idle agent nudged",
   bounced: "↩ bounced back",
+  rework: "↩ operator rework",
+  step_done_refused: "✗ step-done refused (tree guard)",
   signal_queued: "signal queued",
   signal_rejected: "signal rejected",
   capture_attempt: "evidence capture attempt",
@@ -86,6 +88,12 @@ export function followEventExtra(type: string, detail: string | null): string {
       const to = str(d, "toStep");
       return to ? `→ ${to}` : "";
     }
+    case "rework": {
+      const to = str(d, "toStep");
+      return to ? `${str(d, "fromStep") ?? "?"} → ${to} (pass ${num(d, "pass") ?? "?"})` : "";
+    }
+    case "step_done_refused":
+      return [str(d, "step"), str(d, "why")].filter(Boolean).join(" — ");
     case "transition":
     case "stale":
       return str(d, "to") ?? "";

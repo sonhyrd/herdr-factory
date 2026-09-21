@@ -283,6 +283,11 @@ function handle(text) {
     if (outRel) {
       const p = path.join(cwd, outRel);
       fs.mkdirSync(path.dirname(p), { recursive: true });
+      // NOT the shipped finish protocol's `sha: <commit>` opener, deliberately: reading HEAD costs
+      // this agent another subprocess per turn, and `fast-signal` is tuned on an agent that beats
+      // the engine's own post-dispatch bookkeeping by tens of milliseconds — the sha read was enough
+      // to lose that race. What the ENGINE requires is asserted on the rendered prompt instead
+      // (operator-rework), which is the artifact that actually ships.
       fs.writeFileSync(p, `# handoff from ${step} (pass ${pass})\n\nDid: scripted work.\nVerify next: nothing.\n`);
       log(`  wrote ${outRel}`);
     }

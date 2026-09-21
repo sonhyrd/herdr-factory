@@ -60,6 +60,21 @@ export const SIGNAL_DESCRIPTORS: readonly SignalDescriptor[] = [
     ],
   },
   {
+    // The OPERATOR's rework — the only descriptor here with no `token`: it is never rendered into
+    // an agent's prompt (an agent uses `bounce`, which the belt's canBounceTo constrains). It is
+    // registered all the same so the HTTP route, the lock discipline and `/doc` derive from the
+    // same declaration every other run-scoped signal does.
+    name: "rework",
+    scope: "run",
+    lockDiscipline: "waiting",
+    args: [
+      { name: "key", required: true },
+      { name: "toStep", required: true },
+      { name: "source", required: false, flag: true },
+      { name: "note-file", required: false, flag: true },
+    ],
+  },
+  {
     name: "ask-human",
     scope: "run",
     lockDiscipline: "waiting",

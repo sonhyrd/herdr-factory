@@ -435,7 +435,8 @@ function scaffold(
     step.readOnly && step.enginePrompt === undefined
       ? `\n## This is a read-only step (no commits)\n` +
         `This step is a **gate/check, not a workstation**: do NOT edit files or create commits. ` +
-        `The engine enforces this — if the branch HEAD moves while you run, the run is parked for a human as a read-only violation. ` +
+        `The engine enforces this — if the branch HEAD moves while you run, the run is parked for a human as a read-only violation, ` +
+        `and your step-done is REFUSED (with the diff stat) while the worktree is dirty — this step must leave the tree exactly as it found it. ` +
         `If the work needs changes, ${bounceCmd && bounceTarget ? "send it back for rework (see below)" : "record what's wrong in your handoff note and finish"} — do not fix it here.\n`
       : "";
   return (
@@ -466,7 +467,10 @@ function scaffold(
       : "") +
     `\n## Finishing this step (required)\n` +
     `1. Write your handoff note to \`${MEMORY_DIR}/handoff-${step.name}.md\` — what you did, key decisions and why, ` +
-    `anything uncertain, and what the next step should verify.\n` +
+    `anything uncertain, and what the next step should verify. ` +
+    // Every handoff names the commit it covers, so the next step (and a human reading the trail)
+    // can tell whether the note describes the tree it is actually looking at.
+    `Start it with a line \`sha: <commit>\` (\`git rev-parse HEAD\` in this worktree) — the commit your note covers.\n` +
     `2. Then run \`${stepDoneCmd}\` and stop. Do NOT change the work item's status — the dispatcher owns all status transitions.\n` +
     // The signal is the only thing that advances the belt, and a REJECTED one exits non-zero with the
     // reason (it used to exit 0, so an agent could stop believing a dropped signal had landed).
@@ -662,7 +666,7 @@ async function renderStepPromptImpl(
   if (existsSync(join(worktree, MEMORY_DIR, `feedback-${step.name}.md`))) {
     out =
       `## ⚠ Rework requested — READ THIS FIRST\n\n` +
-      `A later step sent this work back to you. Read \`${MEMORY_DIR}/feedback-${step.name}.md\` in this worktree ` +
+      `A later step — or the operator — sent this work back to you. Read \`${MEMORY_DIR}/feedback-${step.name}.md\` in this worktree ` +
       `and address its findings before doing anything else, then finish this step as normal.\n\n---\n\n` +
       out;
   }
@@ -759,17 +763,17 @@ async function spawnStepImpl(
   // read-only-contract violation) is detectable as HEAD movement in the watch harness. Starts
   // UNFROZEN (basedAt null): it tracks live HEAD — absorbing the prior step's trailing handoff
   // commits — until this step's agent is first observed working (RWR-18204). watch_state since v34.
-  if (step.readOnly && worktree) {
-    const head = await deps.git.headSha(worktree).catch(() => null);
-    if (head) deps.store.upsertWatchState(run.id, stepName, "read_only", { sig: head, basedAt: null });
-  }
+  const spawnHead = await deps.git.headSha(worktree).catch(() => null);
+  if (step.readOnly && spawnHead) deps.store.upsertWatchState(run.id, stepName, "read_only", { sig: spawnHead, basedAt: null });
   deps.store.updateRun(run.id, { paneId: result.paneId }); // latest active pane (reviewing/resolver reuse it)
   deps.store.recordEvent({
     runId: run.id,
     repo: deps.config.repoName,
     ticketKey: run.ticketKey,
     type: "step_spawned",
-    detail: { step: stepName, paneId: result.paneId },
+    // The HEAD this pass is PINNED to: what the step's handoff should name, and what the tree
+    // guard compares against for a step that never commits (core/tree-guard.ts).
+    detail: { step: stepName, paneId: result.paneId, head: spawnHead },
   });
   // Mark that the active step changed. The actual focus shift is deferred to
   // applyPendingFocus, which brings this pane to the front only when the user is already

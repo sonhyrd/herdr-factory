@@ -107,6 +107,7 @@ Triage by symptom — each row has a full playbook in
 
 | Symptom | Most likely cause |
 |---|---|
+| a read-only step won't finish, or a run parked `dirty_tree` | the tree guard: an uncommitted edit (usually a previous step's agent prompted again after its `step-done`) — commit or revert it, then `resume` / re-run the step-done |
 | nothing is claimed | server isn't ticking this repo · belt `active: false` · at a concurrency cap · pickup label missing or already consumed · `match` rejecting it · source credentials paused · an undelivered write-back vetoing the item |
 | run parked for attention | route by `attention_reason_code` — the table in troubleshooting.md says which are auto-rescuable and how to clear each |
 | step never starts | herdr never created the worktree · no herdr plugin link so no layout was ever built · the belt's FIRST step had no `tab`/`pane`, so its own pane pre-empted the build (only possible on a `layout_matching`-only belt — `default_layout` rejects that shape at load) · its `tab`/`pane` names no pane the layout defines · the target pane's agent never came up (look for `could not start <kind> in <pane>` / a "agent did not start" notification) · (for a step with no `tab`/`pane`) the agent binary is missing from the **service** PATH |
@@ -165,6 +166,16 @@ Use these words precisely; the config and the CLI both key off them.
   `github_issues`, forbidden for `local_markdown` and `sentry`.
 - **bounce** — a gate sending work *backward* to an earlier step with written findings, capped by
   `max_bounces`.
+- **rework** — the operator's bounce: `rework <KEY> <step> --note "…"` stops whatever step is running
+  and opens a new pass of `<step>` with the note in its prompt. Works from any live phase (including
+  a parked or waiting run), counts toward `max_bounces`, and is the supported way to say "not like
+  that" to a live run instead of typing into a pane the belt has moved past. A problem outside this
+  ticket's scope is a new ticket, not a rework.
+- **the tree guard** — a step that never commits (`evidence`, `review`, a `read_only` custom step)
+  must find the worktree clean: its `step-done` is refused (with the diff stat) while the tree is
+  dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from
+  such a step is the separate `read_only` watch (`read_only_violation`, auto-rescued). Every handoff
+  note opens with the `sha:` it covers.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it
   back with fresh clocks.
 - **ask-human** — an agent asking a question through the work source; the run waits, frees its slot, and

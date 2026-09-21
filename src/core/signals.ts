@@ -1,6 +1,6 @@
-// The single engine-effect implementation for the run-scoped agent→dispatcher signals
-// (step-done · ask-human · bounce · capture-attempt). BOTH the HTTP handler (server/app.ts) and the
-// CLI's in-process fallback (cli/index.ts) call this ONE function, so the two can't drift and the
+// The single engine-effect implementation for the run-scoped signals — the agent→dispatcher ones
+// (step-done · ask-human · bounce · capture-attempt · set-branch) and the operator's `rework`. BOTH
+// the HTTP handler (server/app.ts) and the CLI's in-process fallback (cli/index.ts) call this ONE function, so the two can't drift and the
 // per-signal lock discipline — declared as data in SIGNAL_DESCRIPTORS (test-pinned in
 // test/step-descriptor-contract.test.ts) — is applied in exactly one place instead of hand-picked
 // per call site in each of two files. Adding a run-scoped signal is now: one SIGNAL_DESCRIPTORS
@@ -11,8 +11,9 @@
 import type { Deps } from "./deps.ts";
 import { resolveActiveRun } from "../resolve.ts";
 import { stepByName } from "./step.ts";
-import { consumePendingSignal, reconcileRun, recordCaptureAttempt, withRunLock, withRunLockWaiting } from "./reconcile.ts";
+import { bounceStep, consumePendingSignal, reconcileRun, recordCaptureAttempt, withRunLock, withRunLockWaiting } from "./reconcile.ts";
 import { setRunBranch } from "./run-branch.ts";
+import { checkStepTree, recordTreeRefusal, treeRefusalMessage } from "./tree-guard.ts";
 
 /** The parsed body an agent signal carries — a superset; each signal reads only the fields it needs.
  *  Structurally compatible with every run-scoped route's validated JSON body (StepDoneBody, …). */
@@ -99,6 +100,20 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
         deps.log("warn", `${body.key}: stale step-done for ${step} pass ${pass} ignored — the step is on pass ${rs.pass}`);
         return { ok: false, message: `stale step-done for pass ${pass} — the ${step} step is on pass ${rs.pass}; finish the current pass and run its own step-done command` };
       }
+      // TREE GUARD: a step that never commits (evidence/review, a custom read_only gate) must
+      // leave the tree exactly as it found it. A dirty tree or a HEAD that moved under it means
+      // its verdict covers code that is already gone — refuse the step-done, with the diff stat,
+      // so the agent sees WHY instead of the run advancing on a stale assessment.
+      const cfg = belt ? stepByName(belt, step) : undefined;
+      if (cfg) {
+        const tree = await checkStepTree(deps, run, cfg);
+        if (!tree.ok) {
+          recordTreeRefusal(deps, run, step, tree);
+          deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done_refused", detail: { step, why: tree.why, stat: tree.stat } });
+          deps.log("warn", `${body.key}: step-done for ${step} refused — ${tree.why}`);
+          return { ok: false, message: treeRefusalMessage(step, tree) };
+        }
+      }
       deps.store.markStepDone(run.id, step);
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done", detail: { step, pass: rs?.pass } });
       deps.log("info", `${body.key}: step-done ${step} recorded`);
@@ -161,6 +176,21 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "signal_queued", detail: { signal: "bounce", toStep: body.toStep, intentId: intent.id } });
       deps.log("info", `${body.key}: run busy — bounce to ${body.toStep} queued (intent #${intent.id}); the next reconcile pass applies it`);
       return { ok: true, queued: true, message: `run busy — bounce to ${body.toStep} recorded; it will be applied on the next reconcile pass` };
+    }
+    case "rework": {
+      // The OPERATOR's counterpart to the agents' `bounce`: send a live run back for another pass,
+      // from outside the belt. Same rewind, same rework banner, same bounce cap — but from any
+      // phase and without the issuing step's `canBounceTo` (a human is allowed to re-run a step
+      // the belt would never bounce to, including the one that is running).
+      const belt = deps.resolveBelt(run.belt);
+      if (!belt) return { ok: false, message: `run has no configured belt "${run.belt}"` };
+      const src = deps.resolveSource(run.workSource);
+      if (!src) return { ok: false, message: `run has no configured work source "${run.workSource}"` };
+      if (!stepByName(belt, body.toStep!)) return { ok: false, message: `step "${body.toStep}" is not in belt "${belt.name}"` };
+      // WAITING, like bounce: it stops the running step and re-dispatches another — a non-monotonic
+      // rewind a concurrent pass on a stale snapshot would fight. An operator can simply retry, so
+      // there is no durable intent behind it (the agent signals need one; a person does not).
+      return underRunLockWaiting(deps, run.id, name, () => bounceStep(deps, fresh(), belt, src, body.toStep!, body.reason!, { operator: true }));
     }
     case "set-branch": {
       // Rename + track under the run lock: the effect writes git and the run row together, and a

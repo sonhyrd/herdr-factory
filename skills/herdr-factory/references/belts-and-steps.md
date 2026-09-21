@@ -81,7 +81,7 @@ Notes that matter when composing:
   stall diagnosis wins a double-trip.
 - Escalation reason codes you will see in `status`, in the HTTP `obligations` endpoint
   (`GET /repos/<repo>/obligations?key=<KEY>`), and narrated by `explain <KEY>`: `step_budget`, `step_stalled`,
-  `read_only_violation`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
+  `read_only_violation`, `dirty_tree`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
   Park texts and remediations → [troubleshooting.md](./troubleshooting.md).
 
 ---
@@ -167,6 +167,23 @@ which point the baseline **freezes**. Only a post-freeze HEAD change trips, park
 completed-but-violating step still parks, and a working agent that commits parks immediately; a genuine
 `step-done` un-parks and advances. If the HEAD read fails at spawn there is no baseline row and the guard
 is inert for that pass.
+
+**The tree guard** (`core/tree-guard.ts`) covers the case HEAD movement cannot see — an edit nobody
+committed. For every step whose resolved posture is `read_only` (so `evidence` and a `custom`
+`read_only: true` step too):
+
+- its **`step-done` is refused** — `ok:false`, exit 1, with the diff stat — while the worktree is
+  dirty (`git status --porcelain`, so untracked files count). A `step_done_refused` event is
+  recorded and the reason is stamped where `explain` reads it;
+- it is **never dispatched onto a dirty tree**: the forward advance into it, its spawn, and a `rework`
+  re-dispatch all park the run as `dirty_tree` (human-only rescue) rather than filming or reviewing a
+  tree that is about to change. A park on the advance leaves the run on the step that just finished, so
+  `resume` re-runs the advance once the tree is clean.
+
+The two are deliberately split at the commit: a *commit* is the watch's park, which the step's own
+`step-done` RESCUES (a completed verdict is never thrown away over misbehaviour on the way to it), and
+refusing that step-done as well would wedge the run — an agent cannot un-commit. An *uncommitted* edit
+is invisible to HEAD and trivially actionable, so it is refused instead.
 
 ### pr
 
@@ -387,6 +404,11 @@ The engine enforces membership, so an agent cannot pick a different target.
 
 The bouncer does **not** signal `step-done`, so once the target re-completes, the forward pass re-enters
 the still-not-done bouncer, bumping *its* pass and re-basing its clocks.
+
+The operator's **`rework <KEY> <toStep> --note "…"`** runs steps 1–5 identically (cap included) — it is
+the same engine path in operator mode — but records a `rework` event instead of `bounced`, lands from
+any live phase including a park, ignores `canBounceTo`, and may target the step that is currently
+running. Forward, `reviewing` and teardown are refused. See [cli.md](./cli.md).
 
 **Counting.** The counter is keyed on the **target** step (`guard_counters(run, targetStep, bounce_cap)`)
 and is cumulative for the run's life — it has no automatic refund. Only a human `resume` from a

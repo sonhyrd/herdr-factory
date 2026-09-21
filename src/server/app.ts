@@ -42,6 +42,7 @@ import {
   reloadRoute,
   resumeRoute,
   retryNowRoute,
+  reworkRoute,
   runsRoute,
   setBranchRoute,
   shutdownRoute,
@@ -437,7 +438,7 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     return c.json({ ran }, 200);
   });
 
-  // The four run-scoped agent signals are thin HTTP shells over the shared engine effect
+  // The run-scoped signals are thin HTTP shells over the shared engine effect
   // (core/signals.ts applySignal) — the SAME implementation the CLI's in-process fallback runs, so
   // the two can't drift and each signal's lock discipline lives in one place. Adding one is a
   // SIGNAL_DESCRIPTORS entry + an applySignal case + this mount.
@@ -457,6 +458,12 @@ export function createApp(ctx: ServerContext): OpenAPIHono {
     const rt = ctx.getRepo(c.req.valid("param").repo);
     if (!rt) return c.json({ error: notConfigured(c.req.valid("param").repo) }, 404);
     return c.json(await applySignal(rt.deps, "bounce", c.req.valid("json")), 200);
+  });
+
+  app.openapi(reworkRoute, async (c) => {
+    const rt = ctx.getRepo(c.req.valid("param").repo);
+    if (!rt) return c.json({ error: notConfigured(c.req.valid("param").repo) }, 404);
+    return c.json(await applySignal(rt.deps, "rework", c.req.valid("json")), 200);
   });
 
   app.openapi(captureAttemptRoute, async (c) => {

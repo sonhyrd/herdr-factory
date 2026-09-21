@@ -20,6 +20,7 @@ import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "
 import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
 import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
+import { checkStepTree, recordTreeRefusal } from "./tree-guard.ts";
 import { reportToPane, showRunPane } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
 import { flushOutbox, type OutboxFlow } from "./outbox.ts";
@@ -1321,7 +1322,7 @@ async function resumeAfterHumanReply(deps: Deps, run: Run, belt: BeltRuntime, sr
  *  TARGET step (feedback-<toStep>.md, overwritten on each bounce) so the target's prompt can surface
  *  it deterministically (see renderStepPromptImpl's rework banner). Returns the worktree-relative
  *  path (for the event + re-dispatch prompt), or null if the run has no worktree. */
-function writeBounceNote(run: Run, fromStep: string, toStep: string, reason: string): string | null {
+function writeBounceNote(run: Run, sender: string, toStep: string, reason: string): string | null {
   if (!run.worktreePath) return null;
   const dir = join(run.worktreePath, MEMORY_DIR);
   mkdirSync(dir, { recursive: true });
@@ -1330,7 +1331,7 @@ function writeBounceNote(run: Run, fromStep: string, toStep: string, reason: str
     [
       `# Rework requested for ${run.ticketKey}`,
       "",
-      `The **${fromStep}** step sent this work back to the **${toStep}** step. Address the findings`,
+      `The **${sender}** sent this work back to the **${toStep}** step. Address the findings`,
       `below, then finish the ${toStep} step as normal (the pipeline will run forward from here again).`,
       "",
       "## Findings to address",
@@ -1356,6 +1357,12 @@ function writeBounceNote(run: Run, fromStep: string, toStep: string, reason: str
  * only to an earlier step the current step declares in `canBounceTo`. The bouncer does NOT step-done,
  * so after the target re-completes the pipeline runs forward and re-enters the (still-not-done)
  * bouncer cleanly.
+ *
+ * `opts.operator` is the OPERATOR's `rework` (core/signals.ts): the same rewind, driven by a person
+ * instead of by the belt. It relaxes exactly the three guards that exist to keep AGENTS inside the
+ * belt's control flow — any park (not just the rescuable ones), the issuing step's `canBounceTo`,
+ * and the strictly-backward rule (a person may re-run the RUNNING step) — and records a `rework`
+ * event instead of `bounced`. Everything else, the bounce cap included, is identical.
  */
 export async function bounceStep(
   deps: Deps,
@@ -1364,27 +1371,41 @@ export async function bounceStep(
   src: SourceRuntime,
   toStep: string,
   reason: string,
+  opts: { operator?: boolean } = {},
 ): Promise<{ ok: boolean; escalated?: boolean; message?: string }> {
   const fromStep = run.step;
+  const operator = opts.operator === true;
   // A bounce is one of the step's three legal terminals, so it lands from a RESCUABLE park exactly
   // as a step-done does (rescuablePark): the agent finished its assessment and concluded the work
   // has to go back — whether a watchdog had parked the run as a stuck-agent backstop, or the agent
   // had asked a human and then decided it doesn't need the answer to send the work back. Every
   // other park (source stale, PR closed, bounce cap, failing reply poll, config error) stays a hard
   // gate — those need a human decision.
-  const parked = rescuablePark(deps, run);
+  // An OPERATOR rework lands from ANY park, not just the terminal-rescuable ones: a person is
+  // making the judgement the park was waiting for. It is still refused once the belt is over —
+  // `reviewing` watches a PR that already exists, and teardown is irreversible.
+  const parked = operator ? (run.phase === "waiting_for_human" ? "human" : run.phase === "attention" ? "watchdog" : null) : rescuablePark(deps, run);
   if ((run.phase !== "running" && !parked) || !fromStep) {
-    return { ok: false, message: "no running step to bounce from" };
+    return {
+      ok: false,
+      message: operator
+        ? `the run is in phase "${run.phase}"${fromStep ? "" : " with no active step"} — rework only applies while the belt is still running (running, waiting_for_human or attention)`
+        : "no running step to bounce from",
+    };
   }
   const from = stepByName(belt, fromStep);
   const to = stepByName(belt, toStep);
   if (!from || !to) return { ok: false, message: `step "${toStep}" is not in belt "${belt.name}"` };
   const idxTo = indexOfStep(belt, toStep);
   const idxFrom = indexOfStep(belt, fromStep);
-  if (idxTo >= idxFrom) {
-    return { ok: false, message: `${toStep} is not before ${fromStep} — bounces only go backward` };
+  // An operator may also re-run the step that is RUNNING (idxTo === idxFrom) — "take this again,
+  // with this note" — and is not bound by the issuing step's declared `canBounceTo`, which exists
+  // to keep AGENTS from inventing their own control flow. Forward is still refused for both: a
+  // step further down the belt has not run yet, so there is nothing to rework.
+  if (operator ? idxTo > idxFrom : idxTo >= idxFrom) {
+    return { ok: false, message: `${toStep} is not before ${fromStep} — ${operator ? "rework goes backward (or re-runs the running step)" : "bounces only go backward"}` };
   }
-  if (!from.canBounceTo.includes(toStep)) {
+  if (!operator && !from.canBounceTo.includes(toStep)) {
     return { ok: false, message: `the ${fromStep} step may not bounce to ${toStep}` };
   }
 
@@ -1412,7 +1433,7 @@ export async function bounceStep(
   // running anyway): record the rescue and clear the "⚠ ATTENTION …" cue the escalation published —
   // mirrors reconcileAttention's / reconcileWaitingForHuman's step-done rescues.
   if (parked) {
-    const reason = parked === "human" ? "bounce_after_human_park" : "bounce_after_watchdog_park";
+    const reason = operator ? "rework_from_park" : parked === "human" ? "bounce_after_human_park" : "bounce_after_watchdog_park";
     deps.store.recordEvent({
       runId: run.id,
       repo: deps.config.repoName,
@@ -1452,11 +1473,18 @@ export async function bounceStep(
     startedAt: deps.now(),
     absentAt: null,
   });
-  const notePath = writeBounceNote(run, fromStep, toStep, reason);
+  const notePath = writeBounceNote(run, operator ? "operator" : `${fromStep} step`, toStep, reason);
   // (5) Rewind the active-step pointer.
   deps.store.updateRun(run.id, { phase: "running", step: toStep, attentionReason: null, focusPending: true });
-  deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "bounced", detail: { fromStep, toStep, bounces, notePath } });
-  deps.log("info", `${run.ticketKey}: ${fromStep} bounced work back to ${toStep} (#${bounces})`);
+  const pass = deps.store.getRunStep(run.id, toStep)?.pass ?? 1;
+  deps.store.recordEvent({
+    runId: run.id,
+    repo,
+    ticketKey: run.ticketKey,
+    type: operator ? "rework" : "bounced",
+    detail: operator ? { by: "operator", fromStep, toStep, pass, bounces, notePath } : { fromStep, toStep, bounces, notePath },
+  });
+  deps.log("info", `${run.ticketKey}: ${operator ? "operator reworked" : `${fromStep} bounced work back`} to ${toStep} (pass ${pass}, #${bounces})`);
 
   // (6) Re-dispatch the TARGET step through spawnStep — the single dispatch path. It re-renders the
   //     step's prompt (the rework banner surfacing the feedback note first, plus the fresh pass
@@ -1464,6 +1492,11 @@ export async function bounceStep(
   //     and dedicated panes alike — or waits/spawns per the step's config. The old bespoke
   //     live-pane message skipped the re-render, so the agent would finish the rework and run the
   //     PRIOR pass's remembered step-done command — rejected as stale under pass validation.
+  // The rewind stands either way; the DISPATCH still obeys the tree guard (a rework target that
+  // never commits must not start on someone's uncommitted edit — see parkIfTreeDirty).
+  if (await parkIfTreeDirty(deps, deps.store.getRun(run.id)!, to)) {
+    return { ok: true, message: `${toStep} was rewound but not dispatched — the worktree is dirty; the run is parked for attention` };
+  }
   await spawnStep(deps, deps.store.getRun(run.id)!, belt, src, toStep);
   deps.log("info", `${run.ticketKey}: re-dispatched ${toStep} for rework`);
   return { ok: true };
@@ -2009,6 +2042,25 @@ function releaseStepLocks(deps: Deps, run: Run, step: StepConfig): void {
   }
 }
 
+/** TREE GUARD at DISPATCH: never start a step that doesn't commit (evidence/review, a custom
+ *  read_only gate) on a dirty tree. The alternative is what the factory used to do — film or review
+ *  a worktree with someone's uncommitted edit in it, pass, and have the next step discover it — so
+ *  this parks the run WITH the diff stat instead of waiting silently. Human-only rescue: only a
+ *  person can decide whether that edit should be committed or thrown away. Returns true when it
+ *  parked (the caller must not dispatch). */
+async function parkIfTreeDirty(deps: Deps, run: Run, step: StepConfig): Promise<boolean> {
+  const tree = await checkStepTree(deps, run, step);
+  if (tree.ok) return false;
+  recordTreeRefusal(deps, run, step.name, tree);
+  await escalateAttention(deps, run, {
+    reason: "dirty_tree",
+    attentionReason: `${step.name} cannot start — ${tree.why}`,
+    body: `${run.ticketKey}: the ${step.name} step never commits, so it must start from a clean tree — but ${tree.why}.\n\n${tree.stat}\n\nCommit or revert the change in the worktree, then resume.`,
+    detail: { step: step.name, why: tree.why, stat: tree.stat },
+  });
+  return true;
+}
+
 async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: SourceRuntime, step: StepConfig): Promise<void> {
   const rs = deps.store.getRunStep(run.id, step.name);
 
@@ -2024,6 +2076,7 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   // and on the belt's last step it loops forever, because the advance that would end the run sits
   // below this branch and is never reached. The step's work is done; fall through and advance it.
   if (!rs?.done && (!rs || !rs.paneId || rs.dispatchedAt == null)) {
+    if (await parkIfTreeDirty(deps, run, step)) return;
     const res = await spawnStep(deps, run, belt, src, step.name);
     if (res.status === "waiting") await handleLayoutWait(deps, run, belt, step);
     return;
@@ -2089,6 +2142,10 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
     }
     const next = nextStep(belt, step.name);
     if (next) {
+      // TREE GUARD before ANY of the next step's entry bookkeeping (the pointer move, the enter
+      // effect, the pass bump): a park here leaves the run on the step that just finished, so the
+      // resume re-runs this same advance once the tree is clean.
+      if (await parkIfTreeDirty(deps, run, next)) return;
       deps.store.updateRun(run.id, { phase: "running", step: next.name });
       // enter(next) effect: a belt may move the source status on entering a step (e.g. entering the
       // QA/review step). No engine default for a non-first step, so it fires only if configured.

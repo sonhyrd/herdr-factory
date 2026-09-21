@@ -907,7 +907,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 (we set `ended_at`), so the web UI can show attempts, outcomes, and durations.
 
 **event types** (the `EventType` union in `src/types.ts`): `claimed · claimed_elsewhere · transition · worktree_created ·
-layout_applied · layout_apply_failed · step_spawned · step_done · layout_wait_retry · idle_nudge · bounced ·
+layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
 pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
@@ -1257,6 +1257,48 @@ Every edge is labelled with the command(s) that propagate state across it, by ac
 - **`on-demand →`** — optional cross-agent context pulls a later agent may make.
 
 Solid edges are the deterministic forward flow; dashed edges are orchestration + queries.
+
+#### Operator rework (`rework`) and the tree guard
+
+Two controls sit *outside* the belt's own control flow, because the incident they exist for sits
+outside it too: an operator prompted a work pane after its `step_done` (a layout belt reuses that
+pane for the next pass, so it is still there), the agent edited a file and left it **uncommitted**,
+and the evidence step filmed a tree that was about to change.
+
+- **`rework <KEY> <toStep> --note …`** is the operator's counterpart to an agent's `bounce`. It is a
+  `scope: "run"` signal (`SIGNAL_DESCRIPTORS`, `lockDiscipline: "waiting"`, **no prompt token** — an
+  agent has `bounce`) that runs `bounceStep(..., { operator: true })`: the same rewind, feedback
+  note, rework banner, pass bump, re-dispatch and `max_bounces` cap. Operator mode relaxes exactly
+  the three guards that exist to keep *agents* inside the belt's control flow — it lands from any
+  park (not only the terminal-rescuable ones), ignores the issuing step's `canBounceTo`, and allows
+  `idxTo === idxFrom` (re-run the running step) — and records a **`rework`** event
+  (`{by: "operator", fromStep, toStep, pass, bounces}`) instead of `bounced`. It is refused once the
+  belt is over (`reviewing`/teardown): there is no step to rewind, only a PR. Unlike the agent
+  signals it enqueues **no durable intent** — a person retries; an agent that has already stopped
+  cannot.
+- **The tree guard** (`core/tree-guard.ts`) holds every step whose resolved `StepConfig.readOnly` is
+  true to the tree it was handed. Each step is pinned to the HEAD it was spawned on
+  (`step_spawned.detail.head`), and `checkStepTree` refuses on a DIRTY worktree (`git status
+  --porcelain`, so untracked files count), carrying the diff stat. It is applied at the two seams
+  where a read-only verdict is about to be trusted: `applySignal`'s `step-done` (refused —
+  `ok:false`, so the CLI exits non-zero and the *agent* reads why; a `step_done_refused` event is
+  recorded) and `parkIfTreeDirty` before every dispatch of such a step — the forward advance (before
+  any of the next step's entry bookkeeping, so the park leaves the run on the completed step and the
+  resume re-runs the advance), the undispatched-pass spawn branch, and a rework's re-dispatch — where
+  it parks the run as `dirty_tree` (human-only rescue: only a person can decide whether the edit
+  should be committed or dropped). The refusal is stamped into the `read_only` watch row's `meta`,
+  so `runObligations`/`explain` can tell an operator why a step will not finish; the row's
+  `rebaseOn: ["entry", "resume"]` re-base clears it.
+
+  **It says nothing about HEAD, deliberately.** A commit by (or under) a read-only step is the
+  `read_only` WATCH's park, and that park is auto-rescued by the step's own `step-done` — the engine
+  never throws away a completed verdict over misbehaviour on the way to it (RWR-18204). Refusing
+  that step-done here as well WEDGES the run: an agent cannot un-commit, so no action of its own
+  could clear the refusal. (Issue #66's text reads "dirty or HEAD moved"; the literal reading breaks
+  the rescue, which the `read-only-violation` e2e scenario catches. Its own "Done when" is the
+  uncommitted-edit case, which this covers.) An uncommitted edit is the opposite: invisible to HEAD,
+  and trivially actionable.
+  Every step prompt's finish protocol now requires the handoff note to open with `sha: <commit>`.
 
 ### Handoff between steps
 
@@ -1919,6 +1961,7 @@ herdr-factory --repo <name> step-done <KEY> <step> [--source <name>]  # agent �
 herdr-factory --repo <name> ask-human <KEY> <step> --question[-file] …  # agent → park until a human replies
 herdr-factory --repo <name> set-branch <KEY> <branch> [--source <name>]  # agent → put the run's worktree on the repo's branch convention
 herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agent → send work back for rework
+herdr-factory --repo <name> rework <KEY> <toStep> --note[-file] …      # OPERATOR → send a live run back for another pass
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
 herdr-factory --repo <name> runs [--all] | timeline <KEY> | logs [n]   # read the DB / repo log

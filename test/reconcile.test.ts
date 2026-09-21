@@ -50,6 +50,9 @@ interface FakeState {
   tabPane: string | null; // what tabPaneByLabel resolves for the CONFIGURED label ("agent") — null ⇒ no match
   tabPaneByName: Record<string, string>; // what tabPaneByLabel resolves for a NON-configured label (the drain-window dispatch name `${step}:${key}`)
   headSha: string;
+  /** What `git status --porcelain` + `git diff --stat` report for the run's worktree — null ⇒ the
+   *  tree is CLEAN (the tree guard's input; see core/tree-guard.ts). */
+  dirtyStat: string | null;
   /** What `git rev-parse --abbrev-ref HEAD` reports for the run's WORKTREE — the branch tracking
    *  reads it every pass. `undefined` ⇒ the worktree is on whatever the run's branch already says
    *  (no rename); a string simulates an agent renaming the branch; null ⇒ detached HEAD. */
@@ -138,7 +141,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -314,6 +317,7 @@ function build(opts: { multi?: boolean } = {}) {
     worktreePrune: async () => {},
     originUrl: async () => "git@github.com:o/n.git",
     headSha: async () => state.headSha,
+    dirtyStat: async () => state.dirtyStat,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {
@@ -1158,6 +1162,9 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(prompt).not.toContain("SHIPPED BASE PROSE"); // the shipped base is dropped
     expect(prompt).not.toContain("Additional repo-specific instructions"); // not the augment framing
     expect(prompt).toContain("Finishing this step (required)"); // the handover scaffold still wraps it
+    // Every handoff names the commit it covers, so the next step can tell whether the note
+    // describes the tree it is actually looking at (issue #66).
+    expect(prompt).toContain("sha: <commit>");
   });
 
   it("a repo-checkout prompt pack (.herdr/prompts/<slug>.md) overrides the base at render time", async () => {
@@ -4048,5 +4055,181 @@ describe("/eligible serves the tick's last poll — the API never queries a sour
     await reconcileRepo(deps);
     expect(calls.eligibleQueries).toBe(1); // the failing poll never reached the counter
     expect(await eligible()).toEqual(listed);
+  });
+});
+
+// ── Operator rework + the tree guard (issue #66) ────────────────────────────────────────────────
+// Two halves of the same incident: an operator prompted a work pane AFTER its step-done, the agent
+// edited a file and left it UNCOMMITTED, and evidence filmed code that was already gone. `rework`
+// is the front door the operator lacked (bounce is an AGENT's control, stamped with its own
+// step/pass); the tree guard is what refuses to trust a step that never commits on a tree that
+// moved under it.
+describe("operator rework — the operator's counterpart to an agent bounce", () => {
+  it("from a RUNNING step: stops it, opens the target's next pass, and records a `rework` event", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-RW1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    const res = await applySignal(deps, "rework", { key: "K-RW1", toStep: "fix", reason: "the narrow viewport still clips the toast" });
+    expect(res.ok).toBe(true);
+    const fresh = store.getRun(run.id)!;
+    expect(fresh.phase).toBe("running");
+    expect(fresh.step).toBe("fix");
+    expect(store.getRunStep(run.id, "fix")!.done).toBe(false);
+    expect(store.getRunStep(run.id, "fix")!.pass).toBe(2);
+    const ev = store.timeline("demo", "K-RW1").find((e) => e.type === "rework");
+    expect(ev, "a rework event is on the timeline").toBeTruthy();
+    const detail = JSON.parse(ev!.detail ?? "{}");
+    expect(detail).toMatchObject({ by: "operator", fromStep: "review", toStep: "fix", pass: 2 });
+    // The note reaches the agent the same way a bounce's findings do: the rework banner + feedback file.
+    expect(readFileSync(join(worktree, ".memory/herdr-factory/feedback-fix.md"), "utf8")).toContain("narrow viewport");
+    expect(readFileSync(join(worktree, ".memory/herdr-factory/prompt-fix.md"), "utf8")).toContain("Rework requested — READ THIS FIRST");
+  });
+
+  it("from WAITING FOR HUMAN: lands anyway and closes the now-moot question", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-RW2", "running", "review");
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    await requestHumanInput(deps, store.getRun(run.id)!, "review", "should the toast wrap?");
+    expect(store.getRun(run.id)!.phase).toBe("waiting_for_human");
+    const res = await applySignal(deps, "rework", { key: "K-RW2", toStep: "fix", reason: "don't wait — just make it wrap" });
+    expect(res.ok).toBe(true);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("fix");
+    expect(store.pendingHumanQuestionForRun(run.id)).toBeUndefined(); // the question can never be usefully answered now
+  });
+
+  it("from a PARKED run: lands even on a human-only park, which an agent bounce is refused from", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-RW3", "attention", "review", { attentionReason: "PR #7 closed without merging" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    store.recordEvent({ runId: run.id, repo: "demo", ticketKey: "K-RW3", type: "attention", detail: { reason: "pr_closed" } });
+    // The agent's own bounce stays refused here (a human park needs a human decision)…
+    expect((await applySignal(deps, "bounce", { key: "K-RW3", toStep: "fix", reason: "redo", step: "review", pass: 1 })).ok).toBe(false);
+    // …and the human IS that decision.
+    const res = await applySignal(deps, "rework", { key: "K-RW3", toStep: "fix", reason: "redo it against the new design" });
+    expect(res.ok).toBe(true);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("fix");
+    const resumed = store.timeline("demo", "K-RW3").filter((e) => e.type === "resumed").map((e) => JSON.parse(e.detail ?? "{}").reason);
+    expect(resumed).toContain("rework_from_park");
+  });
+
+  it("may re-run the step that is RUNNING (a person is not bound by canBounceTo), but never a later one", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-RW4", "running", "review");
+    const again = await applySignal(deps, "rework", { key: "K-RW4", toStep: "review", reason: "check the error state too" });
+    expect(again.ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("review");
+    expect(store.getRunStep(run.id, "review")!.pass).toBe(2);
+    const forward = await applySignal(deps, "rework", { key: "K-RW4", toStep: "pr", reason: "skip ahead" });
+    expect(forward.ok).toBe(false);
+    expect(forward.message).toContain("goes backward");
+    expect(store.getRun(run.id)!.step).toBe("review"); // untouched
+  });
+
+  it("counts toward max_bounces — an operator loop parks like an agent one", async () => {
+    const { deps, store, worktree } = build(); // limits.maxBounces = 3
+    const run = seed(store, worktree, "K-RW5", "running", "review");
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    for (let i = 1; i <= 3; i++) {
+      expect((await applySignal(deps, "rework", { key: "K-RW5", toStep: "fix", reason: `round ${i}` })).escalated).toBeFalsy();
+      await applySignal(deps, "step-done", { key: "K-RW5", step: "fix", pass: i + 1 });
+    }
+    const capped = await applySignal(deps, "rework", { key: "K-RW5", toStep: "fix", reason: "round 4" });
+    expect(capped.escalated).toBe(true);
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+  });
+
+  it("is refused once the belt is over (the PR watch) and for a step that isn't in the belt", async () => {
+    const { deps, store, worktree } = build();
+    seed(store, worktree, "K-RW6", "reviewing", "pr", { prNumber: 7 });
+    const late = await applySignal(deps, "rework", { key: "K-RW6", toStep: "fix", reason: "one more thing" });
+    expect(late.ok).toBe(false);
+    expect(late.message).toContain("reviewing");
+    seed(store, worktree, "K-RW7", "running", "review");
+    const typo = await applySignal(deps, "rework", { key: "K-RW7", toStep: "fx", reason: "typo" });
+    expect(typo.ok).toBe(false);
+    expect(typo.message).toContain("not in belt");
+  });
+});
+
+describe("tree guard — a step that never commits must find the worktree clean", () => {
+  /** A belt whose `review` step declares the read-only posture (as evidence/review do in production). */
+  const readOnlyReview = (b: BeltRuntime) => { b.steps[1] = stepCfg("review", { readOnly: true }); };
+
+  it("refuses step-done on a DIRTY tree, with the diff stat, and does not advance", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    readOnlyReview(shipBelt);
+    const run = seed(store, worktree, "K-TG1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    state.dirtyStat = " src/App.vue | 2 +-\n M src/App.vue"; // the work agent's uncommitted edit
+    const res = await applySignal(deps, "step-done", { key: "K-TG1", step: "review" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain("uncommitted changes");
+    expect(res.message).toContain("src/App.vue"); // the stat, so the agent can see WHAT it is
+    expect(store.getRunStep(run.id, "review")!.done).toBe(false);
+    expect(store.getRun(run.id)!.step).toBe("review"); // no advance to pr on a stale assessment
+    expect(store.timeline("demo", "K-TG1").some((e) => e.type === "step_done_refused")).toBe(true);
+    // …and the operator can see why the step won't finish, without reading the agent's stderr.
+    const ro = runObligations(deps, store.getRun(run.id)!).watches.guards.find((g) => g.kind === "read_only");
+    expect(String(ro!.facts.treeRefusedWhy)).toContain("uncommitted changes");
+  });
+
+  // A COMMIT from a read-only step is the `read_only` WATCH's business, not this guard's: it parks
+  // `read_only_violation` and is deliberately rescued by the step's own step-done (RWR-18204 — a
+  // completed verdict is never thrown away over misbehaviour on the way to it). Refusing here too
+  // would WEDGE that run: an agent cannot un-commit, so no action of its own could ever clear the
+  // refusal. Pinned because the obvious reading of "dirty or HEAD moved" breaks the rescue — the
+  // e2e `read-only-violation` scenario caught exactly that.
+  it("does NOT refuse a step-done for a HEAD that moved — that park belongs to the read_only watch, which the step-done rescues", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    readOnlyReview(shipBelt);
+    const run = seed(store, worktree, "K-TG2", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    store.upsertWatchState(run.id, "review", "read_only", { sig: "sha-baseline", basedAt: 1000 }); // frozen: this agent has taken over
+    state.headSha = "sha-moved"; // the gate committed
+    const res = await applySignal(deps, "step-done", { key: "K-TG2", step: "review" });
+    expect(res.ok).toBe(true);
+    expect(store.getRunStep(run.id, "review")!.done).toBe(true); // the verdict is recorded, not thrown away
+    expect(store.timeline("demo", "K-TG2").some((e) => e.type === "step_done_refused")).toBe(false);
+    // What DOES happen is the watch's own pre-advance park, whose terminal-signal rescue then
+    // advances the run on a later pass (its contract, pinned by the read-only-violation e2e).
+    expect(store.getRun(run.id)!.attentionReasonCode ?? null).toBe("read_only_violation");
+  });
+
+  it("never applies to a step that DOES commit — a dirty tree is that step's job", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-TG4", "running", "fix");
+    state.dirtyStat = " src/App.vue | 2 +-";
+    const res = await applySignal(deps, "step-done", { key: "K-TG4", step: "fix" });
+    expect(res.ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("review");
+  });
+
+  it("parks instead of ADVANCING into a read-only step on a dirty tree (the incident: evidence filmed code that was about to change)", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    readOnlyReview(shipBelt);
+    const run = seed(store, worktree, "K-TG5", "running", "fix");
+    state.dirtyStat = " src/App.vue | 2 +-";
+    const res = await applySignal(deps, "step-done", { key: "K-TG5", step: "fix" });
+    expect(res.ok).toBe(true); // the work step legitimately finished…
+    const fresh = store.getRun(run.id)!;
+    expect(fresh.phase).toBe("attention"); // …but the next step never started
+    expect(fresh.attentionReasonCode).toBe("dirty_tree");
+    expect(fresh.step).toBe("fix"); // still on the completed step: the resume re-runs this advance
+    const ev = store.timeline("demo", "K-TG5").find((e) => e.type === "attention" && JSON.parse(e.detail ?? "{}").reason === "dirty_tree");
+    expect(JSON.parse(ev!.detail ?? "{}").stat).toContain("src/App.vue");
+  });
+
+  it("parks instead of SPAWNING a read-only step whose pass is still undispatched", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    readOnlyReview(shipBelt);
+    const run = seed(store, worktree, "K-TG6", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    store.upsertRunStep(run.id, "review", { dispatchedAt: null }); // the pass never reached an agent
+    state.dirtyStat = " src/App.vue | 2 +-";
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+    expect(store.getRun(run.id)!.attentionReasonCode).toBe("dirty_tree");
   });
 });

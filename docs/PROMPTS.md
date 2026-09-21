@@ -33,9 +33,10 @@ At render time the engine builds each step's prompt in this order:
 5. The engine's **handover scaffold** is appended: which belt and step this is and the full
    step sequence, how to read the prior step's handoff and query its agent on demand, the
    ask-human protocol, the bounce protocol (where applicable), and the finish protocol (write
-   your handoff, then run `step-done`).
-6. If the run was **bounced back** to this step, a *"⚠ Rework requested — READ THIS FIRST"*
-   banner is prepended, pointing at the feedback note.
+   your handoff — opening with the `sha:` it covers — then run `step-done`).
+6. If the run was **bounced back** to this step — by a later step, or by the operator's
+   `rework` — a *"⚠ Rework requested — READ THIS FIRST"* banner is prepended, pointing at the
+   feedback note.
 
 The scaffold (5) and the finish/ask-human/bounce wiring are the engine's job — your
 `prompt_file` should describe *the work*, not restate the plumbing. Base prompts never name

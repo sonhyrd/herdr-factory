@@ -93,6 +93,8 @@ export type EventType =
   | "layout_wait_retry" // a layout-pane wait window expired; the engine re-armed it (bounded respawn budget)
   | "idle_nudge" // a running step's pane sat idle past limits.idle_nudge_seconds; it was re-prompted once
   | "bounced"
+  | "rework" // an OPERATOR sent a live run back to an earlier step for another pass (herdr-factory rework)
+  | "step_done_refused" // a step-done was refused by the tree guard (a read-only step on a dirty worktree)
   | "signal_queued" // a durable bounce/ask-human intent couldn't apply immediately (run lock busy) — the tick consumes it
   | "signal_rejected" // a consumed bounce/ask-human intent was invalid by the time it applied (stale/misaddressed)
   | "capture_attempt" // an evidence agent signalled a capture attempt (flaky-capture cap)
