@@ -23,7 +23,7 @@
 // are "the item is no longer ours", where retrying cannot help.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, HERDR_MARKER, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import { isSourceUnauthenticated } from "../auth/errors.ts";
 import {
   StaleItemError,
@@ -58,7 +58,7 @@ export interface GithubIssuesSourceCfg {
   maxPages: number; // listEligible pages of 100
 }
 
-const QUESTION_MARKER = `${HERDR_MARKER} question:`;
+const questionMarker = (brand: string): string => `${markerPrefix(brand)} question:`;
 
 // Attachment caps (Jira parity — jira-source.ts): images + videos share the count budget.
 const MAX_ATTACHMENTS = 12;
@@ -98,15 +98,15 @@ function sanitize(text: string): string {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "");
 }
 
-function humanQuestionComment(input: HumanAskInput): string {
+function humanQuestionComment(input: HumanAskInput, brand: string): string {
   return [
-    `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`,
+    `${questionMarker(brand)} ${input.repo}/${input.runId}/${input.questionId}]`,
     `Work item: #${input.key}`,
     `Step: ${input.step ?? "unknown"}`,
     "",
     input.question.trim(),
     "",
-    "Reply in a NEW comment — herdr-factory resumes automatically when it sees the reply. (Edits to existing comments are not seen.)",
+    `Reply in a NEW comment — ${brand} resumes automatically when it sees the reply. (Edits to existing comments are not seen.)`,
   ].join("\n");
 }
 
@@ -116,12 +116,14 @@ export class GithubIssuesSource implements WorkSource {
   private readonly prRepo: string; // the repo PRs are opened against (may differ from cfg.repo)
   private readonly log: Logger;
   private readonly ensuredLabels = new Set<string>(); // memoized ensureLabel results (per process)
+  private readonly brand: string; // what our comments call the factory (source_comments.brand)
 
-  constructor(cfg: GithubIssuesSourceCfg, gh: GithubIssuesClient, prRepo: string, log: Logger = () => {}) {
+  constructor(cfg: GithubIssuesSourceCfg, gh: GithubIssuesClient, prRepo: string, log: Logger = () => {}, brand: string = DEFAULT_BRAND) {
     this.cfg = cfg;
     this.gh = gh;
     this.prRepo = prRepo;
     this.log = log;
+    this.brand = brand;
   }
 
   readonly spec: WorkSourceSpec = {
@@ -264,7 +266,7 @@ export class GithubIssuesSource implements WorkSource {
   private async ensureLabel(name: string): Promise<void> {
     if (this.ensuredLabels.has(name)) return;
     if (!(await this.gh.labelExists(name))) {
-      await this.gh.createLabel(name, "5319e7", "managed by herdr-factory");
+      await this.gh.createLabel(name, "5319e7", `managed by ${this.brand}`);
     }
     this.ensuredLabels.add(name);
   }
@@ -412,7 +414,7 @@ export class GithubIssuesSource implements WorkSource {
     ];
     for (const c of comments) {
       const text = c.body ?? "";
-      if (bearsHerdrMarker(text)) continue; // our own questions/notes are not task content
+      if (bearsHerdrMarker(text, this.brand)) continue; // our own questions/notes are not task content
       lines.push("", `## Comment by ${c.user?.login ?? "unknown"} (${c.created_at})`, "", await media.rewrite(sanitize(text), c.body_html));
     }
     if (media.failed > 0) lines.push("", `> note: ${media.failed} attachment(s) could not be downloaded — follow the original links above.`);
@@ -445,7 +447,7 @@ export class GithubIssuesSource implements WorkSource {
   }
 
   async postNote(key: string, note: string): Promise<void> {
-    await this.gh.createComment(Number(key), `${HERDR_MARKER}] ${note}`);
+    await this.gh.createComment(Number(key), `${markerPrefix(this.brand)}] ${note}`);
   }
 
   async askHuman(input: HumanAskInput): Promise<HumanAskResult> {
@@ -454,10 +456,11 @@ export class GithubIssuesSource implements WorkSource {
       // Idempotent per questionId (INV-5): askHuman is re-invoked every tick until an externalId
       // is PERSISTED — if our earlier POST succeeded but the response was lost, re-posting would
       // ask the human twice. Scan for the marker first (blockquote-aware via the exact first line).
-      const marker = `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`;
-      const existing = (await this.gh.listComments(n)).find((c) => (c.body ?? "").startsWith(marker));
+      // Both spellings: a question posted before this host switched brands must not be re-asked.
+      const markers = markerPrefixes(this.brand).map((p) => `${p} question: ${input.repo}/${input.runId}/${input.questionId}]`);
+      const existing = (await this.gh.listComments(n)).find((c) => markers.some((m) => (c.body ?? "").startsWith(m)));
       if (existing) return { externalId: String(existing.id), externalCreatedAt: existing.created_at };
-      const posted = await this.gh.createComment(n, humanQuestionComment(input));
+      const posted = await this.gh.createComment(n, humanQuestionComment(input, this.brand));
       return { externalId: String(posted.id), externalCreatedAt: posted.created_at };
     } catch (e) {
       const gone = classifyGone(e);
@@ -480,7 +483,7 @@ export class GithubIssuesSource implements WorkSource {
         // INV-6: skip every herdr-authored artifact (questions AND marked notes) — but a human
         // QUOTE-REPLY that embeds the question as `> …` blockquote lines IS a reply. NO author
         // filtering: under gh-CLI auth the bot login IS the operator's login.
-        if (bearsHerdrMarker(text)) continue;
+        if (bearsHerdrMarker(text, this.brand)) continue;
         if (!text.trim()) continue;
         return { body: text, externalId: String(c.id), externalCreatedAt: c.created_at, author: c.user?.login ?? null };
       }

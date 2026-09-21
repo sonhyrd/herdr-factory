@@ -62,7 +62,7 @@ export async function buildDeps(repoName: string): Promise<Deps> {
     // startup fails loudly rather than at claim time.
     const sources: SourceRuntime[] = config.sources.map((s) => {
       const sourceAttrs = { repo: repoName, "work.source": s.name, "source.type": s.type };
-      const client = descriptorFor(s.type).create({ repoName, sourceName: s.name, cfg: s.cfg, env, store, ghRepo, log });
+      const client = descriptorFor(s.type).create({ repoName, sourceName: s.name, cfg: s.cfg, env, store, ghRepo, log, brand: config.sourceComments.brand });
       return {
         name: s.name,
         type: s.type,

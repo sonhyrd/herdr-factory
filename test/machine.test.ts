@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { availableMemoryMb, claimDeferralNote, describeMachine, loadMachineConfig, machineConfigPath, machineGate } from "../src/machine.ts";
+import { availableMemoryMb, claimDeferralNote, describeMachine, loadMachineConfig, machineConfigPath, machineGate, machineHostAlias } from "../src/machine.ts";
 
 const dirs: string[] = [];
 const saved = process.env.HERDR_FACTORY_CONFIG_DIR;
@@ -42,6 +42,17 @@ describe("machine.yml", () => {
     expect(loadMachineConfig().layoutHookIgnorePaneLabels).toEqual([]); // explicitly ignore none
     writeFileSync(machineConfigPath(), "layout_hook:\n  ignore_panes: [Sidebar]\n");
     expect(() => loadMachineConfig()).toThrow(/layout_hook:.*Unrecognized key/s);
+  });
+
+  it("host_alias names this host in the claim ledger, and never breaks the marker (issue #70)", () => {
+    configDir();
+    expect(machineHostAlias()).toBeUndefined(); // absent ⇒ os.hostname() still wins
+    writeFileSync(machineConfigPath(), "host_alias: contabo\n");
+    expect(loadMachineConfig().hostAlias).toBe("contabo");
+    expect(machineHostAlias()).toBe("contabo");
+    writeFileSync(machineConfigPath(), "host_alias: 'bad host]'\n");
+    expect(() => loadMachineConfig()).toThrow(/host_alias/);
+    expect(machineHostAlias()).toBeUndefined(); // tolerant: a broken machine.yml fails in doctor, not every config load
   });
 
   it("rejects unknown keys and bad values with a readable error", () => {

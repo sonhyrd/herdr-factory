@@ -877,11 +877,41 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
   },
   {
     version: 39,
+    // GATE RECEIPTS. A belt re-ran the same verification command (full spec, unit, typecheck) up to
+    // six times on one unchanged SHA, because each step could only discover an earlier step's gates
+    // by running them again. A receipt makes "this command was run, at this commit, with this exit
+    // code" a FACT the next step reads instead of re-derives.
+    // The UNIQUE key is (run, gate, head) — not (run, step, pass, gate) — because the SHA is what
+    // makes a receipt trustworthy: two steps running the same gate at the same commit are the SAME
+    // fact, and the second write supersedes the first rather than accumulating duplicates. `step` +
+    // `pass` are recorded (they attribute the shell time the step-done timing export reads), not
+    // part of the identity. ON DELETE CASCADE is rollback safety: pre-PR purge code does not
+    // delete from gate_receipts, and PRAGMA foreign_keys = ON would otherwise fail the run delete.
+    sql: `
+      CREATE TABLE gate_receipts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        step TEXT NOT NULL,
+        pass INTEGER NOT NULL DEFAULT 1,
+        gate TEXT NOT NULL,
+        command TEXT NOT NULL,
+        head TEXT NOT NULL,
+        exit_code INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        tail TEXT,
+        ran_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_gate_receipts ON gate_receipts(run_id, gate, head);
+    `,
+  },
+  {
+    version: 40,
     // repos.claim_deferrals: how many CONSECUTIVE ticks this repo's Phase B gave up on the
     // `machine:claim` lock without reaching claimNewWork. A bounded wait now makes that rare, but
     // when it does happen it is invisible starvation (issue #72: one repo lost the same lockstep
     // race every minute for four hours), so the count is durable state the out-of-process
-    // `status` / `explain` can read and report. Reset to 0 the moment the repo claims again.
+    // `status` / `explain` can read and report. Cleared by every Phase B pass that does not defer
+    // on the lock (not only a later successful claim).
     sql: `
       ALTER TABLE repos ADD COLUMN claim_deferrals INTEGER NOT NULL DEFAULT 0;
     `,

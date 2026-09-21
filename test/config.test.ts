@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { hostname, tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -394,13 +394,23 @@ describe("loadConfig — work sources + belts", () => {
     jira: { base_url: https://x.atlassian.net, project: RWR, board: 254 }
 `;
       setup(cfg(`${guarded}${LM_SRC}`, SHIP_BELT));
-      expect(loadConfig("demo").config.sources[0]!.claimGuard).toEqual({ host: "contabo", settleMs: 2000 });
+      // `host` overrides ⇒ this machine's own hostname becomes a read-only alias (legacy ledger lines).
+      expect(loadConfig("demo").config.sources[0]!.claimGuard).toEqual({ host: "contabo", settleMs: 2000, hostAliases: [hostname().replace(/[^A-Za-z0-9._-]/g, "-")] });
       setup(cfg(guarded.replace("host: contabo", "settle_ms: 500"), SHIP_BELT));
       expect(loadConfig("demo").config.sources[0]!.claimGuard).toMatchObject({ settleMs: 500, host: expect.stringMatching(/^[A-Za-z0-9._-]+$/) });
       setup(cfg(guarded.replace("host: contabo", "host: 'bad host]'"), SHIP_BELT));
       expect(() => loadConfig("demo")).toThrow(/claim_guard/);
       setup(cfg(`${JIRA_SRC}${LM_SRC.replace("type: local_markdown", "type: local_markdown\n    claim_guard: { enabled: true }")}`, SHIP_BELT));
       expect(() => loadConfig("demo")).toThrow();
+    });
+
+    it("source_comments.brand defaults to herdr-factory and rejects marker-breaking values (issue #70)", () => {
+      setup(cfg(`${JIRA_SRC}${LM_SRC}`, SHIP_BELT));
+      expect(loadConfig("demo").config.sourceComments).toEqual({ brand: "herdr-factory" });
+      setup(cfg(`${JIRA_SRC}${LM_SRC}`, SHIP_BELT, "repo:\n  path: __REPO__\nsource_comments: { brand: hf }\n"));
+      expect(loadConfig("demo").config.sourceComments).toEqual({ brand: "hf" });
+      setup(cfg(`${JIRA_SRC}${LM_SRC}`, SHIP_BELT, "repo:\n  path: __REPO__\nsource_comments: { brand: 'bad brand]' }\n"));
+      expect(() => loadConfig("demo")).toThrow(/source_comments\.brand/);
     });
 
     it("rejects a non-positive max_active_workspaces", () => {

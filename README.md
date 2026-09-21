@@ -64,8 +64,9 @@ The installer finishes by printing this checklist and running `herdr-factory doc
 what's still on you (herdr, an agent CLI, `gh auth`) right away — the herdr check also enforces the
 **0.7.5** floor (its agent/pane CLI changed there), and `--deep` additionally confirms the running
 herdr server speaks a protocol this herdr CLI can talk to. Run `herdr-factory doctor` (or
-`doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, and
-each repo's config, sources, and evidence bucket.
+`doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, the
+last fast-forward of each repo's main checkout (amber while one is skipped — on another branch,
+dirty, or diverged), and each repo's config, sources, and evidence bucket.
 
 With `--repo <name>`, `doctor` also checks the **agent tooling that repo's config actually asks
 for**, since that is the part nothing else fails loudly on: `cursor-agent` on PATH (and, on
@@ -392,7 +393,8 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
 
 - **work** — implements the change and commits as it goes (a commit-HEAD heartbeat catches stalls),
   following the target repo's own guidelines/skills for setup, patterns, and how its tests are run
-  (see [Prompts](#prompts)).
+  (see [Prompts](#prompts)). It runs each of those checks through the
+  [gate wrapper](#gate-receipts), so a later step can read that they passed instead of re-running them.
 - **evidence** _(opt-in)_ — derives a test plan from the work item's acceptance criteria, then films
   the running app to prove each one. Its "step zero" is to go and read the repo's own guidance before
   starting the app — its agent instructions, its skill/command directories (read by path, symlinks
@@ -416,7 +418,8 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
 - **review** — a strict read-only gate with fresh eyes, judging against the repo's own review
   standards (its checklist / review skill / engineering docs) when it has them: it never edits or
   commits (if it commits, the run parks — read-only is enforced), it either passes the work forward
-  or **bounces back to work**. Keeping all rework in the work step is deliberate.
+  or **bounces back to work**. Keeping all rework in the work step is deliberate. It reads the work
+  step's [gate receipts](#gate-receipts) rather than re-running its suites.
 - **pr** — pushes the branch, opens the PR with the evidence URLs embedded, and drives the
   automated round (CI green, bot comments addressed). The body also carries forward what the
   earlier steps wrote down — `## Assumptions` (omitted when there are none) and
@@ -490,6 +493,48 @@ A **commit** from such a step is the separate, older read-only watch — it park
 `step-done` un-parks and advances. That rescue is deliberate (a completed verdict is never thrown
 away over misbehaviour on the way to it), so the tree guard stays out of it: refusing a step-done
 for a commit would wedge the run, because an agent cannot un-commit.
+
+### Gate receipts
+
+A **gate** is one verification command — lint, a type-check, a test suite. Without a shared record
+of them, each step could only discover what an earlier step had checked by checking it again: on the
+run that motivated this, the full spec suite ran six times, the unit suite six times and the scoped
+type-check four times, all against one unchanged commit, and the review step alone spent six minutes
+re-running the work step's gates.
+
+The work step now runs each of its checks through a transparent wrapper:
+
+```
+herdr-factory --repo my-app gate MY-123 test -- pnpm test
+```
+
+It runs the command in the run's worktree, streams its output through unchanged, and exits with the
+command's own exit code — nothing about how the agent works changes. What it adds is a **receipt**
+recorded against the run: the command, the worktree **HEAD it ran at**, the exit code, how long it
+took, and the tail of its output. The receipt is keyed by `(run, gate name, HEAD)`, so re-running a
+gate at the same commit replaces its receipt rather than piling up another.
+
+A later step reads them:
+
+```
+herdr-factory --repo my-app gates MY-123
+MY-123: HEAD 4f1c9ae30b21 — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.
+  ✓ pass  test           CURRENT 4f1c9ae30b21  91.4s  work pass 1  pnpm test
+  ✓ pass  typecheck      CURRENT 4f1c9ae30b21  24.7s  work pass 1  pnpm typecheck
+  ✗ exit 1  lint         STALE   9ab2c0d41e77  8.1s   work pass 1  pnpm lint
+```
+
+**CURRENT** means the receipt was taken at the branch's present HEAD **on a clean tree** — it covers exactly the tree the
+reading step is looking at. A gate run with uncommitted work stores `${HEAD}+dirty` so it never equals HEAD and `gates` marks it **DIRTY**. The review prompt treats a current passing receipt as evidence and runs a
+gate itself only when the receipt is missing, stale, dirty, or it has a concrete suspicion about that
+specific check; a *failing* current receipt is re-run once through the wrapper and bounced only if it fails again. `gates --json` is the
+machine-readable form. Receipts live with the run and die with it.
+
+They also feed the **`step_timing`** event each `step-done` writes to the timeline: the pass's wall
+time, the time it spent inside gate commands (`shellMs`), and the remainder (`modelMs`) — so
+"where did that step's 40 minutes go" is a `timeline <KEY>` away rather than a one-off script over
+the agent harness's own chat store. Only *wrapped* commands count as shell time; anything else the
+agent spawned lands in the model half.
 
 ### `custom` steps — your own stations
 
@@ -626,7 +671,10 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   HTTP call is hard-timeout-bounded, with a wedged-tick watchdog behind it all.
 - **Self-driving operations.** One resident server ticks every repo; a stateless scheduled
   supervisor restarts it if it's down, wedged, or outdated; auto-update ships new code (and new
-  Node runtimes) within ~a minute of a push, draining gracefully before restart.
+  Node runtimes) within ~a minute of a push, draining gracefully before restart. The same tick also
+  keeps **each configured repo's main checkout** current — a throttled `git fetch` + fast-forward,
+  only when it's clean and sitting on its base branch — so the working copy a human opens isn't
+  months behind origin.
 - **A control room.** Running `herdr-factory` with no arguments opens a full-screen TUI —
   live dashboard, a schema-validated config editor, and doctor. The dashboard is a **kanban board per
   belt**: the belt's steps are the columns, every work item is a card in the column of the step it is
@@ -653,7 +701,8 @@ Deep engine internals (reconciler phases, locking, the outbox, rate limits, inva
 
 ```
 launchd / systemd timer ─every 60s─> herdr-factory ensure-up    (stateless one-shot supervisor)
-                                          │ auto-update, then (re)start if down / wedged / outdated
+                                          │ auto-update + fast-forward each repo's main checkout,
+                                          │ then (re)start if down / wedged / outdated
                                           ▼
             herdr-factory serve    (one resident process: ticks every repo + HTTP API on 127.0.0.1:8765)
             │ Phase 0: flush pending source status write-backs (the outbox)
@@ -728,6 +777,7 @@ few settings that describe the **host's herdr** rather than any repo (`layout_ho
 # yaml-language-server: $schema=./machine.schema.json
 max_active_workspaces: 2   # worked runs across ALL repos on this host (same count as the per-repo cap)
 min_free_memory_mb: 4096   # don't claim while available memory is below this
+host_alias: contabo        # what this host calls itself in the claim ledger (instead of its hostname)
 layout_hook:
   ignore_pane_labels: [Sidebar]   # panes a herdr PLUGIN adds — not "this workspace is arranged"
 ```
@@ -736,6 +786,7 @@ layout_hook:
 | --- | ------- | ------- |
 | `max_active_workspaces` | unset (no machine cap) | ceiling on **worked** runs across every repo this host serves; parked + idle PR-watch runs hold no slot. Checked before each repo's claims under a machine-wide lock; a manual `claim` honours it too |
 | `min_free_memory_mb` | unset (no memory gate) | skip claiming while available memory is below it — Linux `MemAvailable`, macOS `vm_stat` free + inactive + speculative pages, `os.freemem()` elsewhere |
+| `host_alias` | unset (`os.hostname()`) | what this host calls itself in the [claim ledger](#several-factories-on-one-source-claim_guard) — so a public tracker shows `contabo`, not the machine's real name. Letters, digits, `.`, `_`, `-`. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its hostname **before** the alias was set are still recognised as its own, so renaming a live host never makes it fence itself |
 | `layout_hook.ignore_pane_labels` | `[Sidebar]` | pane labels the layout hook's freshness gate ignores. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) makes every brand-new workspace 2 panes, which would decline **every** layout build on that host; panes bearing these labels don't count. Matched case-insensitively. Set it to the labels your plugins use, or `[]` to ignore none. A pane the **user** opened still declines the build |
 
 Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
@@ -852,13 +903,14 @@ work_sources:
 | key | default | |
 |---|---|---|
 | `enabled` | `false` | off ⇒ no comments, no delay — single-factory behaviour |
-| `host` | the machine hostname (unsafe chars → `-`) | letters, digits, `.`, `_`, `-`; must differ per factory |
+| `host` | `machine.yml`'s `host_alias`, else the machine hostname (unsafe chars → `-`) | letters, digits, `.`, `_`, `-`; must differ per factory. Prefer `host_alias` in `machine.yml` when the config folder is shared — it is host-local, so every host reads the same `config.yml` |
 | `settle_ms` | `2000` | wait between posting a claim and re-reading the thread |
 
 The protocol, run right after the run row is inserted and before any worktree, agent, or
 status write: read the item's comments — if another factory's claim is already open, skip the item
-without posting anything; otherwise post `[herdr-factory claim id=<run> host=<host>]`, wait
-`settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
+without posting anything; otherwise post `[<brand> claim id=<run> host=<host>]` (`<brand>` is
+[`source_comments.brand`](#comment-brand--source_comments-optional), `herdr-factory` by default), wait
+`settle_ms`, and re-read. Among claims with no matching `[<brand> release id=<run> host=<host>]`,
 the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
 posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
 (a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release.
@@ -872,6 +924,36 @@ Costs: a claim adds ~`settle_ms` and two visible comments per item (claim + rele
 lost race. Jira has no compare-and-set, so the guard relies on comment ids being monotonic. The whole Jira
 comment thread is paged (100 per call), so an old claim comment is never missed. `local_markdown` and
 `sentry` do not accept `claim_guard`.
+
+**Rolling out a brand or a host alias across a fleet** is safe host by host. The ledger is read
+brand-agnostically — a host still on `herdr-factory` sees a flipped host's `[hf claim …]` lines and
+fences on them, and vice versa — and a host recognises its own pre-alias claims (posted under its raw
+hostname) as its own, while the release that frees one is written with the host name that claim actually
+carries, so every other host pairs the two as well. So a half-migrated fleet arbitrates on one shared
+ledger, and two hosts never both think they own an item. Writers only ever emit the configured brand.
+
+### Comment brand — `source_comments` (optional)
+
+Every comment the factory writes to a work source says `herdr-factory`. Inside a company's Jira or GitHub
+you may want another name on them:
+
+```yaml
+source_comments:
+  brand: hf     # default: herdr-factory
+```
+
+`brand` (letters, digits, `.`, `_`, `-` — it is embedded in markers and re-parsed; a short one is fine,
+the factory matches `[<brand>]`/`[<brand> ` and never a bare prefix, so `[hf-204]` in a human's reply is
+still a human's reply) drives **every** comment
+the factory authors: the [claim ledger](#several-factories-on-one-source-claim_guard) lines
+(`[hf claim id=112 host=contabo]`), the question marker (`[hf question: …]`), the prefix on notes
+(`[hf] …`) including the `⚠ hf parked this run for attention: …` note a work error posts, the
+"no answer needed" note on a moot question, and the description on state labels the `github_issues`
+source auto-creates (`managed by hf`). Unset ⇒ byte-identical strings to before. The `resume` /
+`triage` command lines inside a note keep naming the real binary — they are commands, not branding.
+
+Pair it with `machine.yml`'s [`host_alias`](#machine-limits--machineyml-host-local-optional) to keep raw
+hostnames off a public tracker too.
 
 ### `belt` (≥ 1)
 
@@ -1406,8 +1488,20 @@ substitution. Universal tokens (always injected):
 
 `@@KEY@@ @@REPO@@ @@BELT@@ @@STEPS@@ @@STEP@@ @@TYPE@@ @@SUMMARY@@ @@BRANCH@@ @@WORKTREE@@
 @@MEMORY_DIR@@ @@WORK_DOC@@ @@WORK_DOC_KIND@@ @@HANDOFF_IN@@ @@HANDOFF_OUT@@ @@PRIOR_PANE@@
-@@PRIOR_SESSION@@ @@STEP_DONE_CMD@@ @@ASK_HUMAN_CMD@@ @@BOUNCE_CMD@@ @@BOUNCE_TARGET@@
-@@BOUNCE_REASON_FILE@@ @@CLI@@ @@COMMIT_CONVENTIONS@@`
+@@PRIOR_SESSION@@ @@STEP_DONE_CMD@@ @@ASK_HUMAN_CMD@@ @@SET_BRANCH_CMD@@ @@BOUNCE_CMD@@
+@@BOUNCE_TARGET@@ @@BOUNCE_REASON_FILE@@ @@CLI@@ @@PASS@@ @@GATE_CMD@@ @@GATE_RECEIPTS_CMD@@
+@@COMMIT_CONVENTIONS@@`
+
+**The handoff note is a fixed template, not an essay.** The finish protocol hands every step the
+exact shape to write — a `sha:` line naming the commit it covers, then `## Did`, `## Decisions`,
+`## Uncertain`, `## Next step should verify` — capped at 40 lines, with empty sections deleted
+rather than padded. Free-form notes had grown to where streaming one cost 40–80 seconds of a step's
+budget and the next agent still had to hunt for the three facts it needed.
+
+(`@@PASS@@` is which entry into the step this is — 1 on the first, 2+ after a bounce or a `rework`
+— which is how a re-entered step reuses its own previous pass's work instead of redoing it: the
+evidence prompt re-films only the criteria whose files moved since its last handoff's `sha:`.
+`@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@` are the [gate receipt](#gate-receipts) wrapper and reader.)
 
 (`@@COMMIT_CONVENTIONS@@` renders your [`conventions.commits`](#conventions-optional) value when set
 and **nothing** when unset, so an unset key leaves the work/pr prompts byte-identical to before.)
@@ -1477,6 +1571,8 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason|--reason-file … [--
 herdr-factory --repo <name> ask-human <KEY> <step> --question|--question-file … [--source <name>]
 herdr-factory --repo <name> set-branch <KEY> <branch> [--source <name>]   # move the run onto this repo's branch convention
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]
+herdr-factory --repo <name> gate <KEY> <gate-name> [--step <s>] [--pass <n>] -- <command>   # run a check, leave a RECEIPT
+herdr-factory --repo <name> gates <KEY> [--json] [--source <name>]  # which checks already ran, at which commit, with what result
 herdr-factory capture-lock acquire|release <resource> [owner]       # machine-global exclusive_resource lock
 
 # scaffold a repo config from inside the repo (name defaults to --repo, else the checkout dir)
@@ -1803,6 +1899,7 @@ harness with no skill mechanism can be pointed at the folder directly.
 ~/.config/herdr-factory/         config.schema.json · repos/<name>/{config.yml, env, guidelines-prompt.md, …}
 ~/.local/state/herdr-factory/    herdr-factory.db · runtime/<node>/ · node-path · server.json
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
+                                 checkout-sync.json (last main-checkout fast-forward per repo — ditto)
                                  fleet-last-seen.json (when each fleet machine last answered)
                                  fleet-ssh/ (ControlMaster sockets — only when this path fits a Unix
                                  socket's 104 bytes; otherwise /tmp/hf-<uid>/, mode 0700)

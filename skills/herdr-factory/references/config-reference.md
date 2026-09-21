@@ -187,7 +187,7 @@ Present on every source type:
 | `name` | string trimmed min1 | no | **= `type`**; must be unique per repo |
 | `poll_interval_seconds` | int positive | no | `limits.source_poll_interval_seconds` → `limits.tick_interval_seconds` |
 | `max_active_workspaces` | int positive | no | **2** — per-source cap, summed across belts, under the repo ceiling |
-| `claim_guard` | object, strict | no | unset (off). **`jira` and `github_issues` only** — rejected on `local_markdown`/`sentry`. `enabled` bool **false**; `host` matching `^[A-Za-z0-9._-]+$` (error: ``claim_guard.host` may only contain letters, digits, '.', '_' and '-'``), default = the machine hostname with other chars folded to `-`; `settle_ms` int ≥ 0, **2000**. Lets several factories with separate DBs share the source — see [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard) |
+| `claim_guard` | object, strict | no | unset (off). **`jira` and `github_issues` only** — rejected on `local_markdown`/`sentry`. `enabled` bool **false**; `host` matching `^[A-Za-z0-9._-]+$` (error: ``claim_guard.host` may only contain letters, digits, '.', '_' and '-'``), default = `machine.yml`'s `host_alias` (§3.14) else the machine hostname with other chars folded to `-`; `settle_ms` int ≥ 0, **2000**. Lets several factories with separate DBs share the source — see [work-sources.md](./work-sources.md#several-factories-on-one-source-claim_guard) |
 
 Plus exactly one required wrapper block naming the type. Full key tables, credentials, eligibility and
 write-backs are in [work-sources.md](./work-sources.md); the schema shape in one line each:
@@ -370,6 +370,27 @@ dropped. AWS credentials come from the ambient chain — never from config.
 |---|---|---|---|
 | `commits` | string trimmed min1 | no | Short free text **or a file pointer** (absolute, or relative to `<repoDir>`). Resolved at render time, best-effort: if the path stats as a file its contents are used, otherwise the value is literal text. Surfaces as `@@COMMIT_CONVENTIONS@@`; unset ⇒ the token renders empty. |
 
+### 3.11b `source_comments`
+
+| key | type | req | default |
+|---|---|---|---|
+| `brand` | string trimmed, `^[A-Za-z0-9._-]+$` (error: ``source_comments.brand` may only contain letters, digits, '.', '_' and '-' (it is embedded in markers and re-parsed)``) | no | **`herdr-factory`** |
+
+What the factory calls itself in **every** comment it writes to a work source: the claim/release ledger
+lines (`[<brand> claim id=<run> host=<host>]`), the question marker (`[<brand> question: <repo>/<run>/<q>]`),
+the prefix on notes (`[<brand>] …`) and the `⚠ <brand> parked this run for attention: …` body of the
+work-error note, the moot-question `✅ <brand>: no answer needed …` note, and the description on state
+labels `github_issues` auto-creates (`managed by <brand>`). The `resume`/`triage` command lines inside
+a note are NOT branded — they name the binary an operator types. Default ⇒ byte-identical
+strings to before the key existed.
+
+READERS cope with brands they did not write, so a fleet switches host by host without double-claiming or
+re-asking a question. The claim ledger is parsed **brand-agnostically** (any token in the brand position),
+so an un-flipped host still fences on a flipped one's claims. `bearsHerdrMarker` (INV-6) and the askHuman
+idempotence scan accept the configured brand AND the legacy `herdr-factory` spelling, anchored to
+`[<brand>]` or `[<brand> ` — a human reply that merely starts a bracket with the brand (`see [hf-204] …`)
+is still a reply, so a SHORT brand is safe.
+
 ### 3.12 `branch` (top-level and per-belt)
 
 | key | type | default |
@@ -408,13 +429,14 @@ kind + `agent_args`), so the layout owns the harness for the panes it builds.
 
 A separate file at `<configRoot>/machine.yml`, strict (unknown keys rejected — nested objects too).
 Absent file, empty file, or absent key = default behaviour (byte-identical to not having the feature).
-It holds what describes the HOST rather than a repo: admission limits, and the layout hook's view of
-this host's herdr plugins.
+It holds what describes the HOST rather than a repo: admission limits, this host's name in the claim
+ledger, and the layout hook's view of this host's herdr plugins.
 
 | key | constraint | default | meaning |
 |---|---|---|---|
 | `max_active_workspaces` | int ≥ 0 | unset | Ceiling on **occupying** runs across ALL repos in the shared DB (same posture as the repo cap: parked / `waiting_for_human` / idle PR-watch hold no slot). `0` ⇒ this host claims nothing new. Also enforced on manual `claim` |
 | `min_free_memory_mb` | int ≥ 0 | unset | Skip Phase B claims while available memory is below it. Linux `MemAvailable`; macOS `vm_stat` free + inactive + speculative; else `os.freemem()` |
+| `host_alias` | string trimmed, `^[A-Za-z0-9._-]+$` (error: ``host_alias` may only contain letters, digits, '.', '_' and '-'``) | unset (`os.hostname()`) | What this host calls itself in the claim ledger (`host=` in claim/release markers) — keeps raw hostnames off a shared tracker. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its raw hostname BEFORE the alias was set are folded onto the alias (READ-side only — the release that frees one is written with the hostname it carries, so other hosts pair them too), so a rename never makes a host fence itself |
 | `layout_hook.ignore_pane_labels` | string[] | `[Sidebar]` | Pane labels the layout hook's freshness gate treats as plugin furniture, not arrangement. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar` ⇒ a pane labelled `Sidebar`) makes every new workspace 2 panes, which would decline **every** layout build on that host. Matched trimmed + case-insensitively; `[]` discounts none. A pane the USER opened still declines the build |
 
 Errors: `invalid machine config (<path>):\n  <key>: <zod message>` — from `doctor` (row `machine limits

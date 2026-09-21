@@ -1203,7 +1203,7 @@ async function escalateAttention(
   const src = opts.skipSourceNote || !WORK_ERROR_REASONS.has(opts.reason) ? undefined : deps.resolveSource(run.workSource);
   if (src && src.client.spec.replyChannel === "comments") {
     await src.client
-      .postNote(run.ticketKey, `⚠ herdr-factory parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\n${commands}`)
+      .postNote(run.ticketKey, `⚠ ${deps.config.sourceComments.brand} parked this run for attention: ${opts.attentionReason}\n\n${opts.body}\n\n${commands}`)
       .catch((e) => deps.log("warn", `${run.ticketKey}: attention note not posted to ${src.name}: ${err(e)}`));
     return;
   }
@@ -1738,7 +1738,7 @@ async function closePendingQuestionAsMoot(deps: Deps, run: Run, terminal: "step-
   await src.client
     .postNote(
       run.ticketKey,
-      `✅ herdr-factory: no answer needed for the question above — the ${step} step resolved it itself and moved on (${terminal}). Leaving this thread here for the record.`,
+      `✅ ${deps.config.sourceComments.brand}: no answer needed for the question above — the ${step} step resolved it itself and moved on (${terminal}). Leaving this thread here for the record.`,
     )
     .catch((e) => deps.log("warn", `${run.ticketKey}: moot-question note not posted to ${src.name}: ${err(e)}`));
 }

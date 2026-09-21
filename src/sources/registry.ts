@@ -57,6 +57,9 @@ export interface SourceBuildCtx<TCfg> {
   store: Store; // internal ledgers (local_markdown's work_items; future orphan audits)
   ghRepo: string; // resolved PR repo "owner/name" or "" when unresolvable
   log: Logger;
+  /** What comments this source writes call the factory (`source_comments.brand`, default
+   *  `herdr-factory`) — markers, notes, label descriptions. Readers still accept the legacy brand. */
+  brand: string;
 }
 
 export interface SourceDescriptor<TCfg = unknown> {

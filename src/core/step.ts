@@ -466,18 +466,31 @@ function scaffold(
         `(A per-run bounce cap is only a safety backstop against endless oscillation — once exceeded the run parks for a human.)\n`
       : "") +
     `\n## Finishing this step (required)\n` +
-    `1. Write your handoff note to \`${MEMORY_DIR}/handoff-${step.name}.md\` — what you did, key decisions and why, ` +
-    `anything uncertain, and what the next step should verify. ` +
+    // The handoff is a FIXED TEMPLATE, not an essay. Free-form notes grew to the point where
+    // streaming one cost 40-80 s of a step's budget, and the next agent still had to hunt for the
+    // three facts it needed. Fixed headings + a hard cap make the note cheap to write and cheap to
+    // read; anything longer belongs in the commits, which the next step can already see.
+    `1. Write your handoff note to \`${MEMORY_DIR}/handoff-${step.name}.md\` using this template — ` +
     // Every handoff names the commit it covers, so the next step (and a human reading the trail)
     // can tell whether the note describes the tree it is actually looking at.
-    `Start it with a line \`sha: <commit>\` (\`git rev-parse HEAD\` in this worktree) — the commit your note covers.\n` +
+    `the \`sha:\` line first (\`git rev-parse HEAD\` in this worktree), then these headings in this order:\n\n` +
+    "```\n" +
+    `sha: <commit>\n\n` +
+    `## Did\n- <what changed, one bullet per thing, max 5>\n\n` +
+    `## Decisions\n- <choice → why, only where a reader could not infer it from the diff; omit the heading if none>\n\n` +
+    `## Uncertain\n- <assumptions a human could correct; omit the heading if none>\n\n` +
+    `## Next step should verify\n- <max 5 bullets, each concrete and checkable>\n` +
+    "```\n\n" +
+    `   Keep it under 40 lines total. Do not restate the diff, narrate your process, or pad a section to look thorough — ` +
+    `an empty section is deleted, not filled. Plus any section this step's prompt requires (verbatim findings, repro steps, verdict tables); those are exempt from the cap. The same brevity applies to a PR body: state the facts, stop.\n` +
     `2. Then run \`${stepDoneCmd}\` and stop. Do NOT change the work item's status — the dispatcher owns all status transitions.\n` +
     // The signal is the only thing that advances the belt, and a REJECTED one exits non-zero with the
     // reason (it used to exit 0, so an agent could stop believing a dropped signal had landed).
     // Telling the agent to react is what makes that exit code worth anything — but only for the
     // reasons it CAN act on: "no active run" / "not in belt" are terminal, and looping on them would
     // be worse than stopping.
-    `   If that command fails (non-zero exit) it prints the reason on stderr. A stale pass, or a run that is busy, is retryable: ` +
+    `   On success it prints where the run landed (\`advanced ${step.name} → <next step>\`), so you do NOT need to poll \`status\` or sleep to confirm it. ` +
+    `If that command fails (non-zero exit) it prints the reason on stderr. A stale pass, or a run that is busy, is retryable: ` +
     `re-read this file for the current command and run that, or try again in a moment. If it says there is no active run, ` +
     `or that this step is not in the belt, the run is gone — leave your handoff note and stop.\n`
   );
@@ -581,6 +594,12 @@ async function renderStepPromptImpl(
   // repo's own branching/CI convention is never knowable at claim time.
   const setBranchCmd = signalCommand(CLI_PATH, repo, "set-branch", { key: run.ticketKey, branch: "<new-branch-name>", source: src.name });
   const evidenceUploadCmd = signalCommand(CLI_PATH, repo, "evidence-upload", { key: run.ticketKey, source: src.name });
+  // GATE RECEIPTS. `gate` is a transparent wrapper: it runs the command, streams its output, and
+  // records command + HEAD + exit code against the run, so the NEXT step can read that the gate
+  // already passed on this exact tree instead of paying for it a second time. Not a signal (it
+  // nudges nothing — it just writes a fact), so it renders here rather than from the registry.
+  const gateCmd = `${CLI_PATH} --repo ${repo} gate ${run.ticketKey} <gate-name> --source ${src.name} --step ${step.name} --pass ${pass} -- <command>`;
+  const gateReceiptsCmd = `${CLI_PATH} --repo ${repo} gates ${run.ticketKey} --source ${src.name}`;
   const captureAttemptCmd = signalCommand(CLI_PATH, repo, "capture-attempt", { key: run.ticketKey, step: step.name, source: src.name });
   // For a step that may bounce (evidence/review), a ready-made command that returns the run to its
   // first `canBounceTo` target with a findings file. Empty for steps that can't bounce.
@@ -613,6 +632,9 @@ async function renderStepPromptImpl(
     "@@ASK_HUMAN_CMD@@": askHumanCmd,
     "@@SET_BRANCH_CMD@@": setBranchCmd,
     "@@CLI@@": CLI_PATH,
+    "@@PASS@@": pass,
+    "@@GATE_CMD@@": gateCmd,
+    "@@GATE_RECEIPTS_CMD@@": gateReceiptsCmd,
     "@@HANDOFF_IN@@": prior ? `${MEMORY_DIR}/handoff-${prior.step}.md` : "(none — first step)",
     "@@HANDOFF_OUT@@": `${MEMORY_DIR}/handoff-${step.name}.md`,
     "@@PRIOR_PANE@@": prior?.paneId ?? "(none)",

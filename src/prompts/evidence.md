@@ -90,6 +90,23 @@ handoff.
      surfaces you checked and why each is empty, back it with some proof (a test run, a `curl`/API
      response, a log line), run `@@STEP_DONE_CMD@@`, and skip the capture. "It's just backend/config"
      is not by itself a reason to skip — most such changes still have an observable effect.
+
+   **This is pass @@PASS@@ into this step.** On pass 2+ you have already filmed this app once, and
+   most of what you filmed is still valid: only the criteria whose code changed need new footage.
+   Before capturing anything, work out what actually moved:
+   - Read your own previous handoff (`@@HANDOFF_OUT@@` — it is still on disk from the last pass) for
+     its verdict table and its `sha:` line, the commit the existing assets were filmed at.
+   - `git diff --name-only <that sha>..HEAD` names every file that changed since. For each criterion
+     in the table, decide whether any of those files could affect it.
+   - **Re-film only the criteria that could have changed**, plus any that were `not proven` last
+     pass. For the rest, carry the previous row — asset filename and published URL — forward
+     unchanged into this pass's table, noting the sha it was filmed at. Do not re-film an unchanged
+     criterion "to be consistent": five untouched desktop criteria re-filmed cost four minutes and
+     proved exactly what the existing assets already proved.
+   - If the diff touches a file shared across criteria (shared component or layout, styles, config,
+     `package.json`/lockfile, routing, locales), or you are unsure, re-film everything.
+   - If the previous handoff is missing or has no usable table, film everything — say so in your
+     handoff rather than guessing which assets are current.
 2. **Set up the right environment — and the right account.** The change is only proven if you drive
    it in the state the item assumes. Do this with the repo's own dev-server / auth / seeding guidance
    and helpers (see **Step zero** above — read them now if you haven't):
@@ -133,6 +150,37 @@ handoff.
      native size (don't let the tool downscale it) so text stays readable — and never a cropped or
      magnified slice. If the surface isn't a browser UI (CLI/API/service), capture the real
      observable output instead — terminal session, API response, log — not a forced browser shot.
+   - **One output directory per capture invocation.** If you drive Playwright (or any runner that
+     writes videos/traces into an `--output` / `outputDir`), give **each invocation its own
+     subdirectory** under `@@EVIDENCE_DIR@@` — e.g. `@@EVIDENCE_DIR@@/desktop/`, then
+     `@@EVIDENCE_DIR@@/narrow/`. Playwright **clears its output directory at the start of a run**, so
+     a second invocation pointed at the same dir silently deletes the first one's videos, and you
+     only find out when you go to assess them and have to re-shoot.
+   - **Don't hand-write the capture spec from scratch.** If the repo ships its own e2e/capture helper
+     or fixtures, use those. Otherwise start from this skeleton and change only the body — the
+     boilerplate below is what an invalid hand-written spec usually gets wrong (per-`describe` video
+     config, which Playwright rejects; video/viewport set outside `use`):
+
+     ```ts
+     // <name>.spec.ts — one spec FILE per viewport/output dir, not one describe per viewport.
+     import { test, expect } from "@playwright/test";
+
+     test.use({
+       viewport: { width: 1920, height: 1080 },
+       video: { mode: "on", size: { width: 1920, height: 1080 } },
+     });
+
+     test("AC1 — <the criterion, verbatim>", async ({ page }) => {
+       await page.goto("<url>");
+       await expect(page.getByRole("<role>", { name: "<name>" })).toBeVisible(); // settle, don't sleep
+       await page.screenshot({ path: "<evidence-dir>/ac1-before.png" });
+       await page.getByRole("button", { name: "<trigger>" }).click();
+       await expect(page.getByText("<result>")).toBeVisible();
+       await page.screenshot({ path: "<evidence-dir>/ac1-after.png" });
+     });
+     ```
+
+     Run it with its own output dir: `playwright test <name>.spec.ts --output <evidence-dir>/<name>`.
    - **Never capture secrets** — real passwords, tokens, session URLs, or customer PII — into assets;
      these get published. If a take is flaky or aimless, **re-record it** within the same attempt: a
      tight retake is cheaper than a wasted round-trip. Don't burn the run re-recording a
@@ -145,8 +193,9 @@ handoff.
    **interaction or state change** (click→result, before→after) is proven only by a continuous-take
    video showing the trigger *and* the result; a screenshot proves only a static end-state. An asset
    that merely "looks nice" but maps to no criterion proves nothing.
-5. **Decide.** Record in `@@HANDOFF_OUT@@` a **verdict table**, one row per criterion:
-   `criterion → verdict (proven / not proven / N/A) → asset (filename + URL) → one-line note`.
+5. **Decide.** Record in `@@HANDOFF_OUT@@` — under its `## Did` heading — a **verdict table**, one
+   row per criterion: `criterion → verdict (proven / not proven / N/A) → asset (filename + URL) →
+   one-line note`. The table IS the note; keep the rest of the handoff to the template's bullets.
    - **PASS — every criterion is proven or N/A.** Publish: run `@@EVIDENCE_UPLOAD_CMD@@` — it uploads
      `@@EVIDENCE_DIR@@` and prints one public URL per asset (each URL ends with its filename, so bind
      it to the right row; if upload isn't configured it prints a skip notice and produces no URLs —

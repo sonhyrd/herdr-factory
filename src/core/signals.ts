@@ -9,6 +9,7 @@
 // (evidence-upload is intentionally NOT here: it is a `product-outbox` signal that does CLI-local S3
 // work, not a run-lock nudge — see cli/index.ts.)
 import type { Deps } from "./deps.ts";
+import type { Run, RunStep } from "../types.ts";
 import { resolveActiveRun } from "../resolve.ts";
 import { stepByName } from "./step.ts";
 import { bounceStep, consumePendingSignal, reconcileRun, recordCaptureAttempt, withRunLock, withRunLockWaiting } from "./reconcile.ts";
@@ -40,6 +41,8 @@ export interface SignalResult {
   posted?: boolean; // ask-human: was the question posted to the source (vs deferred)?
   attempts?: number; // capture-attempt: attempts recorded this pass
   branch?: string; // set-branch: the branch the run is on afterwards
+  fromStep?: string; // step-done: the step that was completed
+  nextStep?: string; // step-done: the step the run is on afterwards (absent once the belt is over)
   escalated?: boolean; // bounce / capture-attempt: cap hit → parked for attention
   queued?: boolean; // bounce / ask-human: run lock busy — the durable intent applies on the next pass
   message?: string;
@@ -62,6 +65,31 @@ function consumedElsewhere(deps: Deps, intentId: number): SignalResult {
   if (r === "applied") return { ok: true, message: "applied by a concurrent reconcile pass" };
   if (r === "escalated") return { ok: true, escalated: true, message: "cap exceeded — parked for attention" };
   return { ok: false, message: r.replace(/^rejected: /, "") };
+}
+
+/** Export this step's WALL / SHELL / MODEL time split into the timeline at step-done.
+ *
+ *  Reconstructing this previously meant decoding the agent harness's own chat store by hand, which
+ *  is how a slow-run analysis ends up being a one-off script instead of a query. The split the
+ *  factory can state honestly is the one it MEASURED: wall time is the pass's dispatch → done, and
+ *  the shell half is the time spent inside gate commands the step ran through `herdr-factory gate`.
+ *
+ *  ponytail: `shellMs` counts WRAPPED commands only — a gate run bare, or any other subprocess the
+ *  agent spawned, lands in `modelMs`. Widen it when (and only when) the engine can read a harness
+ *  transcript: Cursor's chat store and Claude Code's transcript both hold the real per-tool split. */
+function recordStepTiming(deps: Deps, run: Run, step: string, rs: RunStep | undefined): void {
+  const from = rs?.dispatchedAt ?? rs?.startedAt;
+  if (!from) return; // never dispatched (a replay against a row that predates the column) — nothing honest to report
+  const pass = rs?.pass ?? 1;
+  const wallMs = Math.max(0, (deps.now() - from) * 1000);
+  const shellMs = deps.store.gateShellMs(run.id, step, pass);
+  deps.store.recordEvent({
+    runId: run.id,
+    repo: deps.config.repoName,
+    ticketKey: run.ticketKey,
+    type: "step_timing",
+    detail: { step, pass, wallMs, shellMs, modelMs: Math.max(0, wallMs - shellMs), gates: deps.store.gateReceiptsFor(run.id).filter((g) => g.step === step && g.pass === pass).length },
+  });
 }
 
 /** Apply a run-scoped agent signal to its run: resolve the run, then run the per-signal effect under
@@ -116,13 +144,21 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       }
       deps.store.markStepDone(run.id, step);
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done", detail: { step, pass: rs?.pass } });
+      recordStepTiming(deps, run, step, rs);
       deps.log("info", `${body.key}: step-done ${step} recorded`);
       // fire-and-forget (lockDiscipline "fire-and-forget"): the done flag is a monotonic edge, so a
       // per-run lock is enough — the nudge lands even mid-tick, and if this run is busy the next pass
       // advances it.
       const advanced = await withRunLock(deps, run.id, () => reconcileRun(deps, fresh()));
       if (!advanced) deps.log("info", `${body.key}: run busy — the next pass will advance the belt`);
-      return { ok: true, advanced };
+      // The agent's ONLY window onto what its signal did. A silent exit made the previous step's
+      // successor run `status` and sleep-retry to find out whether the belt had moved, so say it:
+      // where the run landed, or that the advance is the next tick's job.
+      const after = deps.store.getRun(run.id);
+      const nextStep = after?.step ?? undefined;
+      const landed = after?.phase === "running" ? (nextStep ?? "(none)") : (after?.outcome ?? after?.phase ?? "(gone)");
+      const message = advanced && landed !== step ? `advanced ${step} → ${landed}` : `${step} recorded done — the dispatcher advances the belt on its next pass`;
+      return { ok: true, advanced, fromStep: step, nextStep, message };
     }
     case "ask-human": {
       const step = body.step!;

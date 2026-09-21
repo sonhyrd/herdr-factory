@@ -538,6 +538,7 @@ Condensed; `⚠` (amber) never fails the exit code, `✗` sets exit 1.
 | `auto-update` ⚠ | `last update FAILED — <reason>` / `reset to <ref> skipped — checkout has uncommitted changes` / `behind <ref>` / `updated but <warning>` | In `~/.local/share/herdr-factory`: `git fetch && git status`, then commit/stash/discard local edits (the updater refuses to hard-reset over them); `herdr-factory update` to retry; stable channel with no release tags needs a tag or `HERDR_CHANNEL=main herdr-factory install`; read `<state>/logs/supervisor.err.log` |
 | `auto-update` ⚠ | `auto-update stalled — last check <age> (nothing is running \`ensure-up\` every 60s)` — no attempt recorded for 30min while auto-update is on | Nothing schedules `ensure-up`: check `launchctl list \| grep herdr-factory` / `systemctl --user status herdr-factory.timer`, or on a `HERDR_SKIP_SERVICE=1` host that the `while :; do herdr-factory ensure-up; sleep 60; done` loop is still running (restart it). `herdr-factory update` catches up at once |
 | `auto-update` ✗ | exec error on `@{u}` | `git branch --set-upstream-to=origin/main main` in the app checkout |
+| `main checkouts up to date` ⚠ | `<repo>: on <branch>, skipped (base branch is <base>)` / `dirty tree, skipped` / `diverged, skipped` / a fetch error | That repo's MAIN checkout (`repo.path`) is drifting behind `origin` — runs are unaffected (worktrees fork from `origin/<base>`), but what a human opens there is stale. In that checkout: get back on the base branch, commit/stash the changes, or resolve the divergence; the next `ensure-up` sweep (≤10 min) catches it up. The factory never stashes/resets/rebases it for you |
 | `supervisor service` ✗ | `not loaded — run \`herdr-factory install\`` | `herdr-factory install`; verify `launchctl list \| grep herdr-factory` / `systemctl --user status herdr-factory.timer` |
 | `server` ✗ | `not running (run \`herdr-factory start\`)` / `registered but not responding` | `herdr-factory start` (`serve` for foreground debugging) / `herdr-factory restart`; check `<state>/server.json` pid+port, `lsof -i :8765`, `HERDR_FACTORY_PORT`; delete a stale `server.json` if the pid is gone |
 | `machine limits (machine.yml)` ✗ | `invalid machine config (<path>):\n  <key>: <msg>` | Fix or delete `<configDir>/machine.yml` (only `max_active_workspaces`, `min_free_memory_mb` — non-negative integers — and `layout_hook.ignore_pane_labels`, a list of strings). ✓ shows the limits in effect, or `none — per-repo caps only` |
@@ -614,6 +615,7 @@ hits loopback HTTP, and with `--repo` creates/migrates the DB, creates state+log
 | SQLite `events` table | The domain timeline — `herdr-factory --repo <r> timeline <KEY>` or `GET /repos/<r>/timeline?key=` |
 | `<worktree>/.memory/herdr-factory/` | `prompt-<step>.md` (the exact rendered prompt), `handoff-<step>.md`, `feedback-<step>.md`, `feedback-<step>-addressed-pass<N>.md`, `human-question-<step>.md`, `human-replies/question-<id>.md`, `task.md`, `ticket.json`, `evidence/` |
 | `<state>/update-status.json` | The last auto-update attempt — first thing to read for "why is this box behind" |
+| `<state>/checkout-sync.json` | The last main-checkout fast-forward per repo — why `~/work/<repo>` is behind `origin` |
 
 `<state>` = `HERDR_FACTORY_STATE_ROOT` or `~/.local/state/herdr-factory`.
 `herdr-factory --repo <r> logs [n]` tails **today's** file only (default 50 lines) and prints
@@ -630,6 +632,7 @@ hits loopback HTTP, and with `--repo` creates/migrates the DB, creates state+log
 | Evidence links broken | repo log `evidence publish` lines + `doctor --deep` + TUI amber |
 | Duplicate agents in one worktree | repo log, grep `lock … lost mid-hold` (error level) |
 | Box behind on code | `update-status.json` + supervisor `self-update:` lines + `doctor`'s `auto-update` row |
+| A repo's main checkout behind `origin` | `checkout-sync.json` + supervisor `checkout-sync:` lines + `doctor`'s `main checkouts up to date` row |
 
 **Grep-able lines that pin a state** (exact substrings):
 

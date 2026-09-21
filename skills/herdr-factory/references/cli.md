@@ -141,6 +141,8 @@ See §4 for semantics and messages.
 | `set-branch <key> <branch> [--source <n>]` | yes | server-first |
 | `rework <key> <toStep> [--source <n>] [--note <text>\|--note-file <path>]` | yes | server-first |
 | `evidence-upload <key> [--source <n>]` | yes | **in-process only — never routes** |
+| `gate <key> <name> [--source <n>] [--step <n>] [--pass <n>] -- <cmd…>` | yes | **in-process only — never routes** |
+| `gates <key> [--source <n>] [--json]` | yes | **in-process only — never routes** |
 | `capture-lock <acquire\|release> <resource> [owner]` | **no** | in-process, global DB |
 
 `capture-lock` loads **no config at all** — it opens `<stateRoot>/herdr-factory.db` directly, so it works on a machine with zero repo configs. `owner` defaults to `worker`. `acquire` polls every 5s with a 1200s lock TTL and gives up after 1 hour (`timed out waiting for the <resource> lock`, exit 1); success prints `<resource> lock acquired by <owner>`. `release` is owner-scoped and silently no-ops when the lock isn't held: `<resource> lock released by <owner>`. Any other action → exit 1 `capture-lock: acquire|release <resource> [owner]`.
@@ -154,6 +156,44 @@ published <N> evidence file(s) via <publisher>
 ```
 
 Deferred (`auth`/`transient`): `evidence-upload: publish deferred — <reason>. The engine will retry automatically; the URLs above resolve once it lands.` Config error (`permanent`): `evidence-upload: publish FAILED (config error) — <reason>. Run \`herdr-factory --repo <repo> doctor --deep\`.` Early no-ops: no `evidence:` block configured · `<key>: no active run with a worktree — nothing to publish` · `evidence-upload: no files in the evidence dir — nothing to publish` (dir = `<worktree>/.memory/herdr-factory/evidence`).
+
+### Gate receipts — `gate` / `gates`
+
+A **gate** is one verification command (lint, type-check, a test suite). `gate` is a transparent
+wrapper: everything after `--` is the command's own argv, run **verbatim, with no shell** in the
+run's worktree, its stdout/stderr teed through, and the wrapper **exits with the command's own exit
+code** — so `gate <key> test -- pnpm test` substitutes for `pnpm test` anywhere an agent used it.
+Env assignments and compound commands need `-- sh -c '…'` (`CI=1 pnpm test`, `cd pkg && …`) because
+there is no shell.
+There is deliberately **no timeout** (a gate is a whole suite; the engine's 60 s default exec budget
+would kill it) — the step's budget/heartbeat watchdog is the bound.
+
+What it adds is a **receipt** in `gate_receipts`: command, the worktree **HEAD it ran at**, exit
+code, duration and the last ~40 lines of combined output. Identity is `(run, gate name, head)`, so
+re-running a gate at the same commit **replaces** its receipt rather than accumulating one. Prints
+`<key>: gate "<name>" passed|FAILED (exit N) in <s>s at <head12> — receipt recorded`. Errors (exit
+1): `gate: give the command to run after \`--\`, e.g. \`gate ABC-1 test -- pnpm test\`` ·
+`<key>: no active run — run the command directly (no receipt will be recorded)`.
+
+`gates <key>` is the reader:
+
+```
+<key>: HEAD <head12> — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.
+  ✓ pass  test           CURRENT <head12>  91.4s  work pass 1  pnpm test
+  ✗ exit 1  lint         STALE   <old12>   8.1s   work pass 1  pnpm lint
+```
+
+**CURRENT** = the receipt's head equals the worktree's HEAD now **and the tree was clean**, so it covers exactly the tree the
+reader is looking at. A dirty-tree run stores `${HEAD}+dirty` and shows as **DIRTY**. `--json` prints `{head, receipts}` verbatim. With no receipts it says so
+explicitly (`(no gate receipts — no step has run a verification command through \`herdr-factory
+gate\` yet)`), so an empty list can never read as "all green".
+
+These are the tokens `@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@` in step prompts: the `work` prompt
+runs its checks through the wrapper, the `review` prompt reads the receipts and re-runs a gate only
+when it is missing, STALE, or it has a concrete suspicion about that specific check (a CURRENT
+*failing* receipt is re-run once through the wrapper and bounced only if it fails again). They also feed the `step_timing` event each
+`step-done` writes to the timeline — `{step, pass, wallMs, shellMs, modelMs, gates}`, where
+`shellMs` is the sum of that (step, pass)'s receipts and everything else lands in `modelMs`.
 
 ### Scaffolding
 
@@ -199,7 +239,7 @@ None of these take `--repo` — the server serves every configured repo.
 
 ## 4. Agent→dispatcher signals
 
-`step-done`, `bounce`, `ask-human`, `capture-attempt`, `set-branch`, `evidence-upload` are **rendered into step prompts** as `@@STEP_DONE_CMD@@`, `@@BOUNCE_CMD@@`, `@@ASK_HUMAN_CMD@@`, `@@CAPTURE_ATTEMPT_CMD@@`, `@@SET_BRANCH_CMD@@`, `@@EVIDENCE_UPLOAD_CMD@@` and are normally run by the worker agent, not typed by hand. A diagnosing agent does sometimes need to fire one manually — most often `step-done` for a run whose agent died after finishing its work.
+`step-done`, `bounce`, `ask-human`, `capture-attempt`, `set-branch`, `evidence-upload` are **rendered into step prompts** as `@@STEP_DONE_CMD@@`, `@@BOUNCE_CMD@@`, `@@ASK_HUMAN_CMD@@`, `@@CAPTURE_ATTEMPT_CMD@@`, `@@SET_BRANCH_CMD@@`, `@@EVIDENCE_UPLOAD_CMD@@` and are normally run by the worker agent, not typed by hand. (`gate` / `gates` are rendered the same way, as `@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@`, but are **not** signals — they record a fact and nudge nothing, so they never route through the server and have no `SIGNAL_DESCRIPTORS` entry.) A diagnosing agent does sometimes need to fire one manually — most often `step-done` for a run whose agent died after finishing its work.
 
 Rendered form (single source of truth, `src/signals/registry.ts`): `<abs path to bin/herdr-factory> --repo <repo> <signal> <positionals…> [--flag value…]` — `--repo` comes **before** the signal name and values are **not shell-quoted**. Prompts render the *file* variants (`--reason-file .memory/herdr-factory/bounce-<step>.md`, `--question-file .memory/herdr-factory/human-question-<step>.md`).
 
@@ -236,7 +276,7 @@ All the run-scoped signals (the five agent ones plus the operator's `rework`) go
 
 | signal | success output | rejection messages (stderr, **exit 1**) |
 |---|---|---|
-| `step-done` | **nothing — silence is success** | `no active run` · `step "<s>" is not in belt "<b>"` · `"<s>" is not the run's active step ("<active>") — signal ignored` · `stale step-done for pass N — the <step> step is on pass M; finish the current pass and run its own step-done command` · the tree guard's `the <step> step cannot finish on this tree — the worktree has uncommitted changes. …` followed by the diff stat (a read-only step on a dirty tree) (`already recorded done` is treated as success, so it prints nothing) |
+| `step-done` | `<key>: advanced <step> → <next step>` when the nudge moved the belt; `<key>: <step> recorded done — the dispatcher advances the belt on its next pass` when the run lock was busy; `<key>: step "<s>" is already recorded done — nothing to do` on an idempotent replay. (It used to print **nothing**, which is why agents polled `status` and slept to find out whether the belt had moved.) | `no active run` · `step "<s>" is not in belt "<b>"` · `"<s>" is not the run's active step ("<active>") — signal ignored` · `stale step-done for pass N — the <step> step is on pass M; finish the current pass and run its own step-done command` · the tree guard's `the <step> step cannot finish on this tree — the worktree has uncommitted changes. …` followed by the diff stat (a read-only step on a dirty tree) (`already recorded done` is treated as success — it prints the replay line above and exits 0) |
 | `bounce` | `<key>: bounced to <toStep>[ — <message>]` | `<key>: run busy — bounce to <toStep> recorded; it will be applied on the next reconcile pass` · cap hit → `<key>: bounce limit exceeded — escalated to attention` (the run is parked, **not** sent back; `<key>: cap exceeded — parked for attention` only when a concurrent reconcile pass consumed the bounce first) · `<key>: step "<toStep>" is not in belt "<b>"` |
 | `ask-human` | `<key>: waiting for human answer (question #<id>)` (`, posting deferred` when the source write is queued) | `<key>: run busy — question recorded; it will be posted on the next reconcile pass` |
 | `capture-attempt` | `<key>: capture attempt #<n> recorded` | cap hit → `<key>: <message>` (parked for attention) |

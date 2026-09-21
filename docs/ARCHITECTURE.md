@@ -195,6 +195,8 @@ herdr-factory/
                           main=upstream / stable=newest release tag); dirty-checkout guard (skip +
                           notify); records each attempt to update-status.json for doctor/TUI;
                           re-provisions Node / re-installs deps when .node-version / the lockfile change
+      checkouts.ts        per-repo MAIN-checkout sync: fetch + `merge --ff-only` when clean and on
+                          the base branch, throttled to 10min/repo; records checkout-sync.json
       provision.ts        vendored-Node download + SHA-256 verify + atomic `current` flip
     db/{index,migrate,store,tx}.ts
     clients/{exec,http,herdr,herdr-socket,jira,jira-source,local-markdown-source,
@@ -204,6 +206,8 @@ herdr-factory/
                              the single edit surface for adding source N+1 (checklist in its header)
     core/{deps,branch,step,watch,reconcile}.ts
     core/{layout,layout-match,layout-hook}.ts   layout subsystem: tree builder+runner / pure matching / herdr event+startup hooks (§4)
+    core/gate-receipts.ts    the `gate` wrapper + the receipt reader: run a verification command, pin
+                          its verdict to the commit it ran at, so a later step reads it instead of re-running it
     core/pane-display.ts     display-only pane metadata (what the operator sees on a run's pane) — never a rename
     runtime/effect.ts        the shared Effect ManagedRuntime (also hosts the OTel layer)
     telemetry/…              OpenTelemetry spans/metrics (no-op unless HERDR_FACTORY_TELEMETRY)
@@ -517,8 +521,11 @@ reverse-engineered during the bash prototype.
     `StaleItemError` when the item is gone, escalating the run instead of polling a nonexistent
     item forever)
   - `health()` (throws if misconfigured/unreachable — the `doctor` per-source check)
-  Every artifact a source writes to its reply channel carries the exported **`HERDR_MARKER`**
-  (`"[herdr-factory"`), and reply polling drops marker-bearing comments via `bearsHerdrMarker` —
+  Every artifact a source writes to its reply channel carries the exported **marker prefix**
+  (`markerPrefix(brand)` — `"[herdr-factory"` by default, `"[hf"` under `source_comments.brand: hf`),
+  and reply polling drops marker-bearing comments via `bearsHerdrMarker(body, brand)` — which accepts
+  the LEGACY `"[herdr-factory"` prefix too, so artifacts written before a brand switch are still
+  recognised as ours — and is
   **blockquote-aware**, so a human quote-reply that embeds the question as `> ` lines still
   counts as a reply (INV-6). Author-identity filtering is never load-bearing: under gh-CLI
   auth the bot login IS the operator's login.
@@ -688,7 +695,7 @@ concurrently to the one DB; WAL + busy_timeout + the per-repo single-instance lo
 ```sql
 CREATE TABLE repos(name TEXT PRIMARY KEY, repo_path TEXT, base_ref TEXT, github TEXT,
   last_tick_at INTEGER, enabled INTEGER DEFAULT 1,
-  claim_deferrals INTEGER NOT NULL DEFAULT 0);  -- consecutive ticks Phase B gave up on `machine:claim` (v39)
+  claim_deferrals INTEGER NOT NULL DEFAULT 0);  -- consecutive ticks Phase B gave up on `machine:claim` (v40)
 
 CREATE TABLE runs(                       -- ONE attempt at a work item (history kept)
   id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL,
@@ -752,6 +759,22 @@ CREATE UNIQUE INDEX idx_run_steps ON run_steps(run_id, step);   -- pass still ne
                                          -- the reuse handle), so the spawn branch keys on this —
                                          -- an undispatched pass retries under the bounded layout
                                          -- wait instead of tripping the budget watchdog.
+
+CREATE TABLE gate_receipts(              -- one verification command, pinned to the commit it ran at (v39)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  step TEXT NOT NULL, pass INTEGER NOT NULL DEFAULT 1,   -- ATTRIBUTION only (see the UNIQUE below):
+                                         -- which step/pass paid for it — what gateShellMs sums for
+                                         -- the step_timing export.
+  gate TEXT NOT NULL,                    -- the agent's key for the check: test / typecheck / lint
+  command TEXT NOT NULL, head TEXT NOT NULL,             -- what ran, and the worktree HEAD it ran at
+  exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+  tail TEXT, ran_at INTEGER NOT NULL);   -- last ~40 lines of combined output (not a log store)
+CREATE UNIQUE INDEX idx_gate_receipts ON gate_receipts(run_id, gate, head);
+                                         -- the SHA is what makes a receipt trustworthy, so it is
+                                         -- part of the IDENTITY: two steps running the same gate at
+                                         -- the same commit are the same fact, and the second write
+                                         -- supersedes the first rather than accumulating.
 
 CREATE TABLE guard_counters(             -- capped-guard counters keyed (run, step, guard) (v21) —
   run_id INTEGER NOT NULL REFERENCES runs(id), step TEXT NOT NULL, guard TEXT NOT NULL,
@@ -1068,8 +1091,8 @@ arbitrates each claim ACROSS factories with separate DBs, inside `claimImpl` rig
 and before the `claimed` event, the worktree, the agent, or any status write — so losing costs
 nothing. It reads the item's comments; an open claim by someone else ⇒ skip WITHOUT posting (a dead
 winner's claim is re-seen every tick, and re-posting would bury the ticket). Otherwise it posts
-`[herdr-factory claim id=<run> host=<host>]`, sleeps `settle_ms`, re-reads, and the open claim (no
-matching `[herdr-factory release id=<run> host=<host>]`) with the LOWEST server comment id wins. The
+`[<brand> claim id=<run> host=<host>]`, sleeps `settle_ms`, re-reads, and the open claim (no
+matching `[<brand> release id=<run> host=<host>]`) with the LOWEST server comment id wins. The
 loser posts its release, deletes its still-pristine `claiming` row (`deleteClaimingRun`), logs
 `claimed elsewhere by <host>`, and records a run-less `claimed_elsewhere` event (once per distinct
 winner); it is not a claim failure. A backend error releases (if it posted) and deletes the row, then
@@ -1079,8 +1102,34 @@ gone or already ended (`claimIsLive`) — so a crashed or half-torn-down factory
 itself and every other host; this factory is the only one that can see that row is gone. Another host's dead
 winner is FENCED, never reaped: only a human-posted release frees the item. `JiraClient.listComments` pages
 the whole thread (`startAt` walked in 100s until the server's `total`), so an old claim comment is never
-missed — and neither is askHuman's own question on a busy ticket. Both markers carry
-`HERDR_MARKER`, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
+missed — and neither is askHuman's own question on a busy ticket. Both markers carry the brand's
+marker prefix, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
+
+*Brand and host identity.* `<brand>` is `source_comments.brand` (repo config, default `herdr-factory`
+⇒ byte-identical lines to before); `<host>` is `claim_guard.host` ?? `machine.yml`'s `host_alias` ??
+`os.hostname()` (unsafe chars folded to `-`). A fleet rolls either out host by host, so every READER
+must cope with lines it did not write. The ledger is therefore parsed **brand-agnostically**
+(`LEDGER_RE` accepts ANY token in the brand position): a host still on the default brand would
+otherwise be blind to a flipped host's `[hf claim …]` lines and both would claim the same item — two
+worktrees, two agents, two PRs, the exact failure the guard exists to prevent, and intermittent
+because the reverse order fences correctly. The rest of the grammar
+(`claim|release id=<n> host=<token>` in one pair of brackets, quoted lines stripped first) is
+distinctive enough that nothing else writes it, so the brand is purely cosmetic on the ledger. That
+is NOT the rule for `bearsHerdrMarker` (INV-6), which has no such grammar: a bare `[<anything>]`
+would swallow a human's own bracketed text, so it stays anchored to the configured + legacy brands.
+`openClaims`/`claimWinner` take a `LedgerView` and fold its `aliases` tokens (this host's raw
+hostname, when `host` came from an alias) onto the resolved host — otherwise a renamed host would see
+its own old claim as a foreign one and fence itself forever. Folding is **read-side only**: each open claim also
+carries the `rawHost` exactly as the line spelled it, and the stale-claim release is written with THAT
+token, never the folded one. A release spelled `host=<alias>` against a claim spelled `host=<hostname>`
+pairs in the renaming host's view and in **no other host's** — their `LedgerView` has different aliases,
+so they read two different hosts, never pair them, and stay fenced on the item forever, which is exactly
+what "nothing else can free those" forbids. Writers otherwise emit the configured brand and the resolved
+host. On the MARKER path, `bearsHerdrMarker` and the sources' askHuman idempotence scan accept the
+configured brand AND the legacy one — a question posted before the switch must not be asked twice — and
+the match is **anchored**: an artifact of ours is the brand token followed by `]` or a space, because a
+bare `[<brand>` prefix also matches a human's own bracketed text (`see [hf-204] for context`) and would
+silently discard their reply.
 **Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
 ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
 `base_ref` with no `<remote>/` prefix, and never on the worktree-reopen path). Nothing else touches
@@ -1137,9 +1186,9 @@ herdr agent in its own tab/pane, dispatched and gated by the reconciler. The run
 
 | Step | Does | Hands off |
 |---|---|---|
-| **work** | read the work doc + attachments → implement → lint/type/tests → commit | `handoff-work.md` + `step-done work` |
+| **work** | read the work doc + attachments → implement → lint/type/tests (each through `gate`, leaving a receipt) → commit | `handoff-work.md` + `step-done work` |
 | **evidence** *(opt-in)* | derive a test plan from acceptance criteria → read the repo's guidance/skills/local memory *first* (by path) → run the app and **sign in** via the repo's own dev-server/login helpers and credentials (right persona; an SSO+MFA redirect is expected, an un-completable login is ask-human, not a bounce) → capture before/after screenshots+video (`capture-attempt` signals each try) → publish via `evidence.publisher` (s3/local/command) → per-criterion verdict: pass forward or **bounce to work** | `handoff-evidence.md` + `step-done` / `bounce` |
-| **review** | fresh-eyes **read-only** gate — never edits or commits (enforced: a commit parks the run): pass forward, or **bounce to work** with findings | `handoff-review.md` + `step-done` / `bounce` |
+| **review** | fresh-eyes **read-only** gate — never edits or commits (enforced: a commit parks the run): reads the work step's gate receipts rather than re-running its suites, then passes forward or **bounces to work** with findings | `handoff-review.md` + `step-done` / `bounce` |
 | **pr** | push + open the PR (evidence URLs embedded) → drive the automated round (CI green + bot comments) | `step-done pr` → human review |
 
 The steps come from the run's **belt**: each `steps[]` entry names a primitive `type`, resolved
@@ -1314,15 +1363,59 @@ and the evidence step filmed a tree that was about to change.
   and trivially actionable.
   Every step prompt's finish protocol now requires the handoff note to open with `sha: <commit>`.
 
+#### Gate receipts (`core/gate-receipts.ts`) and the per-step timing export
+
+A belt re-derives the same fact once per step unless something records it. On the run this came from
+(a one-cell UI change that took 126 minutes) the full spec suite ran six times, the unit suite six
+times and the scoped typecheck four times, all against one unchanged SHA; the review step's second
+pass alone re-ran 6.2 minutes of the work step's gates. Nothing was wrong with any individual
+decision — a reviewer with no evidence that a check passed can only run it.
+
+`herdr-factory gate <KEY> <name> -- <cmd>` is a **transparent wrapper**: it spawns the argv verbatim
+in the run's worktree (no shell — the argv comes from the prompt, so a gate is not an injection
+seam; env assignments and compound commands therefore go through `-- sh -c '…'`), tees stdout/stderr to its own streams so the agent still sees the output, exits with the
+child's own exit code, and records a **receipt** — command, worktree HEAD, exit code, duration,
+bounded output tail — into `gate_receipts`. It deliberately has **no timeout**: a gate is a whole
+test suite, which the engine's 60 s default exec budget would kill; the step's own budget/heartbeat
+watchdog is the real bound. It is not a `SIGNAL_DESCRIPTORS` entry — it nudges nothing, it writes a
+fact — so its prompt token renders in `step.ts` alongside the capture-lock commands rather than from
+the signal registry.
+
+The receipt's identity is `(run, gate, head)`. The SHA is the whole point: a receipt is trustworthy
+exactly when it was taken at the tree the reader is looking at, so a re-run at the same commit
+SUPERSEDES its receipt instead of accumulating one, and the row count is the honest "how many
+distinct (gate, SHA) pairs did this run actually verify". `herdr-factory gates <KEY>` renders them
+marked **CURRENT** (`head === the worktree's HEAD now`, and the tree was clean) or **STALE** or
+**DIRTY** (a gate run with uncommitted work stores `${HEAD}+dirty` so it can never equal HEAD — the
+tree guard does not cover the work step). The `review` prompt is
+written against that: a current passing receipt is evidence, a current *failing* receipt is re-run
+once through the wrapper and bounced only if it fails again (a flake is not a bounce), and a gate is re-run only when its receipt is missing, stale,
+dirty, or the reviewer has a concrete suspicion about that specific check.
+
+The same rows give `step-done` a **timing export**. At each `step-done` the engine records a
+`step_timing` event — `{step, pass, wallMs, shellMs, modelMs, gates}` — where wall is the pass's
+`dispatched_at → now` and `shellMs` is `gateShellMs(run, step, pass)`, the receipts that step and
+pass paid for. Before this, the split needed decoding the agent harness's own chat store by hand.
+The engine reports only what it MEASURED: a gate run bare, or any other subprocess the agent
+spawned, lands in `modelMs`. Widening it means reading a harness transcript (Cursor's chat store,
+Claude Code's transcript), which is the upgrade path, not a claim this makes.
+
 ### Handoff between steps
 
 A step never inherits the prior step's chat context — that would bloat tokens and,
 for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
 
 - **Structured handoff doc (default).** The outgoing agent writes
-  `.memory/herdr-factory/handoff-<step>.md`: what it did, key decisions and *why*,
-  what's uncertain, what the next step should verify. Deliberately lossy — keeps the
-  signal, drops the transcript noise. This is the next agent's primary input.
+  `.memory/herdr-factory/handoff-<step>.md` against a **fixed template** the finish protocol spells
+  out: a `sha: <commit>` line, then `## Did`, `## Decisions`, `## Uncertain`, `## Next step should
+  verify` — capped at 40 lines, empty sections deleted rather than padded, plus any section this
+  step's prompt requires (verbatim findings, repro steps, verdict tables), which is exempt from
+  the cap. Deliberately lossy —
+  keeps the signal, drops the transcript noise. This is the next agent's primary input. The template
+  is not cosmetic: free-form notes had grown to where streaming one cost 40–80 s of a step's budget
+  and the reader still had to hunt for the three facts it needed. The same cap is stated for PR
+  bodies, which have the same failure mode. Bounce notes are not capped — they travel via
+  `bounce-<step>.md` → `feedback-<step>.md` and the target step needs them in full.
 - **On-demand pointer to the prior session.** The dispatcher hands the next agent the
   prior step's **pane id + session id** (herdr exposes `agent_session.value` per pane via
   `agent list`; captured into `run_steps.session_id`). When the doc isn't enough, the next
@@ -1811,7 +1904,8 @@ about to revert. It's driven two ways:
   the host the token is sent to and the two have to move together.
 - **Host-local** — `~/.config/herdr-factory/machine.yml` (optional, `MachineConfigSchema` strict zod;
   `machine.schema.json` is written next to `config.schema.json`): `max_active_workspaces` (machine-wide
-  cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), and
+  cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), `host_alias` (what this
+  host calls itself in the claim ledger — host-local because it names the HOST, not any repo), and
   `layout_hook.ignore_pane_labels` (pane labels the layout hook's freshness guard discounts as plugin
   furniture — default `[Sidebar]`; see [§4](#4-herdr-ownership-boundary)). Deliberately outside
   `repos/` so a config dir shared by git across hosts can gitignore it. Read by `buildDeps`; a hot
@@ -1978,6 +2072,8 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agen
 herdr-factory --repo <name> rework <KEY> <toStep> --note[-file] …      # OPERATOR → send a live run back for another pass
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
+herdr-factory --repo <name> gate <KEY> <name> [--step <s>] [--pass <n>] -- <cmd>  # agent → run a check + leave a receipt (exits with the check's code)
+herdr-factory --repo <name> gates <KEY> [--json] [--source <name>]     # agent → which checks already ran, at which commit, with what result
 herdr-factory --repo <name> runs [--all] | timeline <KEY> | logs [n]   # read the DB / repo log
 herdr-factory --repo <name> explain <KEY> [--source <name>]   # why the run is where it is, in plain language
 herdr-factory --repo <name> triage <KEY> [--print]            # open the operator's agent CLI on the run, pre-briefed
@@ -2094,8 +2190,9 @@ tokens off the factory floor.
 `eligible` lists todo items **across all sources** (each annotated with its `source`). `doctor`
 reports three groups: **managed** (node runtime ≥26 — vendored or ambient; **auto-update** — the
 channel + its target, amber when the last attempt failed / was skipped for a dirty checkout / left
-the box behind its target (from `update-status.json`); supervisor service loaded, server responding,
-DB present), **you-provide** (`git` / `herdr` /
+the box behind its target (from `update-status.json`); **main checkouts up to date** — each repo's
+`repo.path` vs its base branch from `checkout-sync.json`, amber while one is skipped or failing;
+supervisor service loaded, server responding, DB present), **you-provide** (`git` / `herdr` /
 `gh` / `claude` on PATH; `--deep` exercises herdr and `gh auth status`), and — with `--repo` —
 **per-repo** (config loads + valid, main checkout, origin resolved, per-source `health()`, the
 descriptor-declared required secrets present, a local **evidence-upload-outbox** health check
@@ -2321,6 +2418,20 @@ lock heartbeat so its locks expire.
   i.e. nothing is running `ensure-up`: `⚠ auto-update stalled — last check <age>` — so a failure is
   visible, not buried in the supervisor log. `herdr-factory fleet` marks a remote whose `/health`
   version differs from this machine's (`⚠ build differs from this machine`), as the dashboard does. A warn is not a `doctor` exit-code failure.
+- **Main checkouts are fast-forwarded too** (`watchers/checkouts.ts`, #71). The same tick, after the
+  self-update, sweeps **every loaded repo config's `repo.path`** — nothing else under `~/work`, and
+  never `~/.config/herdr-factory` (the operator rolls that out by hand with `sync.sh` + `reload`).
+  Runs never saw the drift (worktrees fork from `origin/<base>`), but everything a human opens there
+  — Orca, the console, herdr's workspace view — was tens of commits stale. Throttled to at most once
+  per **10 minutes per repo** (`CHECKOUT_SYNC_INTERVAL_MS`). It fast-forwards **only** when HEAD is
+  on the branch `base_ref` names (`origin/main` → `main`), the tree has no staged/unstaged changes
+  (untracked files are fine — a fast-forward can't discard them), and the merge is a pure
+  fast-forward (ancestry is checked first, then `merge --ff-only`). Anything else **skips** with a
+  reason logged once per state change (`on sonhyrd/1540-…, skipped` · `dirty tree, skipped` ·
+  `diverged, skipped`). It never stashes, resets, checks out or rebases, and one repo's failure
+  (unreachable remote, missing checkout) never fails the tick or stops the others. Each attempt is
+  recorded to `checkout-sync.json` next to `server.json`; `doctor`'s **`main checkouts up to date`**
+  check reads it and paints amber while any checkout is skipped or failing.
 
 ---
 
@@ -2487,8 +2598,9 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
 - **`describe` echoes the canonical key (INV-11).** It may accept an alternate spelling
   (`#123`), but the engine re-checks active-run dedup against the RETURNED key before claiming —
   otherwise one item can be claimed twice under two spellings.
-- **Marker-based self-authorship (INV-6).** Every reply-channel artifact a source writes carries
-  `HERDR_MARKER`, and reply polling drops marker-bearing comments via `bearsHerdrMarker` —
+- **Marker-based self-authorship (INV-6).** Every reply-channel artifact a source writes carries the
+  brand's marker prefix, and reply polling drops marker-bearing comments via `bearsHerdrMarker`
+  (which also accepts the legacy `herdr-factory` prefix) —
   **blockquote-aware**, so a quote-reply embedding the question still counts as a human reply.
   Author-identity filtering is never load-bearing (under gh-CLI auth the bot login IS the
   operator's login).
@@ -2574,11 +2686,15 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   release still writes — **contract only a release after** the last writer is gone. And every
   migration must carry in-flight runs forward (the v6 `work_source` backfill / v7 phase-widening
   precedent), never leave them unreconcilable.
-- **A run's ACTIVE STEP is recorded before its dispatch, and a REJECTED signal exits non-zero.**
+- **A run's ACTIVE STEP is recorded before its dispatch, and EVERY signal outcome is spoken.**
   Dispatch blocks on herdr's readiness while the agent already has its prompt, so the window between
   "the agent can signal" and "the engine knows which step it is on" must not exist (§8). And a signal
   the engine refuses must fail loudly: it used to print a note and exit 0, so an agent believed a
-  dropped `step-done` had landed, stopped, and the run sat until its step budget expired. Because
+  dropped `step-done` had landed, stopped, and the run sat until its step budget expired. The
+  ACCEPTED case is the same requirement read the other way: `step-done` prints where the run landed
+  (`advanced review → pr`, or that the dispatcher will advance it on its next pass), because a
+  silent exit 0 is indistinguishable from a dropped signal and had the next agents polling `status`
+  and sleeping to find out whether the belt had moved. Because
   `run.step` is now set during `claiming`, nothing may infer the phase from it — use
   `isPreDispatchClaim` (has any step of this RUN ever been dispatched; not a question about the
   belt's current first step, which mid-flight belt edits change).
@@ -2664,8 +2780,8 @@ parametrized contract suite (`test/work-source-contract.test.ts`): `transition` 
 `TransitionResult` (`applied`/`noop`/`stale`) with **two-phase stale handling** in the engine
 (the lock-free outbox stamps `stale_at`; the run-locked Phase A aborts/parks — §7); `workDoc()`
 moved the work-doc shape onto the source (killing the last per-source-type switch in `step.ts`);
-a declarative `spec` plus the shared marker primitives (`HERDR_MARKER`/`bearsHerdrMarker`,
-blockquote-aware) landed in `core/deps.ts`; `askHuman`/`pollHumanReply` gained `StaleItemError`
+a declarative `spec` plus the shared marker primitives (`markerPrefix`/`bearsHerdrMarker`,
+blockquote-aware and brand-configurable) landed in `core/deps.ts`; `askHuman`/`pollHumanReply` gained `StaleItemError`
 and consecutive-poll-error escalation (a question's poll clock, since v32 a ledger
 `human_reply_poll` row). `MatchItem` opened from a closed
 union into a generic base + per-source convenience interfaces and type guards

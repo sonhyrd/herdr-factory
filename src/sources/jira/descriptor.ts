@@ -82,7 +82,7 @@ export const jiraDescriptor: SourceDescriptor<JiraSourceCfg> = {
     return Object.keys(cfg.statusExtra);
   },
   create(ctx) {
-    return new JiraSource(ctx.cfg, new JiraApiTokenAuth(ctx.cfg.baseUrl, ctx.env.JIRA_EMAIL ?? "", ctx.env.JIRA_API_TOKEN ?? ""));
+    return new JiraSource(ctx.cfg, new JiraApiTokenAuth(ctx.cfg.baseUrl, ctx.env.JIRA_EMAIL ?? "", ctx.env.JIRA_API_TOKEN ?? ""), ctx.brand);
   },
   secrets: [
     { envKey: "JIRA_EMAIL", required: true, placeholder: "you@org.com", hint: "the Atlassian account email" },

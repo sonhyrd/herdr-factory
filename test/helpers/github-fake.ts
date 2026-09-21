@@ -278,8 +278,8 @@ export function makeFakeGithub(repo = "acme/tracker"): FakeGithub {
 
 /** A wired source over the fake backend: generous test buckets (no throttling sleeps), stubbed
  *  token, PR repo = issues repo unless overridden. */
-export function makeSource(fake: FakeGithub, cfg: Partial<GithubIssuesSourceCfg> = {}, prRepo?: string) {
-  return makeWired(fake, cfg, prRepo).src;
+export function makeSource(fake: FakeGithub, cfg: Partial<GithubIssuesSourceCfg> = {}, prRepo?: string, brand?: string) {
+  return makeWired(fake, cfg, prRepo, { brand }).src;
 }
 
 /** As makeSource, but exposing the client + auth/budget seams for the rate-limit/auth tests. */
@@ -287,7 +287,7 @@ export function makeWired(
   _fake: FakeGithub,
   cfg: Partial<GithubIssuesSourceCfg> = {},
   prRepo?: string,
-  opts: { envToken?: string; buckets?: { read: TokenBucket[]; mutation: TokenBucket[] }; triggerLabel?: string } = {},
+  opts: { envToken?: string; buckets?: { read: TokenBucket[]; mutation: TokenBucket[] }; triggerLabel?: string; brand?: string } = {},
 ) {
   const merged = { ...DEFAULT_CFG, ...cfg };
   const tokenCalls = { n: 0 };
@@ -301,6 +301,6 @@ export function makeWired(
     },
     budget,
   );
-  const raw = new GithubIssuesSource(merged, client, prRepo ?? merged.repo);
+  const raw = new GithubIssuesSource(merged, client, prRepo ?? merged.repo, undefined, opts.brand);
   return { src: bindTrigger(raw, opts.triggerLabel ?? TRIGGER_LABEL), client, tokenCalls };
 }

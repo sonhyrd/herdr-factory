@@ -207,6 +207,25 @@ The wait window is `limits.layout_wait_seconds` (600). Past it, if the step's `l
 
 Dispatch never spawns its own pane when a `tab`/`pane` is configured — a fresh pane must be `idle`, and a reused pane that is `working` defers rather than queue into a foreign turn. The prompt submission itself is **confirmed** (`herdr agent prompt --wait --until working`): an unconfirmed one counts as "not dispatched" and retries under the same wait, so a dropped prompt can't start the budget clock. See [layouts.md](./layouts.md).
 
+### Gate receipts and the per-step timing export
+
+`gate_receipts` (v39) is the belt's answer to "has this already been checked on *this* tree?".
+`herdr-factory gate <key> <name> -- <cmd>` runs a verification command in the run's worktree —
+verbatim argv, no shell, no timeout, output teed, exiting with the command's own code — and records
+`{step, pass, gate, command, head, exit_code, duration_ms, tail}`. The row's identity is
+`(run_id, gate, head)`: the commit is what makes a receipt trustworthy, so re-running a gate at the
+same commit **supersedes** its receipt instead of accumulating one, and the row count is the honest
+count of distinct (gate, SHA) pairs the run verified. `herdr-factory gates <key>` renders them
+CURRENT (head == the worktree's HEAD now, tree was clean), STALE, or DIRTY (`${HEAD}+dirty` when the
+worktree had uncommitted work — it can never equal HEAD), which is what the `review` prompt is written
+against.
+
+Every `step-done` then records a **`step_timing`** event — `{step, pass, wallMs, shellMs, modelMs,
+gates}` — where `wallMs` is the pass's `dispatched_at → now` and `shellMs` is the summed duration of
+that (step, pass)'s receipts. It reports only what the engine measured: a gate run *bare*, or any
+other subprocess the agent spawned, falls into `modelMs`. Rows die with the run (`purgeBeltRuns`
+deletes them alongside `run_steps`/`guard_counters`); the events survive on the timeline.
+
 ### Why a "finished" step can look stuck
 
 `step-done` is rejected when: the step isn't in the belt; the step isn't `run.step` (`"X" is not the run's active step ("Y") — signal ignored`, unless it is already done, which is a friendly noop); or the `--pass` doesn't match (`stale step-done for pass N — the <step> step is on pass M; finish the current pass and run its own step-done command`). Bounce intents are re-validated against the issuing step *and* its pass at consume time.
@@ -410,9 +429,10 @@ Graceful shutdown clears the tick timers, closes the HTTP server, waits up to **
 `ensure-up` is a stateless one-shot the platform timer runs every 60 s:
 
 1. If auto-update is enabled, run the self-update first. A successful update forces a restart (this process read its own `VERSION` at start).
-2. Read `server.json`, then `/health`. **No-op only when** health is ok **and** `info.version === VERSION` **and** no repo is `tickStale` ⇒ `server healthy on :<port> (v<version>)`.
-3. Otherwise restart, with the reason chosen in this order: `server not responding — restarting` · `server v<a> != v<b> — restarting` · `tick loop stale for <repos> — restarting wedged server`.
-4. Stop = `POST /shutdown` → SIGTERM regardless → poll for exit every 200 ms up to **18 s** (deliberately outlasting the server's 15 s drain) → SIGKILL → remove `server.json`. Then spawn a detached `serve`.
+2. Sweep the configured repos' **main checkouts** (`src/watchers/checkouts.ts`, throttled to 10 min per repo): `git fetch <remote>` + `git merge --ff-only <base_ref>`, only when the checkout is on the branch `base_ref` names, has no staged/unstaged change and fast-forwards cleanly; otherwise a logged skip. Best-effort — one repo never affects another or the restart decision below.
+3. Read `server.json`, then `/health`. **No-op only when** health is ok **and** `info.version === VERSION` **and** no repo is `tickStale` ⇒ `server healthy on :<port> (v<version>)`.
+4. Otherwise restart, with the reason chosen in this order: `server not responding — restarting` · `server v<a> != v<b> — restarting` · `tick loop stale for <repos> — restarting wedged server`.
+5. Stop = `POST /shutdown` → SIGTERM regardless → poll for exit every 200 ms up to **18 s** (deliberately outlasting the server's 15 s drain) → SIGKILL → remove `server.json`. Then spawn a detached `serve`.
 
 The self-update resets the package checkout to the channel target (`main` = the tracked upstream; `stable` = the newest numeric `vX.Y.Z` tag). Guards: a **dirty checkout is never reset** — it records `dirtySkip` and notifies the operator once per 6 h. Post-steps are best-effort and recorded as warnings: re-provision Node if `.node-version` changed (download with a mandatory SHA-256 gate and an atomic symlink flip), then install dependencies if the lockfile or Node changed. The restart itself *is* the drain: the graceful-first stop sequence above.
 

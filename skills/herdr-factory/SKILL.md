@@ -176,6 +176,14 @@ Use these words precisely; the config and the CLI both key off them.
   dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from
   such a step is the separate `read_only` watch (`read_only_violation`, auto-rescued). Every handoff
   note opens with the `sha:` it covers.
+- **gate receipt** — the record of one verification command (lint / typecheck / a test suite) and the
+  commit it ran at. The `work` prompt runs its checks through `herdr-factory gate <KEY> <name> --
+  <cmd>` (a transparent wrapper: same output, same exit code) and the `review` prompt reads
+  `herdr-factory gates <KEY>`, trusting a receipt marked **CURRENT** (taken at this branch's HEAD
+  on a clean tree) instead of re-running the suite. A dirty-tree run is stored as `${HEAD}+dirty`
+  and never reads as CURRENT. It exists because every step used to re-derive the same fact by
+  paying for it again. The receipts also feed the `step_timing` event each `step-done` puts on the
+  timeline (wall / shell / model). See references/cli.md.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it
   back with fresh clocks.
 - **ask-human** — an agent asking a question through the work source; the run waits, frees its slot, and
@@ -205,7 +213,8 @@ The values asked for most often. Everything else is in
 | a shared layout, short belt | a factory-claimed worktree builds only the tabs **its** belt's steps target (plus the `setup:` tab and any tab with a pane carrying its own `prompt:`) — so a `work`→`pr` belt on a four-tab ship layout gets two tabs, not four idle ones. A hand-created worktree gets every tab. See references/layouts.md |
 | a layout pane a step targets | declares its own agent (`agent: claude` + `agent_args: […]`); herdr starts it and waits until it is ready for input. Config-load rejects a target pane that starts no agent |
 | on merge | each source decides: `jira` stays **silent** unless you set `jira.status.done`; `github_issues` **closes the issue** as completed (`close_on.merged`, default `true`; never for a `kind: pull_requests` item); `sentry` posts a PR-link comment (`on_merge`, default `comment`). A belt `effects` entry overrides. |
-| host-wide limits | optional **host-local** `~/.config/herdr-factory/machine.yml` (gitignore it in a shared config repo): `max_active_workspaces` across all repos + `min_free_memory_mb` claim floor. Gates new claims only; `status`/`doctor` show it; `reload` re-reads it. Also `layout_hook.ignore_pane_labels` (default `[Sidebar]`) — pane labels the layout hook's freshness gate discounts, so a herdr plugin that adds a pane to every new tab doesn't stop every layout from building. See references/config-reference.md §3.14 |
-| several factories, one source | one factory per source backend by default (they'd double-claim). `jira`/`github_issues` accept `claim_guard: { enabled: true }` in **every** sharing factory — claims arbitrate on the item's comments (lowest comment id wins); a host releases its OWN stale claims (run gone locally) each tick, but ANOTHER host's dead claim is never auto-cleared → post `[herdr-factory release id=<run> host=<host>]` by hand. See references/work-sources.md |
+| host-wide limits | optional **host-local** `~/.config/herdr-factory/machine.yml` (gitignore it in a shared config repo): `max_active_workspaces` across all repos + `min_free_memory_mb` claim floor + `host_alias` (what this host calls itself in the claim ledger, instead of its hostname). Gates new claims only; `status`/`doctor` show it; `reload` re-reads it. Also `layout_hook.ignore_pane_labels` (default `[Sidebar]`) — pane labels the layout hook's freshness gate discounts, so a herdr plugin that adds a pane to every new tab doesn't stop every layout from building. See references/config-reference.md §3.14 |
+| several factories, one source | one factory per source backend by default (they'd double-claim). `jira`/`github_issues` accept `claim_guard: { enabled: true }` in **every** sharing factory — claims arbitrate on the item's comments (lowest comment id wins); a host releases its OWN stale claims (run gone locally) each tick, but ANOTHER host's dead claim is never auto-cleared → post `[<brand> release id=<run> host=<host>]` by hand. See references/work-sources.md |
+| comment brand | every comment the factory writes says `herdr-factory`; `source_comments: { brand: hf }` renames it — claim ledger, question marker, note prefix, moot-question note, and the `github_issues` labels' `managed by <brand>` description. Readers keep accepting the LEGACY `herdr-factory` markers, so a fleet switches host by host. Default ⇒ byte-identical strings. See references/config-reference.md §3.11b |
 | spawned agents | `claude --dangerously-skip-permissions` unless an `agent:` block says otherwise (that block drives SPAWNED panes; a layout pane names its own agent) |
 | herdr floor | **≥ 0.7.5** — `doctor` enforces it from `herdr-plugin.toml`'s `min_herdr_version`; `--deep` also checks the CLI can speak the running server's protocol |

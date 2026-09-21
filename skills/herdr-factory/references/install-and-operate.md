@@ -173,6 +173,7 @@ The factory keeps itself current; you normally do nothing.
 | What an update does | `git fetch` → `git reset --hard <target>` → if `.node-version` changed, re-provision the vendored Node and flip `runtime/current` → if `package.json`/`pnpm-lock.yaml`/`.node-version` changed, `pnpm install` (falling back to `npm install`) → `ensure-up` restarts `serve` onto the new sha |
 | Dirty-checkout refusal | a checkout with **any** staged/unstaged/untracked change is never reset. The tick logs `self-update: dirty checkout — reset to <ref> skipped (uncommitted local changes)`, fires one throttled (6 h) herdr notification titled `herdr-factory: auto-update skipped`, and records the skip |
 | Force it now | `herdr-factory update` → `no update: <reason>` or `updated <from12> → <to12>; restarting server` + `restart: noop\|started\|restarted`. Reasons: `not a git checkout` · `cannot read HEAD` · `up to date` · `dirty checkout` · `reset failed` · `no release tags yet (stable channel)` |
+| Repo main checkouts | the same tick also fast-forwards each **loaded repo config's `repo.path`** (`src/watchers/checkouts.ts`), at most once per **10 min per repo**. It only ever runs `git fetch <remote>` + `git merge --ff-only <base_ref>`, and only when HEAD is on the branch `base_ref` names, no staged/unstaged change exists (untracked files are fine) and the history is a pure fast-forward. Otherwise it logs once per state change — `checkout-sync: <repo>: on <branch>, skipped (base branch is <base>)` · `dirty tree, skipped` · `diverged, skipped` — and moves on. It never stashes, resets, checks out or rebases, one repo's failure never affects another, and `~/.config/herdr-factory` is never touched (that one you roll out by hand) |
 | Where the outcome lives | `<stateRoot>/update-status.json` (`{channel, at, outcome: updated\|up_to_date\|skipped\|failed, reason, head, target, targetRef, behind, dirtySkip, warning}`) — `src/watchers/update-status.ts` |
 
 **Both toggles are captured into the service environment at INSTALL time.** Exporting `HERDR_CHANNEL`
@@ -196,6 +197,18 @@ The check is amber `⚠`, never a ✗ — it cannot fail `doctor`'s exit code:
 | `⚠ auto-update — main: behind origin/main — <reason> (…)` | not on its channel target |
 | `⚠ auto-update — main: updated but dependency install failed — <msg> (…)` | code landed, deps are stale — run `pnpm install` in `$APP_DIR` |
 | `✓ auto-update — stable: follows the latest release tag (no update attempt recorded yet)` | fresh box, or auto-update disabled |
+
+The main-checkout sweep has its own check, reading `<stateRoot>/checkout-sync.json`
+(`{<repo>: {repo, path, at, outcome: fast_forwarded|up_to_date|skipped|failed, reason, head}}`,
+`src/watchers/checkouts.ts`). Also amber-or-green, never a ✗ — a human working in a checkout is normal:
+
+| doctor line | Meaning |
+|---|---|
+| `✓ main checkouts up to date — chrysus: up to date (2m ago) · widget: up to date (2m ago)` | healthy |
+| `⚠ main checkouts up to date — widget: on sonhyrd/1540-thing, skipped (base branch is main) (4m ago)` | somebody left the checkout on a branch; nothing to do unless you want it back on `main` |
+| `⚠ main checkouts up to date — chrysus: dirty tree, skipped (4m ago)` | uncommitted work in the main checkout — commit/stash it and the next sweep catches up |
+| `⚠ main checkouts up to date — chrysus: diverged, skipped (4m ago)` | local commits that aren't on `origin/main` — resolve by hand |
+| `✓ main checkouts up to date — no sync recorded yet …` | fresh box (the first sweep runs on the next `ensure-up` tick) |
 
 The **skill bundle** rides along: `herdr-factory skill install` defaults to a *symlink* into
 `~/.claude/skills/herdr-factory`, so an auto-update keeps the skill in lock-step with the engine. A
@@ -602,7 +615,7 @@ must revert that file yourself if `blocked` comes back non-empty.
 ### The Doctor tab is not `doctor --deep`
 
 `src/tui/doctor.ts` calls `baseGroups()`: the machine-wide groups only — *managed by
-herdr-factory* (`node runtime >= 26`, `auto-update`, `supervisor service`, `server`, `database`) and
+herdr-factory* (`node runtime >= 26`, `auto-update`, `main checkouts up to date`, `supervisor service`, `server`, `database`) and
 *you provide* (`git`, `herdr`, `gh`, `claude`). `r` re-runs the shallow checks; `d` runs the deep ones
 (`gh auth status`, `herdr workspace list`). The banner reads
 `● all checks passed (shallow) · r: re-run · d: deep` or

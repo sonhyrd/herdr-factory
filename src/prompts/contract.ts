@@ -103,6 +103,9 @@ const UNIVERSAL: readonly PromptTokenSpec[] = [
   { token: "@@BOUNCE_TARGET@@", scope: { kind: "universal" }, summary: "the step name a bounce returns to (empty when this step can't bounce)" },
   { token: "@@BOUNCE_REASON_FILE@@", scope: { kind: "universal" }, summary: "path to write bounce findings to (empty when this step can't bounce)" },
   { token: "@@CLI@@", scope: { kind: "universal" }, summary: "absolute path to the herdr-factory CLI binary" },
+  { token: "@@PASS@@", scope: { kind: "universal" }, summary: "which entry into this step this is (1 on the first; 2+ after a bounce or an operator rework) — a step reuses its own prior pass's work rather than redoing it" },
+  { token: "@@GATE_CMD@@", scope: { kind: "universal" }, summary: "wrapper that runs one verification command (test/typecheck/lint) and records a RECEIPT against the run — renders with `<gate-name>` and `<command>` placeholders the agent replaces" },
+  { token: "@@GATE_RECEIPTS_CMD@@", scope: { kind: "universal" }, summary: "the command that lists this run's gate receipts (which gates already ran, at which commit, with what result) so a later step trusts them instead of re-running them" },
   { token: "@@COMMIT_CONVENTIONS@@", scope: { kind: "universal" }, summary: "the repo's commit-message conventions from `conventions.commits` (empty — and leaves no trace — when that key is unset)" },
 ];
 
