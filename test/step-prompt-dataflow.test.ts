@@ -160,6 +160,31 @@ describe("shipped pr prompts gate @@PR_TEMPLATE@@ + the pr: behavior tokens behi
   }
 });
 
+// ISSUE #68 item 2: an evidence pass 2 re-filmed all five unchanged desktop criteria (243 s) and
+// then lost the narrow-viewport videos to a shared Playwright --output dir (another 63 s). Both
+// fixes live entirely in the shipped prompt, so the prompt IS the unit under test.
+describe("the shipped evidence prompt does not re-film what has not changed", () => {
+  const body = prompt("evidence.md");
+
+  it("tells a pass 2+ agent to diff against its own last handoff's sha and re-film only what moved", () => {
+    expect(body).toContain("@@PASS@@"); // the pass is rendered in, so "on pass 2+" is a fact not a guess
+    expect(body).toContain("git diff --name-only");
+    expect(body).toMatch(/Re-film only the criteria that could have changed/);
+    expect(body).toMatch(/carry the previous row/i); // untouched criteria keep their asset + URL
+  });
+
+  it("requires one output directory per capture invocation, and says why", () => {
+    expect(body).toContain("One output directory per capture invocation");
+    expect(body).toContain("clears its output directory at the start of a run");
+  });
+
+  it("ships the capture-spec skeleton rather than leaving the boilerplate to be hand-written", () => {
+    expect(body).toContain("```ts");
+    expect(body).toContain("test.use({"); // viewport + video belong in `use`, not per-describe
+    expect(body).toContain("@playwright/test");
+  });
+});
+
 describe("shipped pr prompts carry the assumptions sections on every belt", () => {
   // The worktree (and the handoff notes in it) is deleted at teardown, so the PR body is the only
   // durable record of what the work step guessed — the sections must survive an evidence-less belt.
