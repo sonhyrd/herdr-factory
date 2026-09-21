@@ -76,7 +76,12 @@ scenario(
 
     // ── step-done says where the run landed ──────────────────────────────────────────────────
     // The agent's only window onto its own signal; a silent exit 0 is what had steps polling
-    // `status` and sleeping to find out whether the belt had moved.
-    expect(log, "the work step was told where it landed").toContain("advanced work → review");
+    // `status` and sleeping to find out whether the belt had moved. BOTH documented answers count:
+    // the signal advances the belt inline, or the run lock was held by the tick that was already
+    // advancing it and the agent is told the next pass will. Asserting only the first makes this
+    // scenario fail on lock timing rather than on the contract it is here to pin.
+    expect(log, "the work step was told what its signal did").toMatch(
+      /advanced work → review|work recorded done — the dispatcher advances the belt on its next pass/,
+    );
   },
 );
