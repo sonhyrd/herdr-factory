@@ -593,15 +593,23 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   // Phase B — claim new work, behind the host-local machine.yml gate (ARCHITECTURE §7 Phase B). Absent machine.yml
   // ⇒ straight to claimNewWork, exactly as before.
   const machine = deps.machine ?? {};
+  // The deferral count describes the repo's MOST RECENT Phase B pass, so every exit that is not a
+  // lock deferral clears it. Both gates below return before the lock is even taken: a count left
+  // standing by one of them would keep `status`/`explain` reporting a lock race that is not
+  // happening — and with `max_active_workspaces` removed from machine.yml, nothing would ever
+  // clear it again. Any exit added to Phase B has to keep this invariant.
+  const notDeferred = () => void deps.store.recordClaimDeferral(repo, false);
   const lowMemory = memoryGate(machine, deps.availableMemoryMb ?? availableMemoryMb);
   if (lowMemory) {
     // Admission only: running work is untouched — Phase A above already advanced it.
     noteMachineGate(deps.log, lowMemory);
+    notDeferred();
     deps.store.touchTick(repo);
     return;
   }
   if (machine.maxActiveWorkspaces === undefined) {
     noteMachineGate(deps.log, null);
+    notDeferred();
     return claimNewWork(deps);
   }
   // The machine count and the claims must be one critical section: repos tick on separate timers
@@ -622,11 +630,15 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   });
   // Deferring is now the rare tail (a holder that outlived the whole wait), and the starvation it
   // used to hide was silent — so the consecutive count is durable and reported by status/explain.
-  const deferrals = deps.store.recordClaimDeferral(repo, !ran);
-  if (!ran) {
-    deps.log("info", `machine claim lock held (another repo is claiming) — ${claimDeferralNote(deferrals)}`);
-    deps.store.touchTick(repo);
+  // Reaching the claim section at all clears it, capacity gate included: being full is not losing
+  // a race, and `describeMachine` already says so on its own line.
+  if (ran) {
+    notDeferred();
+    return;
   }
+  const deferrals = deps.store.recordClaimDeferral(repo, true);
+  deps.log("info", `machine claim lock held (another repo is claiming) — ${claimDeferralNote(deferrals)}`);
+  deps.store.touchTick(repo);
 }
 
 /** Phase B proper: claim new work up to the cap, walking BELTS in priority order. The cap is global

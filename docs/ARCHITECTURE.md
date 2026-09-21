@@ -1035,9 +1035,13 @@ contention hit the same mid-hold instant every tick and never claimed again (iss
 starved four hours). Holders release in seconds (a count plus at most `max_claims_per_tick` claims),
 so every repo gets its turn inside one tick. A repo whose wait is spent logs `machine claim lock held
 (another repo is claiming) — claims deferred N ticks (machine claim lock)` and defers its claims to
-the next pass; N is the CONSECUTIVE deferral count, durable in `repos.claim_deferrals` (cleared the
-moment the repo reaches its claim section) so the out-of-process `status` / `explain` surfaces report
-the starvation instead of it staying silent. Under the lock,
+the next pass; N is the CONSECUTIVE deferral count, durable in `repos.claim_deferrals` and
+cleared by EVERY Phase B pass that does not defer on the lock — the memory gate's return and the
+absent-cap return included, so a frozen count can never keep claiming a lock race in a state that
+never takes the lock (with the cap removed from machine.yml, nothing else would ever clear it).
+A non-zero count therefore means the repo deferred on its most recent pass, which is what lets the
+out-of-process `status` / `explain` surfaces report the starvation in the present tense instead of
+it staying silent. Under the lock,
 `occupying >= cap` ⇒ `touchTick` + return; otherwise the remaining headroom caps `slots` alongside
 the repo cap and `max_claims_per_tick`. The manual `claimTicket` takes the same lock and throws
 `machine at capacity (n/N)` rather than overshoot (server up or down — it's a DB lock). Gate

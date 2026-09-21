@@ -2778,6 +2778,41 @@ describe("machine gate (Phase B)", () => {
     expect(store.claimDeferrals("demo")).toBe(0); // reset the moment it claims again
   });
 
+  // The count is CONSECUTIVE and present-tense: `status`/`explain` render it as "this repo is
+  // losing the race right now", so a gate that returns before the lock is ever taken has to clear
+  // it. Left standing, it contradicts the gate line printed beside it — and with the cap removed
+  // from machine.yml there is no path left that could ever clear it again.
+  const deferTwice = async (deps: Deps, store: Store) => {
+    store.acquireLock("machine:claim", "another-repo", 600);
+    await reconcileRepo(deps);
+    await reconcileRepo(deps);
+    expect(store.claimDeferrals("demo")).toBe(2);
+    store.releaseLock("machine:claim", "another-repo");
+  };
+
+  it("the memory gate clears the deferral count — it is not the lock that is holding claims up", async () => {
+    const { deps, store, state } = build();
+    deps.machine = { maxActiveWorkspaces: 2, minFreeMemoryMb: 500 };
+    deps.availableMemoryMb = () => 1000;
+    state.eligible = [ticket("K-1")];
+    await deferTwice(deps, store);
+    deps.availableMemoryMb = () => 100; // now the pass returns at the memory gate, before the lock
+    await reconcileRepo(deps);
+    expect(store.claimDeferrals("demo")).toBe(0);
+    expect(store.countActive("demo")).toBe(0); // and it really did stop at the gate
+  });
+
+  it("removing the machine cap clears the deferral count (nothing else ever could)", async () => {
+    const { deps, store, state } = build();
+    deps.machine = { maxActiveWorkspaces: 2 };
+    state.eligible = [ticket("K-1")];
+    await deferTwice(deps, store);
+    deps.machine = {}; // machine.yml's cap removed: Phase B never takes the lock again
+    await reconcileRepo(deps);
+    expect(store.claimDeferrals("demo")).toBe(0);
+    expect(store.countActive("demo")).toBe(1); // claiming is back to the lock-free path
+  });
+
   it("a manual claim respects the machine cap", async () => {
     const { a, b, store } = twoRepos();
     a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 1 };
