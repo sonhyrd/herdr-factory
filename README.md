@@ -443,6 +443,49 @@ Bounces are per-target-step counted; past `max_bounces` (default 6, per-belt ove
 disables bouncing) the run parks for attention instead of oscillating. Each station's engine
 prompt can be augmented with your own `prompt_file` — see [Prompts](#prompts).
 
+**Sending a live run back yourself — `rework`.** A bounce is an *agent's* control: it is stamped
+with the issuing step and pass, and constrained to the targets that step may bounce to. The
+operator's equivalent is:
+
+```
+herdr-factory --repo my-app rework MY-123 work --note "the toast still clips at 320px"
+```
+
+It works at any point while the belt is running — including a run parked for attention or waiting
+on a human answer. Whatever step is running stops; a new pass of `<toStep>` opens with your note
+rendered into its prompt behind the same **Rework requested — READ THIS FIRST** banner a bounce
+uses, and its own pane is re-prompted. You may also name the step that is *currently* running
+("take this again, with this note"); forward is refused. It records a `rework` event on the
+timeline (`timeline <KEY>`), shows up in `explain`, and **counts toward `max_bounces`** — an
+operator loop parks like an agent one.
+
+When *not* to use it: a problem that was already there and is outside this ticket's scope is a new
+ticket, not a rework of this run. `rework` is for "this ticket's work is not what I asked for".
+
+The reason it exists is that you cannot un-type a prompt into a herdr pane. Prompting a step's pane
+after its `step-done` — a layout belt reuses that pane for the next pass, so it is still sitting
+there — gets you an agent working outside the belt's knowledge, and the edit it leaves behind is
+invisible to the run. `rework` is the supported door, and the [tree guard](#the-tree-guard) is the
+backstop for when someone uses the other one.
+
+### The tree guard
+
+Steps that never commit — `evidence`, `review`, and any `custom` step with `read_only: true` — are
+**pinned to the HEAD they were spawned on** (recorded on the `step_spawned` event). The engine then
+refuses to trust their verdict about a tree that has changed underneath them:
+
+- their **`step-done` is refused** — with the diff stat, on stderr, non-zero — when the worktree is
+  dirty or HEAD moved after the step's own agent took over;
+- they are **never spawned onto a dirty tree**: the run parks for attention (`dirty_tree`) with the
+  diff stat instead of filming or reviewing a change that is about to move;
+- every handoff note names the commit it covers (`sha: <commit>` on its first line).
+
+The HEAD-moved half deliberately absorbs the *previous* step's trailing commits: the pin tracks
+live HEAD until this step's agent is first observed working, so a lint fix the work agent pushes
+100 seconds after handoff is not this step's violation. A dirty tree is refused either way — an
+uncommitted edit belongs to whoever made it, and the step that owns it should commit or revert it.
+Clear the tree in the worktree, then `resume` (for a park) or let the agent re-run its `step-done`.
+
 ### `custom` steps — your own stations
 
 ![A belt of custom steps: a match router claims items onto a conveyor of user-defined stations, each holding its own prompt file, with an ask-human cord above; the last station stamps step-done and the run ends with teardown](docs/images/belt-custom.svg)
@@ -517,7 +560,16 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   with a note on the ticket so nobody answers into the void.
 - **Bounce-back rework.** Evidence and review send flawed work _backward_ with written findings
   instead of patching around it; the work agent re-runs against the feedback file. The
-  `max_bounces` backstop keeps a disagreement loop from running forever.
+  `max_bounces` backstop keeps a disagreement loop from running forever. You have the same lever:
+  `rework <KEY> <step> --note "…"` stops whatever step is running and starts a new pass of that
+  step with your note at the top of its prompt — the supported way to say "not like that" to a
+  *live* run, instead of typing into a pane the belt has already moved past.
+- **A step that never commits is pinned to its tree.** Evidence and review are read-only, so the
+  engine holds them to it: their `step-done` is refused — with the diff stat — when the worktree
+  is dirty or HEAD moved under them, and they are never *started* on a dirty tree (the run parks
+  instead). An uncommitted edit left behind by an earlier agent used to sail through as filmed,
+  reviewed, approved work; now it stops the belt where it happened. Every handoff note names the
+  `sha:` it covers.
 - **Attention is a workflow, not a dead end.** When something needs a person — budget exceeded,
   stalled commits, a closed PR, a pane that never appeared — the run parks: desktop notification,
   the pane relabelled `⚠ ATTENTION`, the reason (with ready-made resume + triage commands) reported
@@ -1405,6 +1457,7 @@ herdr-factory --repo <name> run [--follow]                          # run the fa
 herdr-factory --repo <name> claim <KEY> [--belt <name>]
 herdr-factory --repo <name> teardown <KEY> [--source <name>]
 herdr-factory --repo <name> resume <KEY> [--source <name>]          # un-park an `attention` run
+herdr-factory --repo <name> rework <KEY> <toStep> --note|--note-file … [--source <name>]   # send a LIVE run back for another pass
 herdr-factory --repo <name> retry-now [KEY] [--source <name>]       # you fixed the cause: clear suspensions, retry now
 herdr-factory --repo <name> auth status                            # each source's credential presence (no network)
 
@@ -1431,8 +1484,8 @@ herdr-factory schema [--stdout]
 herdr-factory doctor [--deep] [--repo <name>]
 ```
 
-The mutating/nudge commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `step-done`,
-`ask-human`, `bounce`) route through the running server when it's up — a warm, in-process reconcile —
+The mutating/nudge commands (`tick`, `claim`, `teardown`, `resume`, `retry-now`, `rework`,
+`step-done`, `ask-human`, `bounce`) route through the running server when it's up — a warm, in-process reconcile —
 and fall back to executing directly against the DB when it isn't; reads (`status`, `eligible`, `runs`,
 `timeline`, `logs`, `explain`) always go straight to the DB. `--source` disambiguates a key active
 in more than one source; `claim --belt` is required only when the repo has more than one belt.
