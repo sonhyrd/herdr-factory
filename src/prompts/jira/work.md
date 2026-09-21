@@ -58,7 +58,9 @@ repo's guidance genuinely conflicts with them, follow this prompt and say so in 
    Replace `<gate-name>` with a short stable key for the check (`lint`, `typecheck`, `test`,
    `test:unit`, …) and `<command>` with the command exactly as you would have run it — e.g.
    `… gate <key> test --source … -- pnpm test`. The wrapper is transparent: you see the same output
-   and it exits with the command's own exit code, so nothing about how you work changes. What it
+   and it exits with the command's own exit code, so nothing about how you work changes. The wrapper
+   spawns without a shell, so use `-- sh -c '…'` for env assignments or compound commands
+   (`CI=1 pnpm test`, `cd pkg && …`). What it
    buys is that a later step reads `@@GATE_RECEIPTS_CMD@@` and *trusts* a gate that already passed
    at this commit instead of spending minutes re-running it. Re-running a gate at the same commit
    just replaces its receipt, so run them as often as you need.

@@ -1328,7 +1328,7 @@ decision — a reviewer with no evidence that a check passed can only run it.
 
 `herdr-factory gate <KEY> <name> -- <cmd>` is a **transparent wrapper**: it spawns the argv verbatim
 in the run's worktree (no shell — the argv comes from the prompt, so a gate is not an injection
-seam), tees stdout/stderr to its own streams so the agent still sees the output, exits with the
+seam; env assignments and compound commands therefore go through `-- sh -c '…'`), tees stdout/stderr to its own streams so the agent still sees the output, exits with the
 child's own exit code, and records a **receipt** — command, worktree HEAD, exit code, duration,
 bounded output tail — into `gate_receipts`. It deliberately has **no timeout**: a gate is a whole
 test suite, which the engine's 60 s default exec budget would kill; the step's own budget/heartbeat

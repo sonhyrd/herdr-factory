@@ -1047,6 +1047,7 @@ describe("gate receipts + the handoff template reach the agent (end-to-end rende
   it("the work prompt renders a runnable gate wrapper, stamped with this step and pass", async () => {
     const body = await render(0, shippedWork, 3);
     expect(body).toContain("gate K-GT <gate-name> --source jira --step fix --pass 3 -- <command>");
+    expect(body).toContain("sh -c");
     expect(body).not.toMatch(/@@[A-Z_]+@@/); // nothing dangling
   });
 

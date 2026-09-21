@@ -163,6 +163,8 @@ A **gate** is one verification command (lint, type-check, a test suite). `gate` 
 wrapper: everything after `--` is the command's own argv, run **verbatim, with no shell** in the
 run's worktree, its stdout/stderr teed through, and the wrapper **exits with the command's own exit
 code** — so `gate <key> test -- pnpm test` substitutes for `pnpm test` anywhere an agent used it.
+Env assignments and compound commands need `-- sh -c '…'` (`CI=1 pnpm test`, `cd pkg && …`) because
+there is no shell.
 There is deliberately **no timeout** (a gate is a whole suite; the engine's 60 s default exec budget
 would kill it) — the step's budget/heartbeat watchdog is the bound.
 
