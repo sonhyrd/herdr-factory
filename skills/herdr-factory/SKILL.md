@@ -179,8 +179,9 @@ Use these words precisely; the config and the CLI both key off them.
 - **gate receipt** — the record of one verification command (lint / typecheck / a test suite) and the
   commit it ran at. The `work` prompt runs its checks through `herdr-factory gate <KEY> <name> --
   <cmd>` (a transparent wrapper: same output, same exit code) and the `review` prompt reads
-  `herdr-factory gates <KEY>`, trusting a receipt marked **CURRENT** (taken at this branch's HEAD)
-  instead of re-running the suite. It exists because every step used to re-derive the same fact by
+  `herdr-factory gates <KEY>`, trusting a receipt marked **CURRENT** (taken at this branch's HEAD
+  on a clean tree) instead of re-running the suite. A dirty-tree run is stored as `${HEAD}+dirty`
+  and never reads as CURRENT. It exists because every step used to re-derive the same fact by
   paying for it again. The receipts also feed the `step_timing` event each `step-done` puts on the
   timeline (wall / shell / model). See references/cli.md.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it

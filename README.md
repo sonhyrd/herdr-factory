@@ -517,15 +517,15 @@ A later step reads them:
 
 ```
 herdr-factory --repo my-app gates MY-123
-MY-123: HEAD 4f1c9ae30b21 — a CURRENT receipt covers this exact tree; re-run only the STALE ones.
+MY-123: HEAD 4f1c9ae30b21 — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.
   ✓ pass  test           CURRENT 4f1c9ae30b21  91.4s  work pass 1  pnpm test
   ✓ pass  typecheck      CURRENT 4f1c9ae30b21  24.7s  work pass 1  pnpm typecheck
   ✗ exit 1  lint         STALE   9ab2c0d41e77  8.1s   work pass 1  pnpm lint
 ```
 
-**CURRENT** means the receipt was taken at the branch's present HEAD — it covers exactly the tree the
-reading step is looking at. The review prompt treats a current passing receipt as evidence and runs a
-gate itself only when the receipt is missing, stale, or it has a concrete suspicion about that
+**CURRENT** means the receipt was taken at the branch's present HEAD **on a clean tree** — it covers exactly the tree the
+reading step is looking at. A gate run with uncommitted work stores `${HEAD}+dirty` so it never equals HEAD and `gates` marks it **DIRTY**. The review prompt treats a current passing receipt as evidence and runs a
+gate itself only when the receipt is missing, stale, dirty, or it has a concrete suspicion about that
 specific check; a *failing* current receipt is a bounce, not a re-run. `gates --json` is the
 machine-readable form. Receipts live with the run and die with it.
 

@@ -173,8 +173,8 @@ and one final time after the last commit so the receipts sit at HEAD — see
 
 Read-only fresh-eyes gate; exactly one of pass-forward or bounce. Its prompt reads the **gate
 receipts** (`@@GATE_RECEIPTS_CMD@@`) before running anything itself: a CURRENT passing receipt (one
-taken at the branch's present HEAD) is evidence, a CURRENT *failing* one is a bounce, and a gate is
-re-run only when its receipt is missing, STALE, or there is a concrete suspicion about that specific
+taken at the branch's present HEAD on a clean tree) is evidence, a CURRENT *failing* one is a bounce, and a gate is
+re-run only when its receipt is missing, STALE, DIRTY, or there is a concrete suspicion about that specific
 check. This is what stops each step re-paying for the previous step's suites. **Read-only is enforced by HEAD
 movement**, not by sandboxing: at spawn the engine records the branch HEAD, then *keeps tracking* live
 HEAD (absorbing the prior step's trailing commits) until this step's pane is first observed `working`, at

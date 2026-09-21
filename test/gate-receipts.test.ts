@@ -23,14 +23,15 @@ function harness(head = "sha-aaaaaaaaaaaa") {
   const created = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-1", summary: "s", issueType: "Bug", branch: "fix/K-1" });
   store.updateRun(created.id, { phase: "running", step: "work", worktreePath: worktree });
   const run = store.getRun(created.id)!;
+  let dirty: string | null = null;
   const deps = {
     store,
     config: { repoName: "demo" },
-    git: { headSha: async () => head },
+    git: { headSha: async () => head, dirtyStat: async () => dirty },
     log: () => {},
     now: () => now,
   } as unknown as Deps;
-  return { deps, store, run: run as Run, worktree, setNow: (n: number) => { now = n; } };
+  return { deps, store, run: run as Run, worktree, setNow: (n: number) => { now = n; }, setDirty: (s: string | null) => { dirty = s; } };
 }
 
 const receipt = (over: Partial<GateReceipt> = {}): Omit<GateReceipt, "id" | "ranAt"> => ({
@@ -131,5 +132,15 @@ describe("gate receipts — what the reading step sees", () => {
 
   it("says plainly when no step has recorded one (so an empty list can't read as 'all green')", () => {
     expect(formatGateReceipts([], "sha-now")[0]).toContain("no gate receipts");
+  });
+
+  it("a gate run on a dirty tree never reads as CURRENT — HEAD has not moved, but the tree is not that commit", async () => {
+    const { deps, store, run, setDirty } = harness();
+    setDirty(" M src/foo.ts");
+    const res = await runGate(deps, run, { gate: "test", step: "work", pass: 1, cmd: "node", args: ["-e", "console.log('ok')"] });
+    expect(res.receipt.head).toBe("sha-aaaaaaaaaaaa+dirty");
+    const lines = formatGateReceipts(store.gateReceiptsFor(run.id), "sha-aaaaaaaaaaaa");
+    expect(lines[0]).toContain("DIRTY");
+    expect(lines[0]).not.toMatch(/\bCURRENT\b/);
   });
 });

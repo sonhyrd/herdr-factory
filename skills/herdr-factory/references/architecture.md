@@ -216,7 +216,8 @@ verbatim argv, no shell, no timeout, output teed, exiting with the command's own
 `(run_id, gate, head)`: the commit is what makes a receipt trustworthy, so re-running a gate at the
 same commit **supersedes** its receipt instead of accumulating one, and the row count is the honest
 count of distinct (gate, SHA) pairs the run verified. `herdr-factory gates <key>` renders them
-CURRENT (head == the worktree's HEAD now) or STALE, which is what the `review` prompt is written
+CURRENT (head == the worktree's HEAD now, tree was clean), STALE, or DIRTY (`${HEAD}+dirty` when the
+worktree had uncommitted work — it can never equal HEAD), which is what the `review` prompt is written
 against.
 
 Every `step-done` then records a **`step_timing`** event — `{step, pass, wallMs, shellMs, modelMs,

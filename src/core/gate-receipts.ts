@@ -13,8 +13,9 @@
 // receipt is missing, stale (a different HEAD) or it has a concrete reason to disbelieve it.
 //
 // The SHA is what makes a receipt trustworthy, so it is part of the row's identity: the same gate
-// re-run at the same commit REPLACES its receipt instead of adding one. `gates --json` is the
-// machine-readable form; the human form marks each receipt current (`✓ HEAD`) or stale.
+// re-run at the same commit REPLACES its receipt instead of adding one. A gate run on a dirty
+// tree stores `${sha}+dirty` so it can never equal HEAD and never read as CURRENT. `gates --json`
+// is the machine-readable form; the human form marks each receipt CURRENT, STALE, or DIRTY.
 import { spawn } from "node:child_process";
 import type { Deps } from "./deps.ts";
 import type { GateReceipt, Run } from "../types.ts";
@@ -23,6 +24,8 @@ import type { GateReceipt, Run } from "../types.ts";
  *  not so much that a chatty suite turns the run DB into a log store. */
 const TAIL_LINES = 40;
 const TAIL_CHARS = 4000;
+/** Suffix stored on `head` when the worktree was dirty at gate time — never equals a real SHA. */
+const DIRTY_SUFFIX = "+dirty";
 
 export interface GateRunResult {
   receipt: GateReceipt;
@@ -51,7 +54,11 @@ export async function runGate(
 ): Promise<GateRunResult> {
   const cwd = run.worktreePath;
   if (!cwd) throw new Error(`${run.ticketKey}: run has no worktree to run a gate in`);
-  const head = (await deps.git.headSha(cwd)) ?? "";
+  const sha = (await deps.git.headSha(cwd)) ?? "";
+  const dirty = await deps.git.dirtyStat(cwd).catch(() => null);
+  // A receipt is only CURRENT when it covers exactly HEAD. Uncommitted work shares that SHA, so
+  // pin a dirty run as `${sha}+dirty` — it never equals HEAD, and `gates` marks it DIRTY.
+  const head = dirty ? `${sha}${DIRTY_SUFFIX}` : sha;
   const startedAt = Date.now();
   let captured = "";
   const keep = (chunk: string) => {
@@ -96,14 +103,19 @@ export async function runGate(
 }
 
 /** Render the receipts for a run as agent-readable lines. `head` is the worktree's current HEAD:
- *  a receipt taken at it is CURRENT (trust it); any other is stale (re-run that gate). */
+ *  a receipt taken at it on a clean tree is CURRENT (trust it); a dirty-tree receipt is DIRTY
+ *  (never trust it — the SHA didn't move but the tree did); any other is STALE (re-run that gate). */
 export function formatGateReceipts(receipts: readonly GateReceipt[], head: string | null): string[] {
   if (receipts.length === 0) return ["(no gate receipts — no step has run a verification command through `herdr-factory gate` yet)"];
   return receipts.map((r) => {
-    const current = head && r.head === head;
+    const dirty = r.head.endsWith(DIRTY_SUFFIX);
+    const sha = dirty ? r.head.slice(0, -DIRTY_SUFFIX.length) : r.head;
+    const current = Boolean(head && !dirty && sha === head);
+    const mark = current ? "CURRENT" : dirty ? "DIRTY  " : "STALE  ";
+    const shown = `${sha.slice(0, 12)}${dirty ? DIRTY_SUFFIX : ""}`;
     return (
       `${r.exitCode === 0 ? "✓ pass" : `✗ exit ${r.exitCode}`}  ${r.gate.padEnd(14)} ` +
-      `${current ? "CURRENT" : "STALE  "} ${r.head.slice(0, 12)}  ${(r.durationMs / 1000).toFixed(1)}s  ` +
+      `${mark} ${shown}  ${(r.durationMs / 1000).toFixed(1)}s  ` +
       `${r.step} pass ${r.pass}  ${r.command}`
     );
   });

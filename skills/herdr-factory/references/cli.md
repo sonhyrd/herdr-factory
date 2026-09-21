@@ -176,13 +176,13 @@ re-running a gate at the same commit **replaces** its receipt rather than accumu
 `gates <key>` is the reader:
 
 ```
-<key>: HEAD <head12> — a CURRENT receipt covers this exact tree; re-run only the STALE ones.
+<key>: HEAD <head12> — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.
   ✓ pass  test           CURRENT <head12>  91.4s  work pass 1  pnpm test
   ✗ exit 1  lint         STALE   <old12>   8.1s   work pass 1  pnpm lint
 ```
 
-**CURRENT** = the receipt's head equals the worktree's HEAD now, so it covers exactly the tree the
-reader is looking at. `--json` prints `{head, receipts}` verbatim. With no receipts it says so
+**CURRENT** = the receipt's head equals the worktree's HEAD now **and the tree was clean**, so it covers exactly the tree the
+reader is looking at. A dirty-tree run stores `${HEAD}+dirty` and shows as **DIRTY**. `--json` prints `{head, receipts}` verbatim. With no receipts it says so
 explicitly (`(no gate receipts — no step has run a verification command through \`herdr-factory
 gate\` yet)`), so an empty list can never read as "all green".
 

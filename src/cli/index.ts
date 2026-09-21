@@ -939,7 +939,7 @@ program
         console.log(JSON.stringify({ head, receipts }, null, 2));
         return;
       }
-      console.log(`${key}: HEAD ${head?.slice(0, 12) ?? "(unknown)"} — a CURRENT receipt covers this exact tree; re-run only the STALE ones.`);
+      console.log(`${key}: HEAD ${head?.slice(0, 12) ?? "(unknown)"} — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.`);
       for (const line of formatGateReceipts(receipts, head)) console.log(`  ${line}`);
     } catch (e) {
       fail(e);

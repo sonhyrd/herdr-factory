@@ -1340,10 +1340,12 @@ The receipt's identity is `(run, gate, head)`. The SHA is the whole point: a rec
 exactly when it was taken at the tree the reader is looking at, so a re-run at the same commit
 SUPERSEDES its receipt instead of accumulating one, and the row count is the honest "how many
 distinct (gate, SHA) pairs did this run actually verify". `herdr-factory gates <KEY>` renders them
-marked **CURRENT** (`head === the worktree's HEAD now`) or **STALE**, and the `review` prompt is
+marked **CURRENT** (`head === the worktree's HEAD now`, and the tree was clean) or **STALE** or
+**DIRTY** (a gate run with uncommitted work stores `${HEAD}+dirty` so it can never equal HEAD — the
+tree guard does not cover the work step). The `review` prompt is
 written against that: a current passing receipt is evidence, a current *failing* receipt is a bounce
 (the earlier step left a broken gate), and a gate is re-run only when its receipt is missing, stale,
-or the reviewer has a concrete suspicion about that specific check.
+dirty, or the reviewer has a concrete suspicion about that specific check.
 
 The same rows give `step-done` a **timing export**. At each `step-done` the engine records a
 `step_timing` event — `{step, pass, wallMs, shellMs, modelMs, gates}` — where wall is the pass's

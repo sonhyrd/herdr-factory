@@ -131,9 +131,9 @@ command, the worktree HEAD it ran at, exit code, duration and a short output tai
 
 The receipt's identity is `(run, gate name, HEAD)`, so re-running a gate at the same commit replaces
 its receipt rather than adding one. A later step lists them with `@@GATE_RECEIPTS_CMD@@`, which
-marks each one **CURRENT** (taken at the branch's present HEAD, so it covers exactly the tree that
-step is looking at) or **STALE**, and its prompt tells it to re-run a gate only when the receipt is
-missing, stale, or it has a concrete suspicion about that specific check. Before this, every step
+marks each one **CURRENT** (taken at the branch's present HEAD on a clean tree, so it covers exactly the tree that
+step is looking at), **STALE**, or **DIRTY** (uncommitted work at that SHA), and its prompt tells it to re-run a gate only when the receipt is
+missing, stale, dirty, or it has a concrete suspicion about that specific check. Before this, every step
 re-derived the same fact by paying for it again: one observed run spent 12 minutes re-running spec,
 unit and typecheck suites that had already passed on an unchanged SHA.
 
