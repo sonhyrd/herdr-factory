@@ -756,7 +756,7 @@ CREATE UNIQUE INDEX idx_run_steps ON run_steps(run_id, step);   -- pass still ne
 
 CREATE TABLE gate_receipts(              -- one verification command, pinned to the commit it ran at (v39)
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id INTEGER NOT NULL REFERENCES runs(id),
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   step TEXT NOT NULL, pass INTEGER NOT NULL DEFAULT 1,   -- ATTRIBUTION only (see the UNIQUE below):
                                          -- which step/pass paid for it — what gateShellMs sums for
                                          -- the step_timing export.

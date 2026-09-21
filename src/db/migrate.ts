@@ -885,11 +885,12 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
     // makes a receipt trustworthy: two steps running the same gate at the same commit are the SAME
     // fact, and the second write supersedes the first rather than accumulating duplicates. `step` +
     // `pass` are recorded (they attribute the shell time the step-done timing export reads), not
-    // part of the identity.
+    // part of the identity. ON DELETE CASCADE is rollback safety: pre-PR purge code does not
+    // delete from gate_receipts, and PRAGMA foreign_keys = ON would otherwise fail the run delete.
     sql: `
       CREATE TABLE gate_receipts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id INTEGER NOT NULL REFERENCES runs(id),
+        run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
         step TEXT NOT NULL,
         pass INTEGER NOT NULL DEFAULT 1,
         gate TEXT NOT NULL,

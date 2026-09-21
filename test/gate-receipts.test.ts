@@ -18,7 +18,8 @@ import type { GateReceipt, Run } from "../src/types.ts";
 
 function harness(head = "sha-aaaaaaaaaaaa") {
   let now = 1000;
-  const store = new Store(openDb(":memory:"), () => now);
+  const db = openDb(":memory:");
+  const store = new Store(db, () => now);
   const worktree = mkdtempSync(join(tmpdir(), "hf-gate-"));
   const created = store.createRun({ repo: "demo", workSource: "jira", belt: "ship", ticketKey: "K-1", summary: "s", issueType: "Bug", branch: "fix/K-1" });
   store.updateRun(created.id, { phase: "running", step: "work", worktreePath: worktree });
@@ -31,7 +32,7 @@ function harness(head = "sha-aaaaaaaaaaaa") {
     log: () => {},
     now: () => now,
   } as unknown as Deps;
-  return { deps, store, run: run as Run, worktree, setNow: (n: number) => { now = n; }, setDirty: (s: string | null) => { dirty = s; } };
+  return { deps, store, db, run: run as Run, worktree, setNow: (n: number) => { now = n; }, setDirty: (s: string | null) => { dirty = s; } };
 }
 
 const receipt = (over: Partial<GateReceipt> = {}): Omit<GateReceipt, "id" | "ranAt"> => ({
@@ -77,6 +78,14 @@ describe("gate receipts — storage", () => {
     expect(store.gateShellMs(run.id, "work", 1)).toBe(35_000);
     expect(store.gateShellMs(run.id, "review", 1)).toBe(90_000);
     expect(store.gateShellMs(run.id, "work", 9)).toBe(0);
+  });
+
+  it("ON DELETE CASCADE lets a run with receipts be deleted without an explicit child delete", () => {
+    const { store, db, run } = harness();
+    store.recordGateReceipt(receipt({ runId: run.id }));
+    expect(store.gateReceiptsFor(run.id)).toHaveLength(1);
+    expect(() => db.prepare("DELETE FROM runs WHERE id = ?").run(run.id)).not.toThrow();
+    expect(store.gateReceiptsFor(run.id)).toHaveLength(0);
   });
 });
 
