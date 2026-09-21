@@ -7,6 +7,7 @@ import { TokenBucket } from "../src/clients/http.ts";
 import { githubCallCounts } from "../src/clients/github-budget.ts";
 import { isSourceRateLimited, type SourceRateLimitedError } from "../src/core/rate-limit-gate.ts";
 import { isGithubIssuesItem, StaleItemError } from "../src/types.ts";
+import { GithubIssuesClient, resolveGithubApiBase } from "../src/clients/github-issues.ts";
 
 let fake: FakeGithub | undefined;
 const tmps: string[] = [];
@@ -582,5 +583,34 @@ describe("GithubIssuesSource — kind: pull_requests", () => {
     fake.repoLabels.delete("herdr");
     await expect(src.health()).rejects.toThrow("pull requests you want worked");
     expect((await src.workDoc()).kind).toContain("pull request");
+  });
+});
+
+describe("GithubIssuesClient — GITHUB_API_URL seam", () => {
+  it("defaults to api.github.com, trims a trailing slash, and allows a loopback fake", () => {
+    expect(resolveGithubApiBase(undefined)).toBe("https://api.github.com");
+    expect(resolveGithubApiBase("   ")).toBe("https://api.github.com");
+    expect(resolveGithubApiBase("https://ghe.example.com/api/v3/")).toBe("https://ghe.example.com/api/v3");
+    expect(resolveGithubApiBase("http://127.0.0.1:8123")).toBe("http://127.0.0.1:8123"); // the e2e fake
+  });
+
+  it("refuses a non-URL and a non-loopback plaintext base — the token is sent to it", () => {
+    expect(() => resolveGithubApiBase("ghe.example.com")).toThrow(/not a URL/);
+    expect(() => resolveGithubApiBase("http://ghe.example.com/api/v3")).toThrow(/must be https/);
+  });
+
+  it("every call goes to the configured base, not api.github.com", async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL) => {
+      seen.push(String(url));
+      return { ok: true, status: 200, text: async () => JSON.stringify({ has_issues: true }), headers: new Headers() } as Response;
+    }) as typeof fetch;
+    try {
+      await new GithubIssuesClient("acme/tracker", "tok", undefined, { read: [new TokenBucket(100, 100)], mutation: [new TokenBucket(100, 100)] }, () => {}, "http://127.0.0.1:9/api/v3").getRepo();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(seen).toEqual(["http://127.0.0.1:9/api/v3/repos/acme/tracker"]);
   });
 });

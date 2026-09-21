@@ -97,7 +97,10 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
         `work source "${ctx.sourceName}": no GitHub repo to poll — set github_issues.repo (owner/name), or repo.github / a git origin so the default resolves`,
       );
     }
-    const client = new GithubIssuesClient(repo, ctx.env.GITHUB_TOKEN, undefined, undefined, ctx.log);
+    // GITHUB_API_URL (per-repo env, optional) redirects every REST call: GitHub Enterprise Server,
+    // and the seam the e2e harness points at its own fake. Validated in the client — an unusable
+    // value throws HERE, at startup, not at the first poll.
+    const client = new GithubIssuesClient(repo, ctx.env.GITHUB_TOKEN, undefined, undefined, ctx.log, ctx.env.GITHUB_API_URL);
     return new GithubIssuesSource({ ...ctx.cfg, repo }, client, ctx.ghRepo || repo, ctx.log);
   },
   secrets: [
@@ -107,6 +110,12 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
       masked: true,
       placeholder: "(optional — defaults to `gh auth token`)",
       hint: "optional PAT with issues:write on the polled repo; when unset, the gh CLI's login is used",
+    },
+    {
+      envKey: "GITHUB_API_URL",
+      required: false,
+      placeholder: "(optional — default https://api.github.com)",
+      hint: "optional API base for GitHub Enterprise Server, e.g. https://ghe.example.com/api/v3; https only (loopback may be http)",
     },
   ],
   tui: {

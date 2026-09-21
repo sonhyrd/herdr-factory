@@ -1,6 +1,6 @@
 // A tiny canned-response HTTP server for the source backends the engine reaches over `fetch`
-// (jira / sentry — both take a configurable `base_url`, which is what makes them stubbable at all;
-// `github_issues` hardcodes api.github.com and needs an engine seam before it can be covered).
+// (jira / sentry / github_issues — each has a base the config can move: a `base_url` for the first
+// two, `GITHUB_API_URL` in the repo env for the third, which is what makes them stubbable at all).
 //
 // It is deliberately dumb: a route table of matchers, a request LOG, and per-route failure injection.
 // Scenarios assert on the log as much as on the responses — "no request was made at all" is the whole

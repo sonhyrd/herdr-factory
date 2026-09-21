@@ -4,7 +4,7 @@
 //
 // WHY this can exist at all: the jira source takes a configurable `base_url` (jira.base_url →
 // JiraApiTokenAuth's base), so pointing it at 127.0.0.1 needs no seam in the engine. (github_issues
-// hardcodes api.github.com and is out of reach until it grows one.)
+// needed one — it grew `GITHUB_API_URL`; see ./github-fake.ts.)
 //
 // WHY it holds state instead of canned answers (HttpStub's job): the source-parity scenarios assert
 // the LIFECYCLE, not the payloads — that a claim really moved the ticket out of the pickup query

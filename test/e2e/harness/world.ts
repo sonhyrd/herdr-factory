@@ -583,7 +583,10 @@ export class World {
     );
 
     if (this.spec.env) {
-      const body = Object.entries(this.spec.env)
+      // Evaluated HERE, not at spec time: writeConfig runs after `beforeStart`, so a fake backend's
+      // port is already bound by the time a function form is called (same rule as `config`).
+      const env = typeof this.spec.env === "function" ? this.spec.env(this.paths) : this.spec.env;
+      const body = Object.entries(env)
         .map(([k, v]) => `${k}=${v}`)
         .join("\n");
       const p = join(this.paths.repoConfigDir, "env");

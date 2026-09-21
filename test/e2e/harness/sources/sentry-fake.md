@@ -6,8 +6,8 @@ drive the engine's **own** `SentryClient` + `SentrySource` (`src/clients/sentry.
 
 There is no client override in the engine and none is needed: the sentry source takes a configurable
 `base_url`, so `sentry: { base_url: fake.url }` swaps the entire backend. (Same seam as jira;
-`github_issues` hardcodes api.github.com and `local_markdown` has no backend at all — which is why
-source parity is provable for two of the four sources today.)
+`github_issues` needed one and now has `GITHUB_API_URL` — see ./github-fake.md — and
+`local_markdown` has no backend at all.)
 
 ```ts
 import { SentryFake } from "../harness/sources/sentry-fake.ts";

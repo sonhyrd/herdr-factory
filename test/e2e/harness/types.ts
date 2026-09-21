@@ -109,8 +109,10 @@ export interface ScenarioSpec {
   configFiles?: Record<string, string>;
   /** Extra files written into the target checkout (committed before the first tick). */
   repoFiles?: Record<string, string>;
-  /** `<configDir>/repos/<name>/env` contents (chmod 600). */
-  env?: Record<string, string>;
+  /** `<configDir>/repos/<name>/env` contents (chmod 600). A FUNCTION is evaluated after
+   *  `beforeStart`, the same as `config` — which is how a value only known once a fake backend has
+   *  bound a port (`GITHUB_API_URL: gh.url`) gets into the env file. */
+  env?: Record<string, string> | ((p: WorldPaths) => Record<string, string>);
   agent?: AgentScript;
   /** Extra environment for every process the world starts — the factory, herdr, and (because panes
    *  inherit the herdr server's env) the agents. E.g. `HF_AGENT_STARTUP_MS: "0"` for an agent that
