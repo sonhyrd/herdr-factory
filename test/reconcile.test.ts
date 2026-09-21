@@ -318,7 +318,6 @@ function build(opts: { multi?: boolean } = {}) {
     originUrl: async () => "git@github.com:o/n.git",
     headSha: async () => state.headSha,
     dirtyStat: async () => state.dirtyStat,
-    diffStat: async (_cwd, range) => `stat for ${range}`,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {
@@ -4176,30 +4175,26 @@ describe("tree guard — a step that never commits is pinned to the HEAD it was 
     expect(String(ro!.facts.treeRefusedWhy)).toContain("uncommitted changes");
   });
 
-  it("refuses step-done when HEAD MOVED under the step after its baseline froze", async () => {
+  // A COMMIT from a read-only step is the `read_only` WATCH's business, not this guard's: it parks
+  // `read_only_violation` and is deliberately rescued by the step's own step-done (RWR-18204 — a
+  // completed verdict is never thrown away over misbehaviour on the way to it). Refusing here too
+  // would WEDGE that run: an agent cannot un-commit, so no action of its own could ever clear the
+  // refusal. Pinned because the obvious reading of "dirty or HEAD moved" breaks the rescue — the
+  // e2e `read-only-violation` scenario caught exactly that.
+  it("does NOT refuse a step-done for a HEAD that moved — that park belongs to the read_only watch, which the step-done rescues", async () => {
     const { deps, store, state, worktree, shipBelt } = build();
     readOnlyReview(shipBelt);
     const run = seed(store, worktree, "K-TG2", "running", "review");
     store.upsertRunStep(run.id, "fix", { done: true });
     store.upsertWatchState(run.id, "review", "read_only", { sig: "sha-baseline", basedAt: 1000 }); // frozen: this agent has taken over
-    state.headSha = "sha-moved";
+    state.headSha = "sha-moved"; // the gate committed
     const res = await applySignal(deps, "step-done", { key: "K-TG2", step: "review" });
-    expect(res.ok).toBe(false);
-    expect(res.message).toContain("HEAD moved");
-    expect(res.message).toContain("stat for sha-baseline..sha-moved");
-    expect(store.getRun(run.id)!.step).toBe("review");
-  });
-
-  it("does NOT refuse for the prior step's trailing commit (an unfrozen baseline still absorbs)", async () => {
-    const { deps, store, state, worktree, shipBelt } = build();
-    readOnlyReview(shipBelt);
-    const run = seed(store, worktree, "K-TG3", "running", "review");
-    store.upsertRunStep(run.id, "fix", { done: true });
-    store.upsertWatchState(run.id, "review", "read_only", { sig: "sha-baseline", basedAt: null }); // never seen working yet
-    state.headSha = "sha-trailing";
-    const res = await applySignal(deps, "step-done", { key: "K-TG3", step: "review" });
     expect(res.ok).toBe(true);
-    expect(store.getRun(run.id)!.step).toBe("pr");
+    expect(store.getRunStep(run.id, "review")!.done).toBe(true); // the verdict is recorded, not thrown away
+    expect(store.timeline("demo", "K-TG2").some((e) => e.type === "step_done_refused")).toBe(false);
+    // What DOES happen is the watch's own pre-advance park, whose terminal-signal rescue then
+    // advances the run on a later pass (its contract, pinned by the read-only-violation e2e).
+    expect(store.getRun(run.id)!.attentionReasonCode ?? null).toBe("read_only_violation");
   });
 
   it("never applies to a step that DOES commit — a dirty tree is that step's job", async () => {

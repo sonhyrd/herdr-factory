@@ -171,10 +171,11 @@ Use these words precisely; the config and the CLI both key off them.
   a parked or waiting run), counts toward `max_bounces`, and is the supported way to say "not like
   that" to a live run instead of typing into a pane the belt has moved past. A problem outside this
   ticket's scope is a new ticket, not a rework.
-- **the tree guard** — a step that never commits (`evidence`, `review`, a `read_only` custom step) is
-  pinned to the HEAD it was spawned on: its `step-done` is refused (with the diff stat) on a dirty
-  tree or a moved HEAD, and it is never started on a dirty tree (the run parks as `dirty_tree`).
-  Every handoff note opens with the `sha:` it covers.
+- **the tree guard** — a step that never commits (`evidence`, `review`, a `read_only` custom step)
+  must find the worktree clean: its `step-done` is refused (with the diff stat) while the tree is
+  dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from
+  such a step is the separate `read_only` watch (`read_only_violation`, auto-rescued). Every handoff
+  note opens with the `sha:` it covers.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it
   back with fresh clocks.
 - **ask-human** — an agent asking a question through the work source; the run waits, frees its slot, and

@@ -1276,11 +1276,11 @@ and the evidence step filmed a tree that was about to change.
   belt is over (`reviewing`/teardown): there is no step to rewind, only a PR. Unlike the agent
   signals it enqueues **no durable intent** — a person retries; an agent that has already stopped
   cannot.
-- **The tree guard** (`core/tree-guard.ts`) pins every step whose resolved `StepConfig.readOnly` is
-  true to the HEAD it was spawned on (`step_spawned.detail.head`). `checkStepTree` refuses on a
-  dirty worktree (`git status --porcelain`, so untracked files count) or on a HEAD that moved after
-  the step's `read_only` baseline **froze**, and carries the diff stat. It is applied at the two
-  seams where a read-only verdict is about to be trusted: `applySignal`'s `step-done` (refused —
+- **The tree guard** (`core/tree-guard.ts`) holds every step whose resolved `StepConfig.readOnly` is
+  true to the tree it was handed. Each step is pinned to the HEAD it was spawned on
+  (`step_spawned.detail.head`), and `checkStepTree` refuses on a DIRTY worktree (`git status
+  --porcelain`, so untracked files count), carrying the diff stat. It is applied at the two seams
+  where a read-only verdict is about to be trusted: `applySignal`'s `step-done` (refused —
   `ok:false`, so the CLI exits non-zero and the *agent* reads why; a `step_done_refused` event is
   recorded) and `parkIfTreeDirty` before every dispatch of such a step — the forward advance (before
   any of the next step's entry bookkeeping, so the park leaves the run on the completed step and the
@@ -1289,9 +1289,15 @@ and the evidence step filmed a tree that was about to change.
   should be committed or dropped). The refusal is stamped into the `read_only` watch row's `meta`,
   so `runObligations`/`explain` can tell an operator why a step will not finish; the row's
   `rebaseOn: ["entry", "resume"]` re-base clears it.
-  The HEAD-moved half reuses the `read_only` watch's tracks-until-working baseline rather than a
-  second pin, so the previous step's trailing handoff commits are absorbed exactly as they are by
-  the watch (RWR-18204) — an unfrozen baseline never refuses.
+
+  **It says nothing about HEAD, deliberately.** A commit by (or under) a read-only step is the
+  `read_only` WATCH's park, and that park is auto-rescued by the step's own `step-done` — the engine
+  never throws away a completed verdict over misbehaviour on the way to it (RWR-18204). Refusing
+  that step-done here as well WEDGES the run: an agent cannot un-commit, so no action of its own
+  could clear the refusal. (Issue #66's text reads "dirty or HEAD moved"; the literal reading breaks
+  the rescue, which the `read-only-violation` e2e scenario catches. Its own "Done when" is the
+  uncommitted-edit case, which this covers.) An uncommitted edit is the opposite: invisible to HEAD,
+  and trivially actionable.
   Every step prompt's finish protocol now requires the handoff note to open with `sha: <commit>`.
 
 ### Handoff between steps

@@ -436,7 +436,7 @@ function scaffold(
       ? `\n## This is a read-only step (no commits)\n` +
         `This step is a **gate/check, not a workstation**: do NOT edit files or create commits. ` +
         `The engine enforces this — if the branch HEAD moves while you run, the run is parked for a human as a read-only violation, ` +
-        `and your step-done is REFUSED (with the diff stat) while the worktree is dirty or HEAD has moved under you. ` +
+        `and your step-done is REFUSED (with the diff stat) while the worktree is dirty — this step must leave the tree exactly as it found it. ` +
         `If the work needs changes, ${bounceCmd && bounceTarget ? "send it back for rework (see below)" : "record what's wrong in your handoff note and finish"} — do not fix it here.\n`
       : "";
   return (

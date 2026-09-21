@@ -168,20 +168,22 @@ completed-but-violating step still parks, and a working agent that commits parks
 `step-done` un-parks and advances. If the HEAD read fails at spawn there is no baseline row and the guard
 is inert for that pass.
 
-**The tree guard rides the same pin** (`core/tree-guard.ts`), and covers the case HEAD movement cannot
-see — an edit nobody committed. For every step whose resolved posture is `read_only` (so `evidence` and
-a `custom` `read_only: true` step too):
+**The tree guard** (`core/tree-guard.ts`) covers the case HEAD movement cannot see — an edit nobody
+committed. For every step whose resolved posture is `read_only` (so `evidence` and a `custom`
+`read_only: true` step too):
 
-- its **`step-done` is refused** — `ok:false`, exit 1, with the diff stat — when the worktree is dirty
-  (`git status --porcelain`, so untracked files count) or when HEAD has moved past a **frozen** pin. A
-  `step_done_refused` event is recorded and the reason is stamped where `explain` reads it;
+- its **`step-done` is refused** — `ok:false`, exit 1, with the diff stat — while the worktree is
+  dirty (`git status --porcelain`, so untracked files count). A `step_done_refused` event is
+  recorded and the reason is stamped where `explain` reads it;
 - it is **never dispatched onto a dirty tree**: the forward advance into it, its spawn, and a `rework`
   re-dispatch all park the run as `dirty_tree` (human-only rescue) rather than filming or reviewing a
   tree that is about to change. A park on the advance leaves the run on the step that just finished, so
   `resume` re-runs the advance once the tree is clean.
 
-The absorption rule is the same as the watch's: an *unfrozen* pin never refuses on HEAD movement, so a
-prior step's trailing handoff commit is not this step's violation. A dirty tree is refused either way.
+The two are deliberately split at the commit: a *commit* is the watch's park, which the step's own
+`step-done` RESCUES (a completed verdict is never thrown away over misbehaviour on the way to it), and
+refusing that step-done as well would wedge the run — an agent cannot un-commit. An *uncommitted* edit
+is invisible to HEAD and trivially actionable, so it is refused instead.
 
 ### pr
 

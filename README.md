@@ -470,21 +470,26 @@ backstop for when someone uses the other one.
 
 ### The tree guard
 
-Steps that never commit — `evidence`, `review`, and any `custom` step with `read_only: true` — are
-**pinned to the HEAD they were spawned on** (recorded on the `step_spawned` event). The engine then
-refuses to trust their verdict about a tree that has changed underneath them:
+Steps that never commit — `evidence`, `review`, and any `custom` step with `read_only: true` — must
+find the worktree exactly as it was handed to them. Each step is pinned to the HEAD it was spawned
+on (recorded on the `step_spawned` event), and the engine refuses to trust a verdict about code that
+is not committed anywhere:
 
-- their **`step-done` is refused** — with the diff stat, on stderr, non-zero — when the worktree is
-  dirty or HEAD moved after the step's own agent took over;
+- their **`step-done` is refused** — with the diff stat, on stderr, non-zero — while the worktree is
+  dirty (untracked files count: `git status --porcelain` is the test);
 - they are **never spawned onto a dirty tree**: the run parks for attention (`dirty_tree`) with the
   diff stat instead of filming or reviewing a change that is about to move;
 - every handoff note names the commit it covers (`sha: <commit>` on its first line).
 
-The HEAD-moved half deliberately absorbs the *previous* step's trailing commits: the pin tracks
-live HEAD until this step's agent is first observed working, so a lint fix the work agent pushes
-100 seconds after handoff is not this step's violation. A dirty tree is refused either way — an
-uncommitted edit belongs to whoever made it, and the step that owns it should commit or revert it.
-Clear the tree in the worktree, then `resume` (for a park) or let the agent re-run its `step-done`.
+An uncommitted edit belongs to whoever made it, and the step that owns it should commit or revert
+it: clear the tree in the worktree, then `resume` (for a park) or let the agent re-run its
+`step-done`.
+
+A **commit** from such a step is the separate, older read-only watch — it parks
+`read_only_violation`, absorbing the previous step's trailing handoff commits, and a genuine
+`step-done` un-parks and advances. That rescue is deliberate (a completed verdict is never thrown
+away over misbehaviour on the way to it), so the tree guard stays out of it: refusing a step-done
+for a commit would wedge the run, because an agent cannot un-commit.
 
 ### `custom` steps — your own stations
 
@@ -564,12 +569,13 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   `rework <KEY> <step> --note "…"` stops whatever step is running and starts a new pass of that
   step with your note at the top of its prompt — the supported way to say "not like that" to a
   *live* run, instead of typing into a pane the belt has already moved past.
-- **A step that never commits is pinned to its tree.** Evidence and review are read-only, so the
-  engine holds them to it: their `step-done` is refused — with the diff stat — when the worktree
-  is dirty or HEAD moved under them, and they are never *started* on a dirty tree (the run parks
-  instead). An uncommitted edit left behind by an earlier agent used to sail through as filmed,
-  reviewed, approved work; now it stops the belt where it happened. Every handoff note names the
-  `sha:` it covers.
+- **A step that never commits must leave the tree clean.** Evidence and review are read-only, so
+  the engine holds them to it: their `step-done` is refused — with the diff stat — while the
+  worktree is dirty, and they are never *started* on a dirty tree (the run parks instead). An
+  uncommitted edit left behind by an earlier agent used to sail through as filmed, reviewed,
+  approved work; now it stops the belt where it happened. (A *commit* from a read-only step is the
+  older read-only watch's job, and it stays that way.) Every handoff note names the `sha:` it
+  covers.
 - **Attention is a workflow, not a dead end.** When something needs a person — budget exceeded,
   stalled commits, a closed PR, a pane that never appeared — the run parks: desktop notification,
   the pane relabelled `⚠ ATTENTION`, the reason (with ready-made resume + triage commands) reported

@@ -112,13 +112,6 @@ export class GitClient {
     return [diff.stdout.trim(), st.stdout.trim()].filter(Boolean).join("\n");
   }
 
-  /** `git diff --stat <range>` (e.g. `a..b`) — what moved between two commits. Empty when git
-   *  can't resolve the range, which the caller renders as "no stat available". */
-  async diffStat(repoCwd: string, range: string): Promise<string> {
-    const r = await run("git", ["-C", repoCwd, "diff", "--stat", range], { allowFail: true });
-    return r.code === 0 ? r.stdout.trim() : "";
-  }
-
   /** Current HEAD commit of a worktree, or null if git can't resolve it. Used as the
    *  worker's progress heartbeat — a moving HEAD means real work happened. */
   async headSha(repoCwd: string): Promise<string | null> {

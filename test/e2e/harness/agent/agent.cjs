@@ -283,7 +283,11 @@ function handle(text) {
     if (outRel) {
       const p = path.join(cwd, outRel);
       fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, `# handoff from ${step} (pass ${pass})\n\nDid: scripted work.\nVerify next: nothing.\n`);
+      // Every handoff opens with the commit it covers, exactly as the shipped finish protocol now
+      // tells an agent to (`sha: <commit>`) — so a scenario can grep the trail the way issue #66's
+      // "Done when" does, instead of only asserting that the prompt asked for it.
+      const sha = git(["rev-parse", "HEAD"], cwd);
+      fs.writeFileSync(p, `sha: ${sha}\n\n# handoff from ${step} (pass ${pass})\n\nDid: scripted work.\nVerify next: nothing.\n`);
       log(`  wrote ${outRel}`);
     }
   }
