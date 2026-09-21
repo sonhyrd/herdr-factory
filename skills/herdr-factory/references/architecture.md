@@ -228,7 +228,7 @@ deletes them alongside `run_steps`/`guard_counters`); the events survive on the 
 
 ### Why a "finished" step can look stuck
 
-`step-done` is rejected when: the step isn't in the belt; the step isn't `run.step` (`"X" is not the run's active step ("Y") — signal ignored`, unless it is already done, which is a friendly noop); or the `--pass` doesn't match (`stale step-done for pass N — the <step> step is on pass M; finish the current pass and run its own step-done command`). One exception: the belt's **PR-opening step** is accepted while the run is in `reviewing`, because the hand-off to the PR watch clears `run.step` before that agent signals — and the ready-to-merge watch waits on that signal (#78). Bounce intents are re-validated against the issuing step *and* its pass at consume time.
+`step-done` is rejected when: the step isn't in the belt; the step isn't `run.step` (`"X" is not the run's active step ("Y") — signal ignored`, unless it is already done, which is a friendly noop); or the `--pass` doesn't match (`stale step-done for pass N — the <step> step is on pass M; finish the current pass and run its own step-done command`). One exception: the belt's **PR-opening step** is accepted while the run is in `reviewing`, because the hand-off to the PR watch clears `run.step` before that agent signals — and the ready-to-merge watch waits on that signal (#78). It records the flag and returns without the usual inline reconcile (nothing left to advance, and an out-of-tick reconcile would cost a per-run PR poll instead of the tick's batched snapshot), so the gate lifts on the next pass. Bounce intents are re-validated against the issuing step *and* its pass at consume time.
 
 ---
 

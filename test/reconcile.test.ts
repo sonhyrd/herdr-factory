@@ -2597,7 +2597,9 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     const res = await applySignal(deps, "step-done", { key: "K-BUSY", step: "pr", source: "jira" });
     expect(res.ok).toBe(true);
     expect(store.getRunStep(run.id, "pr")?.done).toBe(true);
-    // ...and the same green head is news now (step-done reconciles once; further ticks stay quiet).
+    expect(calls.notify, "the signal itself does no unbatched GitHub work — the next pass does").toBe(0);
+    // ...and on the next pass the same green head is news, once.
+    await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(1);
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(calls.notify).toBe(1);

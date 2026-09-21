@@ -150,6 +150,15 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done", detail: { step, pass: rs?.pass } });
       recordStepTiming(deps, run, step, rs);
       deps.log("info", `${body.key}: step-done ${step} recorded`);
+      // The PR-watch case has NOTHING to advance — the belt already moved when the PR was adopted —
+      // and an inline reconcile here is unbatched (no tick ctx), so it costs a per-run `pr view` +
+      // review-signature query that the tick's one batched snapshot would have covered for free.
+      // The next pass picks the flag up and lifts the ready-to-merge gate. (perf-call-budgets pins
+      // watching N PRs at one GitHub query per tick; a per-run call here is exactly the decay it
+      // exists to catch.)
+      if (prWatchDone) {
+        return { ok: true, advanced: false, fromStep: step, message: `${step} recorded done — the PR watch picks it up on the next pass` };
+      }
       // fire-and-forget (lockDiscipline "fire-and-forget"): the done flag is a monotonic edge, so a
       // per-run lock is enough — the nudge lands even mid-tick, and if this run is busy the next pass
       // advances it.

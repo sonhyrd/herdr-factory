@@ -1213,7 +1213,9 @@ pass — is **rejected** instead of completing (or rewinding) a pass it doesn't 
 that step is already done) rather than recorded and silently wiped by the next entry's re-base. The
 one exception is the belt's PR-opening step while the run is in `reviewing`: the hand-off to the PR
 watch clears `run.step` before that agent signals, so its `step-done` is accepted there — and it has
-to be, because the ready-to-merge watch waits on it.
+to be, because the ready-to-merge watch waits on it. That one skips the signal's usual inline
+reconcile: there is no belt move left to make, and an out-of-tick reconcile would cost a per-run PR
+poll instead of riding the tick's single batched snapshot. The next pass lifts the gate.
 When a rework pass completes, its `feedback-<step>.md` is archived as
 `feedback-<step>-addressed-pass<N>.md`, so a later pass's re-render can't resurrect
 already-addressed findings. The bounce re-dispatch goes through `spawnStep` — the single dispatch
