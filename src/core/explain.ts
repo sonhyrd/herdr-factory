@@ -85,6 +85,19 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
         ],
         next: [resumeCmd],
       };
+    case "dirty_tree":
+      return {
+        headline: `The run is parked: the ${step} step never commits, but the worktree is not clean (${reason}).`,
+        body: [
+          "A step that only films or reviews would otherwise pass judgement on code that is about to change — the uncommitted edit is usually a previous step's agent that was prompted again after its step-done.",
+          "The diff stat is in the parked event's detail (`timeline <KEY>`) and in the run's pane.",
+        ],
+        next: [
+          "In the run's worktree: commit the change on the step that owns it, or `git checkout -- .` / `git stash` to drop it.",
+          resumeCmd,
+          `${resumeCmd.replace(" resume ", " rework ")} <step> --note "…"   # if the work itself must be redone`,
+        ],
+      };
     case "capture_limit":
       return {
         headline: `The run is parked: the evidence step re-captured past the attempt cap (${reason}).`,
@@ -233,7 +246,16 @@ function phaseStory(ob: RunObligations, input: ExplainInput, resumeCmd: string):
             : "No new commits for longer than the stall window — the next tick parks it for attention (auto-rescuable).",
         );
       }
-      if (fact("read_only")) body.push("This step is read-only — enforced: a commit from it parks the run.");
+      const ro = fact("read_only");
+      if (ro) {
+        body.push("This step is read-only — enforced: a commit from it parks the run, and its step-done is refused while the tree is dirty.");
+        if (ro.treeRefusedWhy) {
+          body.push(
+            `⚠ Its step-done was REFUSED ${ro.treeRefusedAt != null ? ago(now, Number(ro.treeRefusedAt)) : "earlier"}: ${ro.treeRefusedWhy}. ` +
+              "The step cannot finish until the worktree is clean again — commit or revert the change on the step that owns it; the agent can then re-run its step-done.",
+          );
+        }
+      }
       const cap = fact("capture_cap");
       if (cap && Number(cap.attempts) > 0) body.push(`Capture attempts this pass: ${cap.attempts} of ${cap.cap}.`);
       return { headline: `The ${step} step is active.`, body, next: [] };

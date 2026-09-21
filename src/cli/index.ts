@@ -121,6 +121,13 @@ function bounceReasonText(opts: { reason?: string; reasonFile?: string }): strin
   return text.trim();
 }
 
+function reworkNoteText(opts: { note?: string; noteFile?: string }): string {
+  if (opts.note && opts.noteFile) fail("rework: pass either --note or --note-file, not both");
+  const text = opts.noteFile ? readFileSync(opts.noteFile, "utf8") : opts.note;
+  if (!text?.trim()) fail("rework: provide a non-empty --note or --note-file (what the step must do differently)");
+  return text.trim();
+}
+
 /** Send a run-scoped agent signal (step-done · ask-human · bounce · capture-attempt · set-branch): route it
  *  through the running server for a warm reconcile, with a direct in-process fallback so it still
  *  lands while the server restarts (the next tick is the backstop either way). BOTH paths run the
@@ -681,6 +688,34 @@ program
         return;
       }
       console.log(`${key}: bounced to ${toStep}${d.message ? ` — ${d.message}` : ""}`);
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("rework <key> <toStep>")
+  .description("OPERATOR: send a live run back to an earlier step for another pass, with a note")
+  .option("--source <name>", "the work source the run belongs to")
+  .option("--note <text>", "what the step must do differently (rendered into that pass's prompt)")
+  .option("--note-file <path>", "file containing the note")
+  .addHelpText(
+    "after",
+    "\nUse this when THIS ticket's work is not what you asked for: the run stops whatever step is running and\n" +
+      "starts a new pass of <toStep> with your note at the top of its prompt. It counts toward max_bounces.\n" +
+      "Do NOT use it for a problem that was already there and is outside this ticket's scope — that is a new\n" +
+      "ticket, not a rework of this run. `timeline <key>` shows the rework; `explain <key>` shows where it landed.",
+  )
+  .action(cliAction("rework", async (key: string, toStep: string, opts: { source?: string; note?: string; noteFile?: string }) => {
+    try {
+      const reason = reworkNoteText(opts);
+      const d = await dispatchSignal(requireRepo(), "rework", { key, toStep, source: opts.source, reason });
+      if (signalRejected(key, d, "rework failed")) return;
+      if (d.escalated) {
+        console.log(`${key}: ${d.message}`); // bounce cap hit → parked for attention, NOT sent back
+        return;
+      }
+      console.log(`${key}: reworked to ${toStep}${d.message ? ` — ${d.message}` : ""}`);
     } catch (e) {
       fail(e);
     }

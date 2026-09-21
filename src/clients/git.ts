@@ -102,6 +102,23 @@ export class GitClient {
     return r.code === 0;
   }
 
+  /** The worktree's uncommitted work as a diff stat, or null when the tree is CLEAN. The porcelain
+   *  listing is appended because untracked files never appear in a diff — and an untracked file the
+   *  agent forgot to `git add` is exactly the change a later step would film or review blind. */
+  async dirtyStat(repoCwd: string): Promise<string | null> {
+    const st = await run("git", ["-C", repoCwd, "status", "--porcelain"], { allowFail: true });
+    if (st.code !== 0 || !st.stdout.trim()) return null;
+    const diff = await run("git", ["-C", repoCwd, "diff", "--stat", "HEAD"], { allowFail: true });
+    return [diff.stdout.trim(), st.stdout.trim()].filter(Boolean).join("\n");
+  }
+
+  /** `git diff --stat <range>` (e.g. `a..b`) — what moved between two commits. Empty when git
+   *  can't resolve the range, which the caller renders as "no stat available". */
+  async diffStat(repoCwd: string, range: string): Promise<string> {
+    const r = await run("git", ["-C", repoCwd, "diff", "--stat", range], { allowFail: true });
+    return r.code === 0 ? r.stdout.trim() : "";
+  }
+
   /** Current HEAD commit of a worktree, or null if git can't resolve it. Used as the
    *  worker's progress heartbeat — a moving HEAD means real work happened. */
   async headSha(repoCwd: string): Promise<string | null> {

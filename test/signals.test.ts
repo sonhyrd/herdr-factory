@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SIGNAL_DESCRIPTORS, signalCommand, signalDescriptorFor } from "../src/signals/registry.ts";
-import { askHumanRoute, bounceRoute, captureAttemptRoute, setBranchRoute, stepDoneRoute } from "../src/server/schemas.ts";
+import { askHumanRoute, bounceRoute, captureAttemptRoute, reworkRoute, setBranchRoute, stepDoneRoute } from "../src/server/schemas.ts";
 
 // Registry ↔ agent-signal-surface parity. The agent→dispatcher signals are the load-bearing seam an
 // agent invokes (step-done / bounce / ask-human / capture-attempt / evidence-upload). SIGNAL_DESCRIPTORS
@@ -15,7 +15,7 @@ const REPO = "demo";
 describe("signal registry ↔ HTTP route parity", () => {
   // Every scope:'run' signal is dispatched over the server as POST /repos/{repo}/<name>; scope
   // 'product-outbox' (evidence-upload) and 'machine' (capture-lock) are deliberately CLI/in-process only.
-  const ROUTES = [stepDoneRoute, askHumanRoute, bounceRoute, captureAttemptRoute, setBranchRoute];
+  const ROUTES = [stepDoneRoute, askHumanRoute, bounceRoute, captureAttemptRoute, setBranchRoute, reworkRoute];
 
   it("every scope:'run' signal has a POST route at /repos/{repo}/<name>", () => {
     const byPath = new Map<string, (typeof ROUTES)[number]>(ROUTES.map((r) => [r.path, r]));
@@ -24,6 +24,13 @@ describe("signal registry ↔ HTTP route parity", () => {
       expect(route, `no HTTP route mounted for run-signal "${s.name}"`).toBeTruthy();
       expect(route!.method).toBe("post");
     }
+  });
+
+  it("rework is an OPERATOR signal: a run-scoped route, but no prompt token (agents use bounce)", () => {
+    const d = signalDescriptorFor("rework")!;
+    expect(d.scope).toBe("run");
+    expect(d.token).toBeUndefined();
+    expect(d.lockDiscipline).toBe("waiting"); // it stops one step and re-dispatches another
   });
 
   it("evidence-upload is a product-outbox signal (no per-run HTTP route)", () => {

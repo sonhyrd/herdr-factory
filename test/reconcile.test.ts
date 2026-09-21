@@ -50,6 +50,9 @@ interface FakeState {
   tabPane: string | null; // what tabPaneByLabel resolves for the CONFIGURED label ("agent") — null ⇒ no match
   tabPaneByName: Record<string, string>; // what tabPaneByLabel resolves for a NON-configured label (the drain-window dispatch name `${step}:${key}`)
   headSha: string;
+  /** What `git status --porcelain` + `git diff --stat` report for the run's worktree — null ⇒ the
+   *  tree is CLEAN (the tree guard's input; see core/tree-guard.ts). */
+  dirtyStat: string | null;
   /** What `git rev-parse --abbrev-ref HEAD` reports for the run's WORKTREE — the branch tracking
    *  reads it every pass. `undefined` ⇒ the worktree is on whatever the run's branch already says
    *  (no rename); a string simulates an agent renaming the branch; null ⇒ detached HEAD. */
@@ -138,7 +141,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -314,6 +317,8 @@ function build(opts: { multi?: boolean } = {}) {
     worktreePrune: async () => {},
     originUrl: async () => "git@github.com:o/n.git",
     headSha: async () => state.headSha,
+    dirtyStat: async () => state.dirtyStat,
+    diffStat: async (_cwd, range) => `stat for ${range}`,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {

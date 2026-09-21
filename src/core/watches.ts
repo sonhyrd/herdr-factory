@@ -185,7 +185,9 @@ export function registerWatchEvaluator(kind: string, evaluate: WatchEvaluator, o
 const WATCH_REBASE: Record<string, (deps: Deps, runId: number, step: string) => void> = {
   budget: (deps, runId, step) => void deps.store.upsertWatchState(runId, step, "budget", { basedAt: deps.now() }),
   heartbeat: (deps, runId, step) => void deps.store.upsertWatchState(runId, step, "heartbeat", { sig: null, basedAt: null }),
-  read_only: (deps, runId, step) => void deps.store.upsertWatchState(runId, step, "read_only", { sig: null, basedAt: null }),
+  // meta carries the tree guard's last refusal (core/tree-guard.ts) — a fresh entry into the step
+  // must not keep showing the previous pass's dirty tree in `explain`.
+  read_only: (deps, runId, step) => void deps.store.upsertWatchState(runId, step, "read_only", { sig: null, basedAt: null, meta: "" }),
 };
 
 /**
