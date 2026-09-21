@@ -195,6 +195,8 @@ herdr-factory/
                           main=upstream / stable=newest release tag); dirty-checkout guard (skip +
                           notify); records each attempt to update-status.json for doctor/TUI;
                           re-provisions Node / re-installs deps when .node-version / the lockfile change
+      checkouts.ts        per-repo MAIN-checkout sync: fetch + `merge --ff-only` when clean and on
+                          the base branch, throttled to 10min/repo; records checkout-sync.json
       provision.ts        vendored-Node download + SHA-256 verify + atomic `current` flip
     db/{index,migrate,store,tx}.ts
     clients/{exec,http,herdr,herdr-socket,jira,jira-source,local-markdown-source,
@@ -2174,8 +2176,9 @@ tokens off the factory floor.
 `eligible` lists todo items **across all sources** (each annotated with its `source`). `doctor`
 reports three groups: **managed** (node runtime ≥26 — vendored or ambient; **auto-update** — the
 channel + its target, amber when the last attempt failed / was skipped for a dirty checkout / left
-the box behind its target (from `update-status.json`); supervisor service loaded, server responding,
-DB present), **you-provide** (`git` / `herdr` /
+the box behind its target (from `update-status.json`); **main checkouts up to date** — each repo's
+`repo.path` vs its base branch from `checkout-sync.json`, amber while one is skipped or failing;
+supervisor service loaded, server responding, DB present), **you-provide** (`git` / `herdr` /
 `gh` / `claude` on PATH; `--deep` exercises herdr and `gh auth status`), and — with `--repo` —
 **per-repo** (config loads + valid, main checkout, origin resolved, per-source `health()`, the
 descriptor-declared required secrets present, a local **evidence-upload-outbox** health check
@@ -2401,6 +2404,20 @@ lock heartbeat so its locks expire.
   i.e. nothing is running `ensure-up`: `⚠ auto-update stalled — last check <age>` — so a failure is
   visible, not buried in the supervisor log. `herdr-factory fleet` marks a remote whose `/health`
   version differs from this machine's (`⚠ build differs from this machine`), as the dashboard does. A warn is not a `doctor` exit-code failure.
+- **Main checkouts are fast-forwarded too** (`watchers/checkouts.ts`, #71). The same tick, after the
+  self-update, sweeps **every loaded repo config's `repo.path`** — nothing else under `~/work`, and
+  never `~/.config/herdr-factory` (the operator rolls that out by hand with `sync.sh` + `reload`).
+  Runs never saw the drift (worktrees fork from `origin/<base>`), but everything a human opens there
+  — Orca, the console, herdr's workspace view — was tens of commits stale. Throttled to at most once
+  per **10 minutes per repo** (`CHECKOUT_SYNC_INTERVAL_MS`). It fast-forwards **only** when HEAD is
+  on the branch `base_ref` names (`origin/main` → `main`), the tree has no staged/unstaged changes
+  (untracked files are fine — a fast-forward can't discard them), and the merge is a pure
+  fast-forward (ancestry is checked first, then `merge --ff-only`). Anything else **skips** with a
+  reason logged once per state change (`on sonhyrd/1540-…, skipped` · `dirty tree, skipped` ·
+  `diverged, skipped`). It never stashes, resets, checks out or rebases, and one repo's failure
+  (unreachable remote, missing checkout) never fails the tick or stops the others. Each attempt is
+  recorded to `checkout-sync.json` next to `server.json`; `doctor`'s **`main checkouts up to date`**
+  check reads it and paints amber while any checkout is skipped or failing.
 
 ---
 

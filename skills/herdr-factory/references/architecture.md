@@ -429,9 +429,10 @@ Graceful shutdown clears the tick timers, closes the HTTP server, waits up to **
 `ensure-up` is a stateless one-shot the platform timer runs every 60 s:
 
 1. If auto-update is enabled, run the self-update first. A successful update forces a restart (this process read its own `VERSION` at start).
-2. Read `server.json`, then `/health`. **No-op only when** health is ok **and** `info.version === VERSION` **and** no repo is `tickStale` ⇒ `server healthy on :<port> (v<version>)`.
-3. Otherwise restart, with the reason chosen in this order: `server not responding — restarting` · `server v<a> != v<b> — restarting` · `tick loop stale for <repos> — restarting wedged server`.
-4. Stop = `POST /shutdown` → SIGTERM regardless → poll for exit every 200 ms up to **18 s** (deliberately outlasting the server's 15 s drain) → SIGKILL → remove `server.json`. Then spawn a detached `serve`.
+2. Sweep the configured repos' **main checkouts** (`src/watchers/checkouts.ts`, throttled to 10 min per repo): `git fetch <remote>` + `git merge --ff-only <base_ref>`, only when the checkout is on the branch `base_ref` names, has no staged/unstaged change and fast-forwards cleanly; otherwise a logged skip. Best-effort — one repo never affects another or the restart decision below.
+3. Read `server.json`, then `/health`. **No-op only when** health is ok **and** `info.version === VERSION` **and** no repo is `tickStale` ⇒ `server healthy on :<port> (v<version>)`.
+4. Otherwise restart, with the reason chosen in this order: `server not responding — restarting` · `server v<a> != v<b> — restarting` · `tick loop stale for <repos> — restarting wedged server`.
+5. Stop = `POST /shutdown` → SIGTERM regardless → poll for exit every 200 ms up to **18 s** (deliberately outlasting the server's 15 s drain) → SIGKILL → remove `server.json`. Then spawn a detached `serve`.
 
 The self-update resets the package checkout to the channel target (`main` = the tracked upstream; `stable` = the newest numeric `vX.Y.Z` tag). Guards: a **dirty checkout is never reset** — it records `dirtySkip` and notifies the operator once per 6 h. Post-steps are best-effort and recorded as warnings: re-provision Node if `.node-version` changed (download with a mandatory SHA-256 gate and an atomic symlink flip), then install dependencies if the lockfile or Node changed. The restart itself *is* the drain: the graceful-first stop sequence above.
 
