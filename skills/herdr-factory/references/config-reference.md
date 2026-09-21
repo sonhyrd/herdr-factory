@@ -195,7 +195,7 @@ write-backs are in [work-sources.md](./work-sources.md); the schema shape in one
 | block | required keys | notable defaults |
 |---|---|---|
 | `jira` | `base_url` (full URL), `project`, `board` (string or int → coerced to string) | `status.todo="To Do"`, `status.in_development="In Progress"`, **`status.review="In Review"`**, `status.done` unset; extra `status.<key>` = custom statuses |
-| `github_issues` | *(none — `github_issues: {}` is valid)* | `state_labels.in_development="herdr:in-development"`, **`state_labels.in_review="herdr:in-review"`**, `state_labels.aborted="herdr:aborted"`, `close_on.merged=true`, `close_on.done=true`, `close_on.aborted=false`, `default_type="Feature"`, `max_pages=1` (1–10), `type_labels` = `{bug:Bug, defect:Bug, chore:Chore, task:Chore, enhancement:Feature}` and **setting it replaces the whole map** |
+| `github_issues` | *(none — `github_issues: {}` is valid)* | `state_labels.in_development="herdr:in-development"`, **`state_labels.in_review="herdr:in-review"`**, `state_labels.aborted="herdr:aborted"`, `close_on.merged=true`, `close_on.done=true`, `close_on.aborted=false`, `default_type="Feature"`, `max_pages=1` (1–10), `kind="issues"` (enum `issues` \| `pull_requests` — the latter polls the repo's PRs by the trigger label and makes `close_on` inapplicable), `type_labels` = `{bug:Bug, defect:Bug, chore:Chore, task:Chore, enhancement:Feature}` and **setting it replaces the whole map** |
 | `local_markdown` | `folder` (`expandHome`d) | — (not strict: unknown keys inside are dropped) |
 | `sentry` | `organization` | `base_url="https://sentry.io"`, `projects=[]` (all), `environment=[]` (all), `query="is:unresolved"`, `stats_period="14d"`, `on_merge="comment"` |
 

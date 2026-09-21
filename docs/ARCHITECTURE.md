@@ -14,8 +14,8 @@ a schedule (a launchd job on macOS, a systemd `--user` timer on Linux) — see
 **Work sources** are the pluggable front of the engine (`work_sources`, ≥1 per repo): *where*
 work is pulled, with no pipeline attached. Four types ship today — `jira` (poll a board; status
 of record lives in Jira), `local_markdown` (a folder of `*.md` briefs; lifecycle tracked
-internally in SQLite), `github_issues` (poll a repo's open issues by trigger label; status
-of record lives on GitHub as labels + open/closed state), and `sentry` (poll a project's issues
+internally in SQLite), `github_issues` (poll a repo's open issues — or, with `kind: pull_requests`, its open pull
+requests — by trigger label; status of record lives on GitHub as labels + open/closed state), and `sentry` (poll a project's issues
 by a config query — no trigger label; lifecycle tracked internally in SQLite, and Sentry issues
 are never mutated for lifecycle). A source is just a `type` + an optional unique `name`
 (default = the type) + its backend block.
@@ -571,7 +571,7 @@ reverse-engineered during the bash prototype.
 - **`github-issues-source.ts`** (+ **`github-issues.ts`**, **`github-budget.ts`**) — the
   `github_issues` source. GitHub is the **status of record** (spec `external`; `work_items`
   never touched), projected onto the issue: eligible = open + the belt's pickup label (`belt.label`,
-  the trigger — passed into `listEligible`) + not a PR + no in-flight state label, listed
+  the trigger — passed into `listEligible`) + the configured `kind` + no in-flight state label, listed
   **oldest-first**; `in_development` swaps in its state label then **consumes the trigger label
   last** (a partial swap keeps the item filtered, never double-claimed; re-adding the trigger is the
   retry affordance); `in_review` swaps
@@ -583,6 +583,15 @@ reverse-engineered during the bash prototype.
   transition is an idempotent GET → diff → apply; a human closing the issue pre-merge is a
   cancel signal (→ `stale` — except a `completed` close seen at `in_review`, which is almost
   always `Fixes #n` auto-close racing a fast merge → `noop`; the PR watch owns that signal).
+  **`kind: pull_requests`** inverts one membership test — the issues list/GET endpoints already
+  serve both, a PR being the payload carrying a `pull_request` key — so an opted-in source claims
+  labelled PRs and skips issues, and a default source still skips every PR. Everything above holds
+  unchanged for a PR (its comments ARE issue comments, so the claim ledger and the human loop are
+  the same endpoints) with ONE asymmetry: **`close_on` never applies to a pull request**. Closing
+  or merging one is the operator's, so a terminal transition on a PR only strips state labels, and
+  `materialize` writes head/base/draft/`gh pr checkout <n>` bullets in place of the
+  `Closing reference: Fixes #n` line (which would be nonsense on the PR itself). `health` also
+  stops requiring the repo's issues tab.
   `github-issues.ts` is a raw REST client on the `http.ts` pipeline
   (deliberately NOT the gh CLI — typed statuses are load-bearing) with `redirect: "manual"`: a
   transferred issue answers **301** (which a followed redirect would silently chase into the
@@ -1780,8 +1789,9 @@ about to revert. It's driven two ways:
         `done`) **or** `local_markdown` (`folder`) **or** `github_issues` (`repo` —
         optional, default = the PR repo, throws at startup when neither resolves /
         `state_labels.{in_development,in_review,aborted}`, defaulted `herdr:*` /
-        `close_on.{merged,done,aborted}`, defaults `true`/`true`/`false` / `type_labels` map +
-        `default_type` (native GitHub issue type wins when present) / `max_pages`, default 1) **or**
+        `close_on.{merged,done,aborted}`, defaults `true`/`true`/`false`, and ignored entirely when
+        `kind: pull_requests` / `type_labels` map + `default_type` (native GitHub issue type wins
+        when present) / `max_pages`, default 1 / `kind`, `issues` (default) or `pull_requests`) **or**
         `sentry` (`organization` / `projects` slugs / `environment` / `query` — the config filter,
         there is NO trigger label / `base_url`, default `https://sentry.io` / `stats_period`, default
         `14d` / `on_merge`, default `comment`; auth is a Bearer `SENTRY_AUTH_TOKEN`, no OAuth). The
