@@ -189,7 +189,7 @@ gate\` yet)`), so an empty list can never read as "all green".
 These are the tokens `@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@` in step prompts: the `work` prompt
 runs its checks through the wrapper, the `review` prompt reads the receipts and re-runs a gate only
 when it is missing, STALE, or it has a concrete suspicion about that specific check (a CURRENT
-*failing* receipt is a bounce, not a re-run). They also feed the `step_timing` event each
+*failing* receipt is re-run once through the wrapper and bounced only if it fails again). They also feed the `step_timing` event each
 `step-done` writes to the timeline — `{step, pass, wallMs, shellMs, modelMs, gates}`, where
 `shellMs` is the sum of that (step, pass)'s receipts and everything else lands in `modelMs`.
 

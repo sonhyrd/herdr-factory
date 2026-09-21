@@ -1343,8 +1343,8 @@ distinct (gate, SHA) pairs did this run actually verify". `herdr-factory gates <
 marked **CURRENT** (`head === the worktree's HEAD now`, and the tree was clean) or **STALE** or
 **DIRTY** (a gate run with uncommitted work stores `${HEAD}+dirty` so it can never equal HEAD — the
 tree guard does not cover the work step). The `review` prompt is
-written against that: a current passing receipt is evidence, a current *failing* receipt is a bounce
-(the earlier step left a broken gate), and a gate is re-run only when its receipt is missing, stale,
+written against that: a current passing receipt is evidence, a current *failing* receipt is re-run
+once through the wrapper and bounced only if it fails again (a flake is not a bounce), and a gate is re-run only when its receipt is missing, stale,
 dirty, or the reviewer has a concrete suspicion about that specific check.
 
 The same rows give `step-done` a **timing export**. At each `step-done` the engine records a

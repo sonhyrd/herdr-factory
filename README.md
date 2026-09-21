@@ -526,7 +526,7 @@ MY-123: HEAD 4f1c9ae30b21 — a CURRENT receipt covers this exact tree; re-run t
 **CURRENT** means the receipt was taken at the branch's present HEAD **on a clean tree** — it covers exactly the tree the
 reading step is looking at. A gate run with uncommitted work stores `${HEAD}+dirty` so it never equals HEAD and `gates` marks it **DIRTY**. The review prompt treats a current passing receipt as evidence and runs a
 gate itself only when the receipt is missing, stale, dirty, or it has a concrete suspicion about that
-specific check; a *failing* current receipt is a bounce, not a re-run. `gates --json` is the
+specific check; a *failing* current receipt is re-run once through the wrapper and bounced only if it fails again. `gates --json` is the
 machine-readable form. Receipts live with the run and die with it.
 
 They also feed the **`step_timing`** event each `step-done` writes to the timeline: the pass's wall

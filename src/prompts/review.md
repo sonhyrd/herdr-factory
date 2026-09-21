@@ -53,7 +53,8 @@ findings belong in your handoff or bounce note.
    @@GATE_CMD@@
    ```
 
-   A **failing** CURRENT receipt is a bounce, not a re-run: the earlier step left a broken gate.
+   A **failing** CURRENT receipt is a flake until proven otherwise: re-run it once through the
+   wrapper. Bounce only if it fails again — the earlier step left a broken gate.
 3. **Decide ONE of:**
    - **Sound.** The change is correct@@WHEN:evidence@@ and the evidence supports it@@END@@. Write your
      handoff note (`@@HANDOFF_OUT@@`)@@WHEN:evidence@@, carrying the evidence URLs forward so a later

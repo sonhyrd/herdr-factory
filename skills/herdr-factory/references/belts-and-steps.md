@@ -176,7 +176,7 @@ and one final time after the last commit so the receipts sit at HEAD — see
 
 Read-only fresh-eyes gate; exactly one of pass-forward or bounce. Its prompt reads the **gate
 receipts** (`@@GATE_RECEIPTS_CMD@@`) before running anything itself: a CURRENT passing receipt (one
-taken at the branch's present HEAD on a clean tree) is evidence, a CURRENT *failing* one is a bounce, and a gate is
+taken at the branch's present HEAD on a clean tree) is evidence, a CURRENT *failing* one is re-run once through the wrapper and bounced only if it fails again, and a gate is
 re-run only when its receipt is missing, STALE, DIRTY, or there is a concrete suspicion about that specific
 check — and **no receipt for a check the repo requires means run it through the wrapper**. Identity
 is gate name + HEAD, not the command, so the reviewer also checks that the recorded argv covers the

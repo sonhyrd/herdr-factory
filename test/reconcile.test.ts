@@ -1057,6 +1057,8 @@ describe("gate receipts + the handoff template reach the agent (end-to-end rende
     expect(body).toContain("STALE");
     expect(body).toContain("no receipt for a check the repo requires");
     expect(body).toContain("recorded command");
+    expect(body).toContain("re-run it once through the wrapper");
+    expect(body).not.toContain("A **failing** CURRENT receipt is a bounce, not a re-run");
     expect(body).not.toMatch(/@@[A-Z_]+@@/);
   });
 
