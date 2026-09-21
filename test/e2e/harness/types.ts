@@ -52,6 +52,12 @@ export interface AgentBehaviour {
    *  its `<new-branch-name>` placeholder) — the repo-branch-convention path. Runs after the commits
    *  and before `run`, so a later push/PR uses the new name. */
   setBranch?: string;
+  /** Run these verification commands through the prompt's rendered `@@GATE_CMD@@`, leaving a gate
+   *  receipt for each: `[[gateName, command], …]`. This is what the shipped `work` prompt asks a
+   *  real agent to do with its lint/type-check/test commands. */
+  gates?: [string, string][];
+  /** Run the prompt's rendered `@@GATE_RECEIPTS_CMD@@` (what the `review` prompt reads first). */
+  readGates?: boolean;
   /** Extra shell commands run in the worktree before signalling (escape hatch). */
   run?: string[];
   /** Run the `gh pr create` the pr step's prompt asks for (default: true on a step that produces a
