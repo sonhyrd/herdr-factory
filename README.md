@@ -772,6 +772,7 @@ few settings that describe the **host's herdr** rather than any repo (`layout_ho
 # yaml-language-server: $schema=./machine.schema.json
 max_active_workspaces: 2   # worked runs across ALL repos on this host (same count as the per-repo cap)
 min_free_memory_mb: 4096   # don't claim while available memory is below this
+host_alias: contabo        # what this host calls itself in the claim ledger (instead of its hostname)
 layout_hook:
   ignore_pane_labels: [Sidebar]   # panes a herdr PLUGIN adds — not "this workspace is arranged"
 ```
@@ -780,6 +781,7 @@ layout_hook:
 | --- | ------- | ------- |
 | `max_active_workspaces` | unset (no machine cap) | ceiling on **worked** runs across every repo this host serves; parked + idle PR-watch runs hold no slot. Checked before each repo's claims under a machine-wide lock; a manual `claim` honours it too |
 | `min_free_memory_mb` | unset (no memory gate) | skip claiming while available memory is below it — Linux `MemAvailable`, macOS `vm_stat` free + inactive + speculative pages, `os.freemem()` elsewhere |
+| `host_alias` | unset (`os.hostname()`) | what this host calls itself in the [claim ledger](#several-factories-on-one-source-claim_guard) — so a public tracker shows `contabo`, not the machine's real name. Letters, digits, `.`, `_`, `-`. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its hostname **before** the alias was set are still recognised as its own, so renaming a live host never makes it fence itself |
 | `layout_hook.ignore_pane_labels` | `[Sidebar]` | pane labels the layout hook's freshness gate ignores. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) makes every brand-new workspace 2 panes, which would decline **every** layout build on that host; panes bearing these labels don't count. Matched case-insensitively. Set it to the labels your plugins use, or `[]` to ignore none. A pane the **user** opened still declines the build |
 
 Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
@@ -892,13 +894,14 @@ work_sources:
 | key | default | |
 |---|---|---|
 | `enabled` | `false` | off ⇒ no comments, no delay — single-factory behaviour |
-| `host` | the machine hostname (unsafe chars → `-`) | letters, digits, `.`, `_`, `-`; must differ per factory |
+| `host` | `machine.yml`'s `host_alias`, else the machine hostname (unsafe chars → `-`) | letters, digits, `.`, `_`, `-`; must differ per factory. Prefer `host_alias` in `machine.yml` when the config folder is shared — it is host-local, so every host reads the same `config.yml` |
 | `settle_ms` | `2000` | wait between posting a claim and re-reading the thread |
 
 The protocol, run right after the run row is inserted and before any worktree, agent, or
 status write: read the item's comments — if another factory's claim is already open, skip the item
-without posting anything; otherwise post `[herdr-factory claim id=<run> host=<host>]`, wait
-`settle_ms`, and re-read. Among claims with no matching `[herdr-factory release id=<run> host=<host>]`,
+without posting anything; otherwise post `[<brand> claim id=<run> host=<host>]` (`<brand>` is
+[`source_comments.brand`](#comment-brand--source_comments-optional), `herdr-factory` by default), wait
+`settle_ms`, and re-read. Among claims with no matching `[<brand> release id=<run> host=<host>]`,
 the **lowest comment id** wins (ids are assigned by the server, so every factory agrees). The loser
 posts its release, deletes its run row, and logs `claimed elsewhere by <host> (run <id>) — skipping`
 (a `claimed_elsewhere` event, recorded once per winner). Teardown posts the winner's release.
@@ -912,6 +915,36 @@ Costs: a claim adds ~`settle_ms` and two visible comments per item (claim + rele
 lost race. Jira has no compare-and-set, so the guard relies on comment ids being monotonic. The whole Jira
 comment thread is paged (100 per call), so an old claim comment is never missed. `local_markdown` and
 `sentry` do not accept `claim_guard`.
+
+**Rolling out a brand or a host alias across a fleet** is safe host by host. The ledger is read
+brand-agnostically — a host still on `herdr-factory` sees a flipped host's `[hf claim …]` lines and
+fences on them, and vice versa — and a host recognises its own pre-alias claims (posted under its raw
+hostname) as its own, while the release that frees one is written with the host name that claim actually
+carries, so every other host pairs the two as well. So a half-migrated fleet arbitrates on one shared
+ledger, and two hosts never both think they own an item. Writers only ever emit the configured brand.
+
+### Comment brand — `source_comments` (optional)
+
+Every comment the factory writes to a work source says `herdr-factory`. Inside a company's Jira or GitHub
+you may want another name on them:
+
+```yaml
+source_comments:
+  brand: hf     # default: herdr-factory
+```
+
+`brand` (letters, digits, `.`, `_`, `-` — it is embedded in markers and re-parsed; a short one is fine,
+the factory matches `[<brand>]`/`[<brand> ` and never a bare prefix, so `[hf-204]` in a human's reply is
+still a human's reply) drives **every** comment
+the factory authors: the [claim ledger](#several-factories-on-one-source-claim_guard) lines
+(`[hf claim id=112 host=contabo]`), the question marker (`[hf question: …]`), the prefix on notes
+(`[hf] …`) including the `⚠ hf parked this run for attention: …` note a work error posts, the
+"no answer needed" note on a moot question, and the description on state labels the `github_issues`
+source auto-creates (`managed by hf`). Unset ⇒ byte-identical strings to before. The `resume` /
+`triage` command lines inside a note keep naming the real binary — they are commands, not branding.
+
+Pair it with `machine.yml`'s [`host_alias`](#machine-limits--machineyml-host-local-optional) to keep raw
+hostnames off a public tracker too.
 
 ### `belt` (≥ 1)
 

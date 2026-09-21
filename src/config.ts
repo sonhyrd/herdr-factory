@@ -24,7 +24,7 @@ import { HEARTBEAT_GUARD, READ_ONLY_GUARD, STEP_DESCRIPTORS, stepDescriptorFor, 
 import { productCapabilityFor } from "./products/registry.ts";
 import { SOURCE_PRODUCTS, productActiveFor, validatePromptBody } from "./prompts/contract.ts";
 import { CONFIG_PACK_SUBDIR, SHIPPED_PROMPTS_DIR, resolvePromptFile } from "./prompt-packs.ts";
-import { machineJsonSchema } from "./machine.ts";
+import { machineHostAlias, machineJsonSchema } from "./machine.ts";
 import { configDir, listConfiguredRepos, repoConfigDir, serverInfoPath, stateRoot } from "./config-paths.ts";
 
 // SOURCE_PRODUCTS + the dataflow-gating helpers live in the leaf prompt-contract module (so the
@@ -737,6 +737,20 @@ export const RepoConfigSchema = z
     // surfaces as @@COMMIT_CONVENTIONS@@ in the work/pr prompts; unset ⇒ the token renders empty and
     // leaves those prompts unchanged. (v1: the config key IS the convention — no commitlint auto-detect.)
     conventions: z.object({ commits: z.string().trim().min(1).optional() }).strict().optional(),
+    // Optional: what the factory calls itself in every comment it writes to a work source — the
+    // claim/release ledger lines, the question marker, the note prefix, the moot-question note, and
+    // the auto-created state labels' description. Default `herdr-factory` ⇒ byte-identical strings
+    // to before. Readers still accept the legacy brand, so a fleet can switch host by host.
+    source_comments: z
+      .object({
+        brand: z
+          .string()
+          .trim()
+          .regex(/^[A-Za-z0-9._-]+$/, "`source_comments.brand` may only contain letters, digits, '.', '_' and '-' (it is embedded in markers and re-parsed)")
+          .default("herdr-factory"),
+      })
+      .strict()
+      .prefault({}),
     // Optional repo-wide branch-naming taxonomy (prefix map + slug caps) feeding {{semantic_work_prefix}}
     // and the slug vars. Overridable per belt (belt.branch); resolved belt over repo over the historical
     // defaults. Absent ⇒ today's fix|chore|feature naming + 20/50 caps, unchanged.
@@ -1054,10 +1068,15 @@ export const RepoConfigSchema = z
     });
   });
 
-function resolveClaimGuard(g: { enabled: boolean; host?: string; settle_ms: number } | undefined): WorkSourceConfig["claimGuard"] {
+function resolveClaimGuard(g: { enabled: boolean; host?: string; settle_ms: number } | undefined, hostAlias: string | undefined): WorkSourceConfig["claimGuard"] {
   if (!g?.enabled) return undefined;
   // A hostname can carry characters the marker can't (rare); fold them to '-'.
-  return { host: g.host ?? hostname().replace(/[^A-Za-z0-9._-]/g, "-"), settleMs: g.settle_ms };
+  const machineHost = hostname().replace(/[^A-Za-z0-9._-]/g, "-");
+  // Source override wins over machine.yml's alias, which wins over the raw hostname.
+  const host = g.host ?? hostAlias ?? machineHost;
+  // Ledger lines this host wrote BEFORE it was renamed still say the hostname — fold them onto the
+  // resolved name so the guard recognises its own old claims (INV-10; claim-guard.ts's LedgerView).
+  return { host, settleMs: g.settle_ms, hostAliases: host === machineHost ? [] : [machineHost] };
 }
 
 export type BeltType = "work_to_pull_request" | "custom";
@@ -1074,8 +1093,10 @@ export interface WorkSourceConfig {
    *  summed across every belt that pulls from it. Phase B stops claiming from the source once it hits
    *  this; the repo-wide `limits.maxActiveWorkspaces` still caps the total. Defaults to 2. */
   maxActiveWorkspaces: number;
-  /** The cross-host claim ledger (INV-10); undefined ⇒ disabled. Only jira/github_issues accept it. */
-  claimGuard?: { host: string; settleMs: number };
+  /** The cross-host claim ledger (INV-10); undefined ⇒ disabled. Only jira/github_issues accept it.
+   *  `hostAliases` are OTHER host tokens that mean this host in older ledger lines (its raw hostname,
+   *  when `host` came from an alias) — read-only folding, never written. */
+  claimGuard?: { host: string; settleMs: number; hostAliases: readonly string[] };
   cfg: unknown;
 }
 
@@ -1255,6 +1276,9 @@ export interface Config {
   /** Repo-wide conventions injected into agent prompts. `commits` is free text or a file pointer
    *  (resolved at render time in step.ts); surfaced as @@COMMIT_CONVENTIONS@@. */
   conventions?: { commits?: string };
+  /** What the factory calls itself in comments it writes to a work source (claim ledger, question
+   *  marker, note prefix, label descriptions). Always set; defaults to `herdr-factory`. */
+  sourceComments: { brand: string };
   /** The repo-level agent harness (command + flags a SPAWNED pane launches), resolved repo over
    *  DEFAULT_AGENT_CONFIG. Per-belt/per-step overrides live on each StepConfig.agent; this is the
    *  fallback the PR-watch resolver uses when it can't resolve a belt's pr step (watch.ts). Always
@@ -1479,12 +1503,14 @@ export function loadConfig(repoName: string): Loaded {
   // The per-source poll interval falls back to the repo-wide limit, which itself falls back to the
   // tick interval — so an unset field everywhere keeps today's "poll every tick" behavior.
   const defaultPollInterval = parsed.limits.source_poll_interval_seconds ?? parsed.limits.tick_interval_seconds;
+  // Host-local, not repo config: the config folder is often shared by several hosts.
+  const hostAlias = machineHostAlias();
   const sources: WorkSourceConfig[] = parsed.work_sources.map((s) => ({
     name: s.name ?? s.type,
     type: s.type,
     pollIntervalSeconds: (s.poll_interval_seconds as number | undefined) ?? defaultPollInterval,
     maxActiveWorkspaces: (s.max_active_workspaces as number | undefined) ?? 2,
-    claimGuard: resolveClaimGuard((s as { claim_guard?: { enabled: boolean; host?: string; settle_ms: number } }).claim_guard),
+    claimGuard: resolveClaimGuard((s as { claim_guard?: { enabled: boolean; host?: string; settle_ms: number } }).claim_guard, hostAlias),
     cfg: descriptorFor(s.type).resolveConfig(s),
   }));
   const sourceTypeByName = new Map(sources.map((s) => [s.name, s.type]));
@@ -1696,6 +1722,7 @@ export function loadConfig(repoName: string): Loaded {
     evidence: resolveEvidence(parsed.evidence),
     guidance,
     conventions: parsed.conventions,
+    sourceComments: { brand: parsed.source_comments.brand },
     // Repo-level resolved harness (repo over the default). Per-belt/per-step overrides live on each
     // StepConfig.agent; this is the resolver's fallback (watch.ts) when no belt pr step resolves.
     agent: resolveAgent(parsed.agent, undefined, undefined),

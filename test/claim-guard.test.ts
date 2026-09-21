@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db/index.ts";
 import { Store } from "../src/db/store.ts";
 import { claimTicket } from "../src/core/reconcile.ts";
-import { arbitrateClaim, claimMarker, claimWinner, releaseClaim, releaseMarker, type LedgerComment } from "../src/core/claim-guard.ts";
+import { arbitrateClaim, claimMarker, claimWinner, openClaims, releaseClaim, releaseMarker, type LedgerComment } from "../src/core/claim-guard.ts";
 import { bearsHerdrMarker, type BeltRuntime, type Deps, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import type { Config } from "../src/config.ts";
 import { DEFAULT_AGENT_CONFIG } from "../src/types.ts";
@@ -24,7 +24,7 @@ type Tracker = ReturnType<typeof fakeTracker>;
 
 /** A minimal factory: its OWN DB, a guarded source over the shared tracker, and a claim that throws
  *  past the guard stops at a throwing herdr stub. */
-function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?: () => Promise<void> } = {}) {
+function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?: () => Promise<void>; brand?: string; hostAliases?: readonly string[] } = {}) {
   const store = new Store(openDb(":memory:"), () => 1000);
   const client: WorkSource = {
     spec: { statusOfRecord: "external", mappedStates: ["in_development"], replyChannel: "comments" },
@@ -51,12 +51,12 @@ function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?
     pollIntervalSeconds: 60,
     maxActiveWorkspaces: 9,
     lastPolledAt: new Map(), lastEligible: new Map(),
-    claimGuard: opts.guard === false ? undefined : { host, settleMs: 2000 },
+    claimGuard: opts.guard === false ? undefined : { host, settleMs: 2000, hostAliases: opts.hostAliases ?? [] },
   };
   const belt: BeltRuntime = { name: "ship", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: [], watchPr: true };
   const logs: string[] = [];
   const deps = {
-    config: { repoName: "demo", repo: { path: "/m", baseRef: "origin/main" }, limits: { maxActiveWorkspaces: 9 }, agent: DEFAULT_AGENT_CONFIG } as unknown as Config,
+    config: { repoName: "demo", repo: { path: "/m", baseRef: "origin/main" }, limits: { maxActiveWorkspaces: 9 }, agent: DEFAULT_AGENT_CONFIG, sourceComments: { brand: opts.brand ?? "herdr-factory" } } as unknown as Config,
     env: {},
     store,
     ghRepo: "o/n",
@@ -110,6 +110,114 @@ describe("claim ledger — claimWinner", () => {
   });
 });
 
+describe("claim ledger — brand + host alias (issue #70)", () => {
+  const legacy = (kind: "claim" | "release", runId: number, host: string) => `[herdr-factory ${kind} id=${runId} host=${host}]`;
+
+  it("the default brand writes byte-identical lines to the pre-brand factory", () => {
+    expect(claimMarker({ runId: 112, host: "vmi3481757" })).toBe("[herdr-factory claim id=112 host=vmi3481757]");
+    expect(releaseMarker({ runId: 112, host: "vmi3481757" })).toBe("[herdr-factory release id=112 host=vmi3481757]");
+  });
+
+  it("a configured brand + host alias writes the branded line", () => {
+    expect(claimMarker({ runId: 112, host: "contabo" }, "hf")).toBe("[hf claim id=112 host=contabo]");
+    expect(releaseMarker({ runId: 112, host: "contabo" }, "hf")).toBe("[hf release id=112 host=contabo]");
+    expect(bearsHerdrMarker("[hf] question: demo/1/2]", "hf")).toBe(true);
+    expect(bearsHerdrMarker("[herdr-factory] question: demo/1/2]", "hf")).toBe(true); // legacy still ours
+    expect(bearsHerdrMarker("[hf] question: demo/1/2]")).toBe(false); // a default-brand factory never wrote it
+  });
+
+  it("the marker match is anchored, so a SHORT brand never eats a human's own bracketed text", () => {
+    // Everything the writers emit is `[<brand>]` or `[<brand> ` — nothing else is ours.
+    expect(bearsHerdrMarker("[hf] ⚠ parked for attention", "hf")).toBe(true);
+    expect(bearsHerdrMarker("[hf question: demo/1/2]\nWork item: #7", "hf")).toBe(true);
+    expect(bearsHerdrMarker(claimMarker({ runId: 1, host: "contabo" }, "hf"), "hf")).toBe(true);
+    expect(bearsHerdrMarker("[herdr-factory] a note from a host that has not switched yet", "hf")).toBe(true);
+    // …and these are a HUMAN's words. Read as ours, the reply is dropped and the run waits forever.
+    expect(bearsHerdrMarker("Use the new flag, see [hf-204] for context.", "hf")).toBe(false);
+    expect(bearsHerdrMarker("tracked in [hfoo/bar#12]", "hf")).toBe(false);
+    expect(bearsHerdrMarker("see [herdr-factory-docs] for the rest")).toBe(false);
+  });
+
+  it("a ledger mixing legacy and branded lines resolves exactly as an all-legacy one would", () => {
+    const mixed: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 1, "mac") },
+      { id: "101", body: claimMarker({ runId: 2, host: "linux" }, "hf") },
+      { id: "102", body: claimMarker({ runId: 1, host: "mac" }, "hf") }, // mac re-claimed under the new brand
+      { id: "103", body: legacy("release", 1, "mac") }, // …and a LEGACY release frees both
+    ];
+    expect(claimWinner(mixed)).toMatchObject({ runId: 2, host: "linux", commentId: 101 });
+    const allLegacy: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 1, "mac") },
+      { id: "101", body: legacy("claim", 2, "linux") },
+      { id: "102", body: legacy("claim", 1, "mac") },
+      { id: "103", body: legacy("release", 1, "mac") },
+    ];
+    expect(claimWinner(mixed)).toMatchObject({ runId: claimWinner(allLegacy)!.runId, host: claimWinner(allLegacy)!.host });
+  });
+
+  it("a legacy claim under this host's raw hostname is folded onto its alias", () => {
+    const view = { host: "contabo", aliases: ["vmi3481757"] };
+    // Claimed under the hostname, released under the alias — one host, so nothing stays open.
+    const comments: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 5, "vmi3481757") },
+      { id: "101", body: claimMarker({ runId: 5, host: "contabo" }, "hf") },
+    ];
+    expect(openClaims(comments, view)).toHaveLength(2); // both are ours…
+    expect(openClaims(comments, view).every((c) => c.host === "contabo")).toBe(true); // …under ONE name
+    expect(claimWinner([...comments, { id: "102", body: releaseMarker({ runId: 5, host: "contabo" }, "hf") }], view)).toBeNull();
+  });
+
+  it("our own LEGACY stale claim is released after the rename — under the host token AS WRITTEN, so EVERY host sees it freed", async () => {
+    const t = fakeTracker();
+    t.post("K-1", legacy("claim", 7, "vmi3481757")); // posted before host_alias/brand were set
+    const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toBeNull();
+    expect(t.comments("K-1").map((c) => c.body)).toEqual([
+      legacy("claim", 7, "vmi3481757"),
+      // NOT `host=contabo`: alias folding is read-side only. A release spelled with the alias pairs
+      // with the claim in OUR view and in nobody else's — see the cross-host check below.
+      releaseMarker({ runId: 7, host: "vmi3481757" }, "hf"),
+      claimMarker({ runId: run.id, host: "contabo" }, "hf"),
+    ]);
+    // The assertion whose absence hid this: ANOTHER host, same brand, its own (empty) alias set.
+    const elsewhere = { host: "other-box", aliases: [] as string[] };
+    expect(openClaims(t.comments("K-1"), elsewhere).some((c) => c.runId === 7), "run 7 is freed for every host, not just the one that renamed itself").toBe(false);
+    // …and it still reads the fresh claim, so the release did not over-free.
+    expect(openClaims(t.comments("K-1"), elsewhere).map((c) => c.runId)).toEqual([run.id]);
+  });
+
+  it("another host's LEGACY claim still fences a branded factory", async () => {
+    const t = fakeTracker();
+    t.post("K-1", legacy("claim", 7, "other"));
+    const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
+    expect(await arbitrateClaim(f.deps, f.src, f.newRun("K-1"))).toMatchObject({ runId: 7, host: "other" });
+    expect(t.comments("K-1")).toHaveLength(1); // nothing posted — fence, never reap
+  });
+
+  it("…and the mirror image: a host still on the DEFAULT brand is fenced by a flipped host's claim", () => {
+    // `source_comments.brand` is per-host config, so a fleet flips one host at a time. If a reader
+    // only accepted brands it could name, the un-flipped host would be BLIND to `[hf claim …]` and
+    // both would claim the item — two worktrees, two agents, two PRs. The ledger is therefore parsed
+    // brand-agnostically; only the marker path (INV-6) is brand-limited.
+    const flipped: LedgerComment[] = [{ id: "100", body: claimMarker({ runId: 11, host: "host-a" }, "hf") }];
+    expect(claimWinner(flipped), "a default-brand host sees a flipped host's claim").toMatchObject({ runId: 11, host: "host-a" });
+    // …and the release that frees it pairs too, whichever brand wrote which.
+    expect(claimWinner([...flipped, { id: "101", body: legacy("release", 11, "host-a") }])).toBeNull();
+    expect(claimWinner([{ id: "100", body: legacy("claim", 11, "host-a") }, { id: "101", body: releaseMarker({ runId: 11, host: "host-a" }, "hf") }])).toBeNull();
+  });
+
+  it("a DEFAULT-brand factory skips an item a flipped host has claimed, posting nothing", async () => {
+    const t = fakeTracker();
+    t.post("K-1", claimMarker({ runId: 11, host: "host-a" }, "hf")); // written by a host that flipped first
+    const f = factory(t, "host-b"); // this one has not: default brand, no alias
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toMatchObject({ runId: 11, host: "host-a" });
+    expect(t.comments("K-1")).toHaveLength(1); // fenced without posting — no second claim on the item
+    expect(f.store.getRun(run.id), "…and its own pristine row is dropped").toBeUndefined();
+  });
+});
+
 describe("claim ledger — arbitrateClaim", () => {
   it("winner: posts its claim, keeps the run row", async () => {
     const t = fakeTracker();
@@ -140,7 +248,7 @@ describe("claim ledger — arbitrateClaim", () => {
     const f = factory(t, "mac");
     for (let i = 0; i < 3; i++) {
       const run = f.newRun("K-1");
-      expect(await arbitrateClaim(f.deps, f.src, run)).toEqual({ runId: 42, host: "dead-host", commentId: 100 });
+      expect(await arbitrateClaim(f.deps, f.src, run)).toEqual({ runId: 42, host: "dead-host", rawHost: "dead-host", commentId: 100 });
       expect(f.store.getRun(run.id)).toBeUndefined();
     }
     expect(t.comments("K-1")).toHaveLength(1); // no claim/release noise, and the dead claim stays open

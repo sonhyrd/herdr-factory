@@ -15,6 +15,16 @@ export const MachineConfigSchema = z
     max_active_workspaces: z.number().int().min(0).optional(),
     /** Skip Phase B claims while available memory is below this many MB. */
     min_free_memory_mb: z.number().int().min(0).optional(),
+    /** What this host calls itself in the claim ledger, instead of `os.hostname()` — so a public
+     *  tracker shows `contabo`, not the machine's real name. Host-local because it names the HOST.
+     *  Embedded in the marker comment and re-parsed ⇒ token-safe charset only. A source's
+     *  `claim_guard.host` still wins over it. Ledger lines this host wrote under its hostname BEFORE
+     *  the alias was set are still recognised as its own (claim-guard.ts's alias folding). */
+    host_alias: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9._-]+$/, "`host_alias` may only contain letters, digits, '.', '_' and '-'")
+      .optional(),
     /** Layout event hook settings. Host-local because they describe the HOST's herdr — which plugins
      *  are installed there, not what any repo wants. */
     layout_hook: z
@@ -31,6 +41,8 @@ export const MachineConfigSchema = z
 export interface MachineConfig {
   maxActiveWorkspaces?: number;
   minFreeMemoryMb?: number;
+  /** This host's ledger name (claim/release markers); absent ⇒ os.hostname(). */
+  hostAlias?: string;
   /** Absent ⇒ the layout hook's own default (see DEFAULT_IGNORED_PANE_LABELS). */
   layoutHookIgnorePaneLabels?: string[];
 }
@@ -50,8 +62,20 @@ export function loadMachineConfig(path = machineConfigPath()): MachineConfig {
   return {
     maxActiveWorkspaces: result.data.max_active_workspaces,
     minFreeMemoryMb: result.data.min_free_memory_mb,
+    hostAlias: result.data.host_alias,
     layoutHookIgnorePaneLabels: result.data.layout_hook?.ignore_pane_labels,
   };
+}
+
+/** The host alias, tolerantly: an absent OR INVALID machine.yml yields undefined rather than
+ *  throwing, because this is read from loadConfig — a broken machine.yml must keep failing in the
+ *  one place that reports it (doctor's machine check / buildDeps), not take every config load with it. */
+export function machineHostAlias(): string | undefined {
+  try {
+    return loadMachineConfig().hostAlias;
+  } catch {
+    return undefined;
+  }
 }
 
 export function machineJsonSchema(): Record<string, unknown> {

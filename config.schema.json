@@ -1229,6 +1229,18 @@
       },
       "additionalProperties": false
     },
+    "source_comments": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "brand": {
+          "default": "herdr-factory",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      },
+      "additionalProperties": false
+    },
     "branch": {
       "type": "object",
       "properties": {

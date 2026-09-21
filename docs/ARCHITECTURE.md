@@ -519,8 +519,11 @@ reverse-engineered during the bash prototype.
     `StaleItemError` when the item is gone, escalating the run instead of polling a nonexistent
     item forever)
   - `health()` (throws if misconfigured/unreachable — the `doctor` per-source check)
-  Every artifact a source writes to its reply channel carries the exported **`HERDR_MARKER`**
-  (`"[herdr-factory"`), and reply polling drops marker-bearing comments via `bearsHerdrMarker` —
+  Every artifact a source writes to its reply channel carries the exported **marker prefix**
+  (`markerPrefix(brand)` — `"[herdr-factory"` by default, `"[hf"` under `source_comments.brand: hf`),
+  and reply polling drops marker-bearing comments via `bearsHerdrMarker(body, brand)` — which accepts
+  the LEGACY `"[herdr-factory"` prefix too, so artifacts written before a brand switch are still
+  recognised as ours — and is
   **blockquote-aware**, so a human quote-reply that embeds the question as `> ` lines still
   counts as a reply (INV-6). Author-identity filtering is never load-bearing: under gh-CLI
   auth the bot login IS the operator's login.
@@ -1072,8 +1075,8 @@ arbitrates each claim ACROSS factories with separate DBs, inside `claimImpl` rig
 and before the `claimed` event, the worktree, the agent, or any status write — so losing costs
 nothing. It reads the item's comments; an open claim by someone else ⇒ skip WITHOUT posting (a dead
 winner's claim is re-seen every tick, and re-posting would bury the ticket). Otherwise it posts
-`[herdr-factory claim id=<run> host=<host>]`, sleeps `settle_ms`, re-reads, and the open claim (no
-matching `[herdr-factory release id=<run> host=<host>]`) with the LOWEST server comment id wins. The
+`[<brand> claim id=<run> host=<host>]`, sleeps `settle_ms`, re-reads, and the open claim (no
+matching `[<brand> release id=<run> host=<host>]`) with the LOWEST server comment id wins. The
 loser posts its release, deletes its still-pristine `claiming` row (`deleteClaimingRun`), logs
 `claimed elsewhere by <host>`, and records a run-less `claimed_elsewhere` event (once per distinct
 winner); it is not a claim failure. A backend error releases (if it posted) and deletes the row, then
@@ -1083,8 +1086,34 @@ gone or already ended (`claimIsLive`) — so a crashed or half-torn-down factory
 itself and every other host; this factory is the only one that can see that row is gone. Another host's dead
 winner is FENCED, never reaped: only a human-posted release frees the item. `JiraClient.listComments` pages
 the whole thread (`startAt` walked in 100s until the server's `total`), so an old claim comment is never
-missed — and neither is askHuman's own question on a busy ticket. Both markers carry
-`HERDR_MARKER`, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
+missed — and neither is askHuman's own question on a busy ticket. Both markers carry the brand's
+marker prefix, so reply polling ignores them (INV-6). Guard off ⇒ zero extra calls.
+
+*Brand and host identity.* `<brand>` is `source_comments.brand` (repo config, default `herdr-factory`
+⇒ byte-identical lines to before); `<host>` is `claim_guard.host` ?? `machine.yml`'s `host_alias` ??
+`os.hostname()` (unsafe chars folded to `-`). A fleet rolls either out host by host, so every READER
+must cope with lines it did not write. The ledger is therefore parsed **brand-agnostically**
+(`LEDGER_RE` accepts ANY token in the brand position): a host still on the default brand would
+otherwise be blind to a flipped host's `[hf claim …]` lines and both would claim the same item — two
+worktrees, two agents, two PRs, the exact failure the guard exists to prevent, and intermittent
+because the reverse order fences correctly. The rest of the grammar
+(`claim|release id=<n> host=<token>` in one pair of brackets, quoted lines stripped first) is
+distinctive enough that nothing else writes it, so the brand is purely cosmetic on the ledger. That
+is NOT the rule for `bearsHerdrMarker` (INV-6), which has no such grammar: a bare `[<anything>]`
+would swallow a human's own bracketed text, so it stays anchored to the configured + legacy brands.
+`openClaims`/`claimWinner` take a `LedgerView` and fold its `aliases` tokens (this host's raw
+hostname, when `host` came from an alias) onto the resolved host — otherwise a renamed host would see
+its own old claim as a foreign one and fence itself forever. Folding is **read-side only**: each open claim also
+carries the `rawHost` exactly as the line spelled it, and the stale-claim release is written with THAT
+token, never the folded one. A release spelled `host=<alias>` against a claim spelled `host=<hostname>`
+pairs in the renaming host's view and in **no other host's** — their `LedgerView` has different aliases,
+so they read two different hosts, never pair them, and stay fenced on the item forever, which is exactly
+what "nothing else can free those" forbids. Writers otherwise emit the configured brand and the resolved
+host. On the MARKER path, `bearsHerdrMarker` and the sources' askHuman idempotence scan accept the
+configured brand AND the legacy one — a question posted before the switch must not be asked twice — and
+the match is **anchored**: an artifact of ours is the brand token followed by `]` or a space, because a
+bare `[<brand>` prefix also matches a human's own bracketed text (`see [hf-204] for context`) and would
+silently discard their reply.
 **Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
 ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
 `base_ref` with no `<remote>/` prefix, and never on the worktree-reopen path). Nothing else touches
@@ -1859,7 +1888,8 @@ about to revert. It's driven two ways:
   the host the token is sent to and the two have to move together.
 - **Host-local** — `~/.config/herdr-factory/machine.yml` (optional, `MachineConfigSchema` strict zod;
   `machine.schema.json` is written next to `config.schema.json`): `max_active_workspaces` (machine-wide
-  cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), and
+  cap on occupying runs across all repos), `min_free_memory_mb` (claim floor), `host_alias` (what this
+  host calls itself in the claim ledger — host-local because it names the HOST, not any repo), and
   `layout_hook.ignore_pane_labels` (pane labels the layout hook's freshness guard discounts as plugin
   furniture — default `[Sidebar]`; see [§4](#4-herdr-ownership-boundary)). Deliberately outside
   `repos/` so a config dir shared by git across hosts can gitignore it. Read by `buildDeps`; a hot
@@ -2537,8 +2567,9 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
 - **`describe` echoes the canonical key (INV-11).** It may accept an alternate spelling
   (`#123`), but the engine re-checks active-run dedup against the RETURNED key before claiming —
   otherwise one item can be claimed twice under two spellings.
-- **Marker-based self-authorship (INV-6).** Every reply-channel artifact a source writes carries
-  `HERDR_MARKER`, and reply polling drops marker-bearing comments via `bearsHerdrMarker` —
+- **Marker-based self-authorship (INV-6).** Every reply-channel artifact a source writes carries the
+  brand's marker prefix, and reply polling drops marker-bearing comments via `bearsHerdrMarker`
+  (which also accepts the legacy `herdr-factory` prefix) —
   **blockquote-aware**, so a quote-reply embedding the question still counts as a human reply.
   Author-identity filtering is never load-bearing (under gh-CLI auth the bot login IS the
   operator's login).
@@ -2718,8 +2749,8 @@ parametrized contract suite (`test/work-source-contract.test.ts`): `transition` 
 `TransitionResult` (`applied`/`noop`/`stale`) with **two-phase stale handling** in the engine
 (the lock-free outbox stamps `stale_at`; the run-locked Phase A aborts/parks — §7); `workDoc()`
 moved the work-doc shape onto the source (killing the last per-source-type switch in `step.ts`);
-a declarative `spec` plus the shared marker primitives (`HERDR_MARKER`/`bearsHerdrMarker`,
-blockquote-aware) landed in `core/deps.ts`; `askHuman`/`pollHumanReply` gained `StaleItemError`
+a declarative `spec` plus the shared marker primitives (`markerPrefix`/`bearsHerdrMarker`,
+blockquote-aware and brand-configurable) landed in `core/deps.ts`; `askHuman`/`pollHumanReply` gained `StaleItemError`
 and consecutive-poll-error escalation (a question's poll clock, since v32 a ledger
 `human_reply_poll` row). `MatchItem` opened from a closed
 union into a generic base + per-source convenience interfaces and type guards
