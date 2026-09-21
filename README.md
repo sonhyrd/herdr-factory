@@ -64,8 +64,9 @@ The installer finishes by printing this checklist and running `herdr-factory doc
 what's still on you (herdr, an agent CLI, `gh auth`) right away — the herdr check also enforces the
 **0.7.5** floor (its agent/pane CLI changed there), and `--deep` additionally confirms the running
 herdr server speaks a protocol this herdr CLI can talk to. Run `herdr-factory doctor` (or
-`doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, and
-each repo's config, sources, and evidence bucket.
+`doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, the
+last fast-forward of each repo's main checkout (amber while one is skipped — on another branch,
+dirty, or diverged), and each repo's config, sources, and evidence bucket.
 
 With `--repo <name>`, `doctor` also checks the **agent tooling that repo's config actually asks
 for**, since that is the part nothing else fails loudly on: `cursor-agent` on PATH (and, on
@@ -626,7 +627,10 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
   HTTP call is hard-timeout-bounded, with a wedged-tick watchdog behind it all.
 - **Self-driving operations.** One resident server ticks every repo; a stateless scheduled
   supervisor restarts it if it's down, wedged, or outdated; auto-update ships new code (and new
-  Node runtimes) within ~a minute of a push, draining gracefully before restart.
+  Node runtimes) within ~a minute of a push, draining gracefully before restart. The same tick also
+  keeps **each configured repo's main checkout** current — a throttled `git fetch` + fast-forward,
+  only when it's clean and sitting on its base branch — so the working copy a human opens isn't
+  months behind origin.
 - **A control room.** Running `herdr-factory` with no arguments opens a full-screen TUI —
   live dashboard, a schema-validated config editor, and doctor. The dashboard is a **kanban board per
   belt**: the belt's steps are the columns, every work item is a card in the column of the step it is
@@ -653,7 +657,8 @@ Deep engine internals (reconciler phases, locking, the outbox, rate limits, inva
 
 ```
 launchd / systemd timer ─every 60s─> herdr-factory ensure-up    (stateless one-shot supervisor)
-                                          │ auto-update, then (re)start if down / wedged / outdated
+                                          │ auto-update + fast-forward each repo's main checkout,
+                                          │ then (re)start if down / wedged / outdated
                                           ▼
             herdr-factory serve    (one resident process: ticks every repo + HTTP API on 127.0.0.1:8765)
             │ Phase 0: flush pending source status write-backs (the outbox)
@@ -1799,6 +1804,7 @@ harness with no skill mechanism can be pointed at the folder directly.
 ~/.config/herdr-factory/         config.schema.json · repos/<name>/{config.yml, env, guidelines-prompt.md, …}
 ~/.local/state/herdr-factory/    herdr-factory.db · runtime/<node>/ · node-path · server.json
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
+                                 checkout-sync.json (last main-checkout fast-forward per repo — ditto)
                                  fleet-last-seen.json (when each fleet machine last answered)
                                  fleet-ssh/ (ControlMaster sockets — only when this path fits a Unix
                                  socket's 104 bytes; otherwise /tmp/hf-<uid>/, mode 0700)

@@ -5,6 +5,7 @@ import { resolvedNodePath, serverInfoPath } from "../config.ts";
 import { pingHealth, readHealth, readServerInfo } from "../server/client.ts";
 import { VERSION } from "../version.ts";
 import { autoUpdateEnabled, selfUpdate } from "./updater.ts";
+import { syncMainCheckouts } from "./checkouts.ts";
 import { telemetrySpan } from "../telemetry/index.ts";
 
 const CLI_ENTRY = fileURLToPath(new URL("../cli/index.ts", import.meta.url));
@@ -115,6 +116,15 @@ async function ensureUpImpl(
     } catch (e) {
       log("warn", `self-update errored — ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  // Keep each configured repo's MAIN checkout current with its base branch (throttled to once per
+  // 10min per repo, inside). Independent of the server's health — a failure here never blocks the
+  // restart decision below.
+  try {
+    await syncMainCheckouts(log);
+  } catch (e) {
+    log("warn", `checkout-sync errored — ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const info = readServerInfo();

@@ -22,6 +22,7 @@ import { pingHealth, readServerInfo } from "./server/client.ts";
 import { HERDR_AGENT_KINDS } from "./types.ts";
 import * as service from "./watchers/service.ts";
 import { ago, readUpdateStatus, updateChannel, updateStalled } from "./watchers/update-status.ts";
+import { readCheckoutSync, type CheckoutSync } from "./watchers/checkouts.ts";
 
 /** One check's outcome. `detail` is extra context: a version/path/endpoint on success, or the
  *  failure reason on ✗. `warn` marks an amber (not-a-failure) state — a healthy check that still
@@ -86,6 +87,20 @@ export async function updateCheck(): Promise<DoctorCheck> {
   } catch (e) {
     return { name, ok: false, detail: e instanceof Error && e.message ? e.message : undefined };
   }
+}
+
+/** Each configured repo's MAIN checkout (`repo.path`) vs its base branch — the result of the
+ *  fast-forward `ensure-up` attempts every 10 minutes (issue #71). Amber when a checkout couldn't
+ *  be advanced (on another branch, dirty, diverged) or the fetch failed, since that checkout is
+ *  quietly going stale for whoever opens it. Never a ✗ — a human working in there is normal. */
+export function checkoutSyncCheck(state: Record<string, CheckoutSync> = readCheckoutSync(), now = Date.now()): DoctorCheck {
+  const name = "main checkouts up to date";
+  const entries = Object.values(state);
+  if (entries.length === 0) return { name, ok: true, detail: "no sync recorded yet (ensure-up records one per repo every 10min)" };
+  const line = (c: CheckoutSync) => `${c.repo}: ${c.outcome === "up_to_date" ? "up to date" : (c.reason ?? c.outcome)} (${ago(c.at, now)})`;
+  const stale = entries.filter((c) => c.outcome === "skipped" || c.outcome === "failed");
+  const detail = entries.map(line).join(" · ");
+  return stale.length > 0 ? { name, ok: true, warn: true, detail } : { name, ok: true, detail };
 }
 
 /** Dev servers that outlived their run: a LISTENing process whose cwd is inside herdr's worktrees
@@ -418,6 +433,7 @@ export async function baseGroups(deep = false, repo?: string): Promise<DoctorGro
       return `v${process.versions.node}, ${isManagedNode(process.execPath) ? "vendored" : "ambient"}`;
     }),
     updateCheck(),
+    Promise.resolve(checkoutSyncCheck()),
     attempt("supervisor service", async () => {
       if (!(await service.isLoaded())) throw new Error("not loaded — run `herdr-factory install`");
     }),
