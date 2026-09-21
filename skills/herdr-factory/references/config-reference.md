@@ -384,11 +384,12 @@ labels `github_issues` auto-creates (`managed by <brand>`). The `resume`/`triage
 a note are NOT branded — they name the binary an operator types. Default ⇒ byte-identical
 strings to before the key existed.
 
-READERS are bilingual and always will be: the ledger parser, `bearsHerdrMarker` (INV-6) and the askHuman
-idempotence scan accept the configured brand AND the legacy `herdr-factory` spelling, so a fleet switches
-host by host without double-claiming or re-asking a question. The INV-6 match is anchored to `[<brand>]`
-or `[<brand> ` — a human reply that merely starts a bracket with the brand (`see [hf-204] …`) is still a
-reply, so a SHORT brand is safe.
+READERS cope with brands they did not write, so a fleet switches host by host without double-claiming or
+re-asking a question. The claim ledger is parsed **brand-agnostically** (any token in the brand position),
+so an un-flipped host still fences on a flipped one's claims. `bearsHerdrMarker` (INV-6) and the askHuman
+idempotence scan accept the configured brand AND the legacy `herdr-factory` spelling, anchored to
+`[<brand>]` or `[<brand> ` — a human reply that merely starts a bracket with the brand (`see [hf-204] …`)
+is still a reply, so a SHORT brand is safe.
 
 ### 3.12 `branch` (top-level and per-belt)
 

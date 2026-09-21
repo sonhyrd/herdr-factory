@@ -1074,19 +1074,28 @@ marker prefix, so reply polling ignores them (INV-6). Guard off ⇒ zero extra c
 *Brand and host identity.* `<brand>` is `source_comments.brand` (repo config, default `herdr-factory`
 ⇒ byte-identical lines to before); `<host>` is `claim_guard.host` ?? `machine.yml`'s `host_alias` ??
 `os.hostname()` (unsafe chars folded to `-`). A fleet rolls either out host by host, so every READER
-is bilingual: `openClaims`/`claimWinner` take a `LedgerView` and parse the configured brand's lines
-ALONGSIDE the legacy `herdr-factory` ones, and fold the `hostAliases` tokens (this host's raw hostname,
-when `host` came from an alias) onto the resolved host — otherwise a renamed host would see its own old
-claim as a foreign one and fence itself forever. Folding is **read-side only**: each open claim also
+must cope with lines it did not write. The ledger is therefore parsed **brand-agnostically**
+(`LEDGER_RE` accepts ANY token in the brand position): a host still on the default brand would
+otherwise be blind to a flipped host's `[hf claim …]` lines and both would claim the same item — two
+worktrees, two agents, two PRs, the exact failure the guard exists to prevent, and intermittent
+because the reverse order fences correctly. The rest of the grammar
+(`claim|release id=<n> host=<token>` in one pair of brackets, quoted lines stripped first) is
+distinctive enough that nothing else writes it, so the brand is purely cosmetic on the ledger. That
+is NOT the rule for `bearsHerdrMarker` (INV-6), which has no such grammar: a bare `[<anything>]`
+would swallow a human's own bracketed text, so it stays anchored to the configured + legacy brands.
+`openClaims`/`claimWinner` take a `LedgerView` and fold its `aliases` tokens (this host's raw
+hostname, when `host` came from an alias) onto the resolved host — otherwise a renamed host would see
+its own old claim as a foreign one and fence itself forever. Folding is **read-side only**: each open claim also
 carries the `rawHost` exactly as the line spelled it, and the stale-claim release is written with THAT
 token, never the folded one. A release spelled `host=<alias>` against a claim spelled `host=<hostname>`
 pairs in the renaming host's view and in **no other host's** — their `LedgerView` has different aliases,
 so they read two different hosts, never pair them, and stay fenced on the item forever, which is exactly
 what "nothing else can free those" forbids. Writers otherwise emit the configured brand and the resolved
-host. The same bilingual rule covers `bearsHerdrMarker` (INV-6) and the sources' askHuman idempotence
-scan — a question posted before the switch must not be asked twice. The INV-6 match is **anchored**: an
-artifact of ours is the brand token followed by `]` or a space, because a bare `[<brand>` prefix also
-matches a human's own bracketed text (`see [hf-204] for context`) and would silently discard their reply.
+host. On the MARKER path, `bearsHerdrMarker` and the sources' askHuman idempotence scan accept the
+configured brand AND the legacy one — a question posted before the switch must not be asked twice — and
+the match is **anchored**: an artifact of ours is the brand token followed by `]` or a space, because a
+bare `[<brand>` prefix also matches a human's own bracketed text (`see [hf-204] for context`) and would
+silently discard their reply.
 **Base-ref fetch.** Right before a run's worktree is CREATED, `reconcileClaiming` fetches the base
 ref's remote branch in `repo.path` (`git fetch --no-tags <remote> <branch>`; skipped for a local
 `base_ref` with no `<remote>/` prefix, and never on the worktree-reopen path). Nothing else touches

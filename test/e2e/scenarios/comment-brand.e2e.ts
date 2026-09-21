@@ -152,7 +152,9 @@ scenario(
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
 const plain = new GithubFake({ repo: "acme/app" });
-const CONTROL = 601;
+const CONTROL = 601; // the ordinary item: pre-brand claim + release lines
+const FLIPPED_CLAIM = 602; // carries a FLIPPED host's claim — an un-flipped host must still fence
+const FLIPPED_RUN = 90_003;
 
 scenario(
   {
@@ -161,6 +163,10 @@ scenario(
     beforeStart: async () => {
       await plain.listen();
       plain.seed({ number: CONTROL, title: "The unbranded control", labels: ["hf-ship"] });
+      // `source_comments.brand` is per-host config, so a fleet flips one host at a time. Here the
+      // NEIGHBOUR flipped first: this factory has never heard of `hf` and must still read its claim.
+      plain.seed({ number: FLIPPED_CLAIM, title: "Claimed by a host that flipped first", labels: ["hf-ship"] });
+      plain.addComment(FLIPPED_CLAIM, `[hf claim id=${FLIPPED_RUN} host=already-flipped]`, "hf");
       // No machine.yml, no source_comments — deliberately. This is what every existing install is.
     },
     afterStop: () => plain.close(),
@@ -194,6 +200,20 @@ scenario(
       label: "…and the pre-brand release line",
       timeoutMs: 60_000,
     });
+
+    // ── the mixed-brand fleet: a brand this host has never heard of still fences it ──────────────
+    // If the ledger were parsed only in brands this host can NAME, `[hf claim …]` would be invisible
+    // and it would claim the item its neighbour is already working — two worktrees, two agents, two
+    // PRs. The reverse direction (an hf host reading a legacy claim) is `comment-brand`'s item 502.
+    await w.waitFor(() => w.db.events(String(FLIPPED_CLAIM)).some((e) => e.type === "claimed_elsewhere"), {
+      label: "the flipped host's claim fences this un-flipped one",
+      timeoutMs: 120_000,
+    });
+    expect(w.db.run(String(FLIPPED_CLAIM)), "a fenced item is never claimed").toBeUndefined();
+    expect(plain.comments(FLIPPED_CLAIM).map((c) => c.body), "…and nothing is posted onto it").toEqual([
+      `[hf claim id=${FLIPPED_RUN} host=already-flipped]`,
+    ]);
+    expect(w.db.event(String(FLIPPED_CLAIM), "claimed_elsewhere")!.data.host).toBe("already-flipped");
   },
 );
 

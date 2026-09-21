@@ -872,11 +872,12 @@ lost race. Jira has no compare-and-set, so the guard relies on comment ids being
 comment thread is paged (100 per call), so an old claim comment is never missed. `local_markdown` and
 `sentry` do not accept `claim_guard`.
 
-**Rolling out a brand or a host alias across a fleet** is safe host by host: readers accept **both** the
-configured brand and the legacy `herdr-factory` one, and a host recognises its own pre-alias claims (posted
-under its raw hostname) as its own. A release is always written with the host name the claim it frees
-actually carries, so every other host pairs the two as well. So a half-migrated fleet arbitrates on one
-shared ledger, and two hosts never both think they own an item. Writers otherwise use the configured brand.
+**Rolling out a brand or a host alias across a fleet** is safe host by host. The ledger is read
+brand-agnostically — a host still on `herdr-factory` sees a flipped host's `[hf claim …]` lines and
+fences on them, and vice versa — and a host recognises its own pre-alias claims (posted under its raw
+hostname) as its own, while the release that frees one is written with the host name that claim actually
+carries, so every other host pairs the two as well. So a half-migrated fleet arbitrates on one shared
+ledger, and two hosts never both think they own an item. Writers only ever emit the configured brand.
 
 ### Comment brand — `source_comments` (optional)
 

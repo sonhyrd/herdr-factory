@@ -145,18 +145,18 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
       { id: "102", body: claimMarker({ runId: 1, host: "mac" }, "hf") }, // mac re-claimed under the new brand
       { id: "103", body: legacy("release", 1, "mac") }, // …and a LEGACY release frees both
     ];
-    expect(claimWinner(mixed, { brand: "hf" })).toMatchObject({ runId: 2, host: "linux", commentId: 101 });
+    expect(claimWinner(mixed)).toMatchObject({ runId: 2, host: "linux", commentId: 101 });
     const allLegacy: LedgerComment[] = [
       { id: "100", body: legacy("claim", 1, "mac") },
       { id: "101", body: legacy("claim", 2, "linux") },
       { id: "102", body: legacy("claim", 1, "mac") },
       { id: "103", body: legacy("release", 1, "mac") },
     ];
-    expect(claimWinner(mixed, { brand: "hf" })).toMatchObject({ runId: claimWinner(allLegacy)!.runId, host: claimWinner(allLegacy)!.host });
+    expect(claimWinner(mixed)).toMatchObject({ runId: claimWinner(allLegacy)!.runId, host: claimWinner(allLegacy)!.host });
   });
 
   it("a legacy claim under this host's raw hostname is folded onto its alias", () => {
-    const view = { brand: "hf", host: "contabo", aliases: ["vmi3481757"] };
+    const view = { host: "contabo", aliases: ["vmi3481757"] };
     // Claimed under the hostname, released under the alias — one host, so nothing stays open.
     const comments: LedgerComment[] = [
       { id: "100", body: legacy("claim", 5, "vmi3481757") },
@@ -181,7 +181,7 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
       claimMarker({ runId: run.id, host: "contabo" }, "hf"),
     ]);
     // The assertion whose absence hid this: ANOTHER host, same brand, its own (empty) alias set.
-    const elsewhere = { brand: "hf", host: "other-box", aliases: [] as string[] };
+    const elsewhere = { host: "other-box", aliases: [] as string[] };
     expect(openClaims(t.comments("K-1"), elsewhere).some((c) => c.runId === 7), "run 7 is freed for every host, not just the one that renamed itself").toBe(false);
     // …and it still reads the fresh claim, so the release did not over-free.
     expect(openClaims(t.comments("K-1"), elsewhere).map((c) => c.runId)).toEqual([run.id]);
@@ -193,6 +193,28 @@ describe("claim ledger — brand + host alias (issue #70)", () => {
     const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
     expect(await arbitrateClaim(f.deps, f.src, f.newRun("K-1"))).toMatchObject({ runId: 7, host: "other" });
     expect(t.comments("K-1")).toHaveLength(1); // nothing posted — fence, never reap
+  });
+
+  it("…and the mirror image: a host still on the DEFAULT brand is fenced by a flipped host's claim", () => {
+    // `source_comments.brand` is per-host config, so a fleet flips one host at a time. If a reader
+    // only accepted brands it could name, the un-flipped host would be BLIND to `[hf claim …]` and
+    // both would claim the item — two worktrees, two agents, two PRs. The ledger is therefore parsed
+    // brand-agnostically; only the marker path (INV-6) is brand-limited.
+    const flipped: LedgerComment[] = [{ id: "100", body: claimMarker({ runId: 11, host: "host-a" }, "hf") }];
+    expect(claimWinner(flipped), "a default-brand host sees a flipped host's claim").toMatchObject({ runId: 11, host: "host-a" });
+    // …and the release that frees it pairs too, whichever brand wrote which.
+    expect(claimWinner([...flipped, { id: "101", body: legacy("release", 11, "host-a") }])).toBeNull();
+    expect(claimWinner([{ id: "100", body: legacy("claim", 11, "host-a") }, { id: "101", body: releaseMarker({ runId: 11, host: "host-a" }, "hf") }])).toBeNull();
+  });
+
+  it("a DEFAULT-brand factory skips an item a flipped host has claimed, posting nothing", async () => {
+    const t = fakeTracker();
+    t.post("K-1", claimMarker({ runId: 11, host: "host-a" }, "hf")); // written by a host that flipped first
+    const f = factory(t, "host-b"); // this one has not: default brand, no alias
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toMatchObject({ runId: 11, host: "host-a" });
+    expect(t.comments("K-1")).toHaveLength(1); // fenced without posting — no second claim on the item
+    expect(f.store.getRun(run.id), "…and its own pristine row is dropped").toBeUndefined();
   });
 });
 

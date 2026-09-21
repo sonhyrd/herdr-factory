@@ -18,12 +18,12 @@
 // on its own runs: it can see the row is gone. Nothing else can free those, and left open they fence
 // the item against every host, forever.
 //
-// ROLLOUT: readers accept BOTH the configured brand and the legacy `herdr-factory` one, and fold a
-// host's pre-alias hostname onto its alias (LedgerView) — so a half-migrated fleet arbitrates on one
-// shared ledger and two hosts never both think they own an item.
+// ROLLOUT: the ledger is parsed brand-agnostically (LEDGER_RE) and a host's pre-alias hostname folds
+// onto its alias (LedgerView) — so a half-migrated fleet, whichever half wrote a line, arbitrates on
+// one shared ledger and two hosts never both think they own an item.
 import type { Deps, SourceRuntime } from "./deps.ts";
 import type { Run } from "../types.ts";
-import { DEFAULT_BRAND, escapeRe, markerBrands } from "./deps.ts";
+import { DEFAULT_BRAND } from "./deps.ts";
 
 /** A comment as the ledger sees it: the server-assigned id (numeric string) + its plain text. */
 export interface LedgerComment {
@@ -40,22 +40,31 @@ export interface ClaimTag {
  *  (enforced at config load). */
 export const CLAIM_HOST_RE = /^[A-Za-z0-9._-]+$/;
 
-/** How a READER sees the ledger during (and after) a rollout. Both fields are about reading lines
- *  this factory did not write:
- *  - `brand` — the configured brand's lines are parsed ALONGSIDE the legacy `[herdr-factory …]`
- *    ones, because other hosts (and this item's history) may still be on the old spelling.
- *  - `host` + `aliases` — every `aliases` token is folded onto `host`, so a legacy claim this host
- *    posted under its raw hostname is recognised as its own once `host_alias` renames it. Without
- *    the folding a host would see its own old claim as a foreign one and both sides would fence. */
+/** How a READER identifies ITSELF in the ledger: every `aliases` token is folded onto `host`, so a
+ *  claim this host posted under its raw hostname is recognised as its own once `host_alias` renames
+ *  it. Without the folding a host would see its own old claim as a foreign one and both sides would
+ *  fence. Read-side only — what gets WRITTEN always carries the token as observed (see readLedger).
+ *  There is deliberately no `brand` here: the ledger is parsed brand-agnostically (see LEDGER_RE). */
 export interface LedgerView {
-  brand?: string;
   host?: string;
   aliases?: readonly string[];
 }
 
-/** Matches the configured brand's lines AND the legacy ones (see LedgerView). */
-const ledgerRe = (brand: string = DEFAULT_BRAND): RegExp =>
-  new RegExp(`\\[(?:${markerBrands(brand).map(escapeRe).join("|")}) (claim|release) id=(\\d+) host=([A-Za-z0-9._-]+)\\]`, "g");
+/** The ledger grammar, with ANY token in the brand position — the one place where the brand is
+ *  purely cosmetic.
+ *
+ *  A fleet flips `source_comments.brand` host by host (it is per-host config), so during a rollout
+ *  one host writes `[hf claim …]` while its neighbour still writes `[herdr-factory claim …]`. If a
+ *  reader only accepted brands it can NAME, the un-flipped host would be blind to the flipped one's
+ *  claims and both would claim the same item — two worktrees, two agents, two PRs, which is the one
+ *  outcome this whole file exists to prevent. Accepting any brand token costs nothing: the rest of
+ *  the grammar (`claim|release id=<n> host=<token>` inside one pair of brackets) is distinctive
+ *  enough that nothing else writes it, and quoted lines are stripped before matching.
+ *
+ *  This is NOT the rule for `bearsHerdrMarker` (INV-6): that path has no distinctive grammar, so a
+ *  bare `[<anything>]` would swallow a human's own bracketed text. It stays anchored to the
+ *  configured + legacy brands. */
+const LEDGER_RE = /\[[A-Za-z0-9._-]+ (claim|release) id=(\d+) host=([A-Za-z0-9._-]+)\]/g;
 
 export const claimMarker = (t: ClaimTag, brand: string = DEFAULT_BRAND): string => `[${brand} claim id=${t.runId} host=${t.host}]`;
 export const releaseMarker = (t: ClaimTag, brand: string = DEFAULT_BRAND): string => `[${brand} release id=${t.runId} host=${t.host}]`;
@@ -67,7 +76,6 @@ export type OpenClaim = ClaimTag & { commentId: number; rawHost: string };
 /** Every open claim (no matching release), lowest comment id first. Pure. Quoted (`> `) lines are
  *  ignored, so a human quoting a claim neither claims nor releases anything. */
 export function openClaims(comments: readonly LedgerComment[], view?: LedgerView): OpenClaim[] {
-  const re = ledgerRe(view?.brand);
   const canon = (h: string): string => (view?.host && view.aliases?.includes(h) ? view.host : h);
   const released = new Set<string>();
   const claims: OpenClaim[] = [];
@@ -76,7 +84,7 @@ export function openClaims(comments: readonly LedgerComment[], view?: LedgerView
       .split(/\r?\n/)
       .filter((l) => !l.trimStart().startsWith(">"))
       .join("\n");
-    for (const m of text.matchAll(re)) {
+    for (const m of text.matchAll(LEDGER_RE)) {
       const rawHost = m[3]!;
       const tag = { runId: Number(m[2]), host: canon(rawHost), rawHost };
       if (m[1] === "release") released.add(`${tag.runId}@${tag.host}`);
@@ -147,7 +155,7 @@ function claimIsLive(deps: Deps, runId: number): boolean {
 async function readLedger(deps: Deps, src: SourceRuntime & { claimGuard: NonNullable<SourceRuntime["claimGuard"]> }, key: string): Promise<OpenClaim | null> {
   const host = src.claimGuard.host;
   const brand = deps.config.sourceComments.brand;
-  const open = openClaims(await src.client.listClaimComments!(key), { brand, host, aliases: src.claimGuard.hostAliases });
+  const open = openClaims(await src.client.listClaimComments!(key), { host, aliases: src.claimGuard.hostAliases });
   const stale = open.filter((c) => c.host === host && !claimIsLive(deps, c.runId));
   for (const tag of stale) {
     // Written with the host token AS OBSERVED, not the folded one: alias folding is a READ-side

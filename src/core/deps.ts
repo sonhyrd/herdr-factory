@@ -168,15 +168,15 @@ export function markerPrefixes(brand: string = DEFAULT_BRAND): string[] {
   return brand === LEGACY_BRAND ? [HERDR_MARKER] : [markerPrefix(brand), HERDR_MARKER];
 }
 
-/** Every brand token a reader accepts (configured + legacy, deduped) — shared with the claim
- *  ledger's own parser so both read the same set. */
-export function markerBrands(brand: string = DEFAULT_BRAND): string[] {
+/** Every brand token the MARKER path accepts (configured + legacy, deduped). The claim ledger is
+ *  parsed brand-agnostically instead — see LEDGER_RE in claim-guard.ts for why the two differ. */
+function markerBrands(brand: string = DEFAULT_BRAND): string[] {
   return brand === LEGACY_BRAND ? [LEGACY_BRAND] : [brand, LEGACY_BRAND];
 }
 
-/** A brand is embedded in a regex by both readers; the config charset excludes regex metacharacters,
- *  but escaping keeps that a validation detail rather than an injection. */
-export function escapeRe(s: string): string {
+/** The brand is embedded in a regex here; the config charset excludes regex metacharacters, but
+ *  escaping keeps that a validation detail rather than an injection. */
+function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
 
