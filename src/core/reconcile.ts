@@ -9,7 +9,7 @@ import type { LayoutAgent, StepConfig } from "../config.ts";
 import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, ReviewSig, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
-import { availableMemoryMb, capacityGate, memoryGate, noteMachineGate } from "../machine.ts";
+import { availableMemoryMb, capacityGate, claimDeferralNote, memoryGate, noteMachineGate } from "../machine.ts";
 import { MAX_RETRY_ATTEMPTS, notifyDue } from "../schedule.ts";
 import { branchName } from "./branch.ts";
 import { fmtDur } from "./explain.ts";
@@ -400,10 +400,30 @@ async function withHeartbeatLock(deps: Deps, key: string, ttlSec: number, fn: ()
   return true;
 }
 
+/**
+ * withHeartbeatLock + a bounded poll-wait: keep re-trying the acquire until `fn` runs or the wait
+ * is spent. For a lock whose holders release within SECONDS, where a plain try-lock is not merely
+ * lossy but UNFAIR — callers that contend on a fixed cadence and in a fixed order (the serve
+ * loop's per-repo ticks) have the same loser every round, so the same repo skips forever.
+ */
+async function withHeartbeatLockWaiting(deps: Deps, key: string, ttlSec: number, tries: number, delayMs: number, fn: () => Promise<void>): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    if (await withHeartbeatLock(deps, key, ttlSec, fn)) return true;
+    if (i < tries - 1) await deps.sleep(delayMs);
+  }
+  return false;
+}
+
 const tickLockTtl = (deps: Deps): number => Math.max(deps.config.limits.tickIntervalSeconds * 2, 300);
 
 /** Machine-wide: serializes every repo's machine-count + claim section when machine.yml sets a cap. */
 export const MACHINE_CLAIM_LOCK = "machine:claim";
+
+/** How long Phase B waits for the machine claim lock before deferring its claims to the next tick
+ *  (~10 s of 500 ms polls). Holders release in seconds — a claim section is a count plus at most
+ *  `max_claims_per_tick` claims — so every repo on the host gets its turn within one tick. */
+const MACHINE_CLAIM_WAIT_TRIES = 20;
+const MACHINE_CLAIM_WAIT_DELAY_MS = 500;
 
 /**
  * Run `fn` under the per-repo single-instance tick lock (heartbeat-extended; see
@@ -583,9 +603,10 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   // The machine count and the claims must be one critical section: repos tick on separate timers
   // and Phase B awaits the network between its count and its createRun, so two repos could each
   // read "1/2" and both claim (3/2). The machine claim lock (a DB lock — it also covers a CLI
-  // `tick`/`claim` in another process) serializes them; a repo that finds it held skips claiming
-  // this tick and retries next tick.
-  const ran = await withHeartbeatLock(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), async () => {
+  // `tick`/`claim` in another process) serializes them. It is WAITED on, not try-locked: `serve`
+  // ticks every repo on one cadence and in one order, so a repo that skipped on contention hit
+  // the same mid-hold instant every tick and never claimed again (issue #72 — four hours of it).
+  const ran = await withHeartbeatLockWaiting(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), MACHINE_CLAIM_WAIT_TRIES, MACHINE_CLAIM_WAIT_DELAY_MS, async () => {
     const occupying = deps.store.countOccupyingAll();
     const atCapacity = capacityGate(machine, occupying);
     noteMachineGate(deps.log, atCapacity);
@@ -595,8 +616,11 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
     }
     await claimNewWork(deps, machine.maxActiveWorkspaces! - occupying);
   });
+  // Deferring is now the rare tail (a holder that outlived the whole wait), and the starvation it
+  // used to hide was silent — so the consecutive count is durable and reported by status/explain.
+  const deferrals = deps.store.recordClaimDeferral(repo, !ran);
   if (!ran) {
-    deps.log("info", "machine claim lock held (another repo is claiming) — claiming next tick");
+    deps.log("info", `machine claim lock held (another repo is claiming) — ${claimDeferralNote(deferrals)}`);
     deps.store.touchTick(repo);
   }
 }

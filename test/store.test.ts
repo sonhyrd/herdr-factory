@@ -254,11 +254,13 @@ describe("Store", () => {
     // Include watch_deadline + pr_number + last_thread_sig + outcome (all part of the v1 CREATE
     // TABLE) so v17's and v18's DROP COLUMNs and v25's duplicate-active sweep apply cleanly
     // (resolver_active is ADDED by v17, then dropped by v18); seed run_steps (created back in v4)
-    // so v9's ALTER applies, `branch` (v1) so v38's worktree_name backfill applies, and events
+    // so v9's ALTER applies, `branch` (v1) so v38's worktree_name backfill applies, `repos` (v1) so v39's ALTER applies, and events
     // (created in v1) so v28's attention backfill applies — a genuine v5 DB always has all of them.
     db.exec(`
       CREATE TABLE schema_version (version INTEGER NOT NULL);
       INSERT INTO schema_version (version) VALUES (5);
+      CREATE TABLE repos (name TEXT PRIMARY KEY, repo_path TEXT, base_ref TEXT, github TEXT,
+        last_tick_at INTEGER, enabled INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, ticket_key TEXT, phase TEXT,
         pr_number INTEGER, last_thread_sig TEXT, outcome TEXT,
         branch TEXT, watch_deadline INTEGER, created_at INTEGER, updated_at INTEGER, ended_at INTEGER);

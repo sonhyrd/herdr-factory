@@ -2736,6 +2736,48 @@ describe("machine gate (Phase B)", () => {
     expect(logs).toContain("machine admission resumed — claiming again");
   });
 
+  it("N repos ticking in lockstep: every repo reaches claimNewWork in a single tick (#72)", async () => {
+    // The serve loop's shape: every repo starts Phase B in the same instant, in the same order,
+    // every tick. Under the old try-lock the losers skipped their whole claim section and hit the
+    // same mid-hold instant again next tick — one repo starved for hours. The bounded wait makes
+    // the order irrelevant: each waits out the holder and claims in the SAME pass.
+    const first = build();
+    const store = first.store;
+    const repos = [first, ...[1, 2, 3, 4].map(() => build())].map((r, i) => {
+      r.deps.store = store;
+      r.deps.config = { ...r.deps.config, repoName: `repo${i}` };
+      r.deps.machine = { maxActiveWorkspaces: 5 };
+      // The wait is a REAL-time poll; the shared fake sleep is a no-op, which would spend all 20
+      // tries inside one holder's claim. Shorten it instead of removing it.
+      r.deps.sleep = (ms) => new Promise((done) => setTimeout(done, Math.min(ms, 5)));
+      r.state.eligible = [ticket(`K${i}-1`)];
+      return r;
+    });
+    await Promise.all(repos.map((r) => reconcileRepo(r.deps)));
+    for (let i = 0; i < repos.length; i++) {
+      expect(store.countActive(`repo${i}`)).toBe(1);
+      expect(store.claimDeferrals(`repo${i}`)).toBe(0);
+    }
+  });
+
+  it("a holder that outlives the wait defers, and status/explain can see how many ticks", async () => {
+    const { deps, store, state } = build();
+    deps.machine = { maxActiveWorkspaces: 2 };
+    state.eligible = [ticket("K-1")];
+    const logs = logsOf(deps);
+    store.acquireLock("machine:claim", "another-repo", 600); // never released within the wait
+    await reconcileRepo(deps);
+    await reconcileRepo(deps);
+    expect(store.countActive("demo")).toBe(0);
+    expect(store.claimDeferrals("demo")).toBe(2);
+    expect(logs).toContain("machine claim lock held (another repo is claiming) — claims deferred 1 tick (machine claim lock)");
+    expect(logs).toContain("machine claim lock held (another repo is claiming) — claims deferred 2 ticks (machine claim lock)");
+    store.releaseLock("machine:claim", "another-repo");
+    await reconcileRepo(deps);
+    expect(store.countActive("demo")).toBe(1);
+    expect(store.claimDeferrals("demo")).toBe(0); // reset the moment it claims again
+  });
+
   it("a manual claim respects the machine cap", async () => {
     const { a, b, store } = twoRepos();
     a.deps.machine = b.deps.machine = { maxActiveWorkspaces: 1 };

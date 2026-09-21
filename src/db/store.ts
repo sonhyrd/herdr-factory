@@ -696,6 +696,25 @@ export class Store {
     telemetryEvent("store.repo.touch_tick", { repo });
   }
 
+  /** Phase B's consecutive-deferral counter: `deferred` ⇒ bump it and return the new count,
+   *  otherwise clear it (the repo reached its claim section) and return 0. Durable because the
+   *  surfaces that report the starvation — `status`, `explain` — run in another process than the
+   *  serve loop that observes it. */
+  recordClaimDeferral(repo: string, deferred: boolean): number {
+    if (!deferred) {
+      this.db.prepare("UPDATE repos SET claim_deferrals = 0 WHERE name = ?").run(repo);
+      return 0;
+    }
+    this.db.prepare("UPDATE repos SET claim_deferrals = claim_deferrals + 1 WHERE name = ?").run(repo);
+    return this.claimDeferrals(repo);
+  }
+
+  /** Consecutive ticks this repo skipped claiming because the machine claim lock stayed held. */
+  claimDeferrals(repo: string): number {
+    const row = this.db.prepare("SELECT claim_deferrals FROM repos WHERE name = ?").get(repo) as { claim_deferrals: number } | undefined;
+    return row?.claim_deferrals ?? 0;
+  }
+
   /** When the repo's last reconcile pass COMPLETED (epoch seconds) — the tick-watchdog signal
    *  the supervisor restarts on when it goes stale (a wedged tick stops touching it). */
   lastTickAt(repo: string): number | null {
