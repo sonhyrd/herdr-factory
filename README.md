@@ -392,7 +392,8 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
 
 - **work** — implements the change and commits as it goes (a commit-HEAD heartbeat catches stalls),
   following the target repo's own guidelines/skills for setup, patterns, and how its tests are run
-  (see [Prompts](#prompts)).
+  (see [Prompts](#prompts)). It runs each of those checks through the
+  [gate wrapper](#gate-receipts), so a later step can read that they passed instead of re-running them.
 - **evidence** _(opt-in)_ — derives a test plan from the work item's acceptance criteria, then films
   the running app to prove each one. Its "step zero" is to go and read the repo's own guidance before
   starting the app — its agent instructions, its skill/command directories (read by path, symlinks
@@ -416,7 +417,8 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
 - **review** — a strict read-only gate with fresh eyes, judging against the repo's own review
   standards (its checklist / review skill / engineering docs) when it has them: it never edits or
   commits (if it commits, the run parks — read-only is enforced), it either passes the work forward
-  or **bounces back to work**. Keeping all rework in the work step is deliberate.
+  or **bounces back to work**. Keeping all rework in the work step is deliberate. It reads the work
+  step's [gate receipts](#gate-receipts) rather than re-running its suites.
 - **pr** — pushes the branch, opens the PR with the evidence URLs embedded, and drives the
   automated round (CI green, bot comments addressed). The body also carries forward what the
   earlier steps wrote down — `## Assumptions` (omitted when there are none) and
@@ -490,6 +492,48 @@ A **commit** from such a step is the separate, older read-only watch — it park
 `step-done` un-parks and advances. That rescue is deliberate (a completed verdict is never thrown
 away over misbehaviour on the way to it), so the tree guard stays out of it: refusing a step-done
 for a commit would wedge the run, because an agent cannot un-commit.
+
+### Gate receipts
+
+A **gate** is one verification command — lint, a type-check, a test suite. Without a shared record
+of them, each step could only discover what an earlier step had checked by checking it again: on the
+run that motivated this, the full spec suite ran six times, the unit suite six times and the scoped
+type-check four times, all against one unchanged commit, and the review step alone spent six minutes
+re-running the work step's gates.
+
+The work step now runs each of its checks through a transparent wrapper:
+
+```
+herdr-factory --repo my-app gate MY-123 test -- pnpm test
+```
+
+It runs the command in the run's worktree, streams its output through unchanged, and exits with the
+command's own exit code — nothing about how the agent works changes. What it adds is a **receipt**
+recorded against the run: the command, the worktree **HEAD it ran at**, the exit code, how long it
+took, and the tail of its output. The receipt is keyed by `(run, gate name, HEAD)`, so re-running a
+gate at the same commit replaces its receipt rather than piling up another.
+
+A later step reads them:
+
+```
+herdr-factory --repo my-app gates MY-123
+MY-123: HEAD 4f1c9ae30b21 — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.
+  ✓ pass  test           CURRENT 4f1c9ae30b21  91.4s  work pass 1  pnpm test
+  ✓ pass  typecheck      CURRENT 4f1c9ae30b21  24.7s  work pass 1  pnpm typecheck
+  ✗ exit 1  lint         STALE   9ab2c0d41e77  8.1s   work pass 1  pnpm lint
+```
+
+**CURRENT** means the receipt was taken at the branch's present HEAD **on a clean tree** — it covers exactly the tree the
+reading step is looking at. A gate run with uncommitted work stores `${HEAD}+dirty` so it never equals HEAD and `gates` marks it **DIRTY**. The review prompt treats a current passing receipt as evidence and runs a
+gate itself only when the receipt is missing, stale, dirty, or it has a concrete suspicion about that
+specific check; a *failing* current receipt is re-run once through the wrapper and bounced only if it fails again. `gates --json` is the
+machine-readable form. Receipts live with the run and die with it.
+
+They also feed the **`step_timing`** event each `step-done` writes to the timeline: the pass's wall
+time, the time it spent inside gate commands (`shellMs`), and the remainder (`modelMs`) — so
+"where did that step's 40 minutes go" is a `timeline <KEY>` away rather than a one-off script over
+the agent harness's own chat store. Only *wrapped* commands count as shell time; anything else the
+agent spawned lands in the model half.
 
 ### `custom` steps — your own stations
 
@@ -1402,8 +1446,20 @@ substitution. Universal tokens (always injected):
 
 `@@KEY@@ @@REPO@@ @@BELT@@ @@STEPS@@ @@STEP@@ @@TYPE@@ @@SUMMARY@@ @@BRANCH@@ @@WORKTREE@@
 @@MEMORY_DIR@@ @@WORK_DOC@@ @@WORK_DOC_KIND@@ @@HANDOFF_IN@@ @@HANDOFF_OUT@@ @@PRIOR_PANE@@
-@@PRIOR_SESSION@@ @@STEP_DONE_CMD@@ @@ASK_HUMAN_CMD@@ @@BOUNCE_CMD@@ @@BOUNCE_TARGET@@
-@@BOUNCE_REASON_FILE@@ @@CLI@@ @@COMMIT_CONVENTIONS@@`
+@@PRIOR_SESSION@@ @@STEP_DONE_CMD@@ @@ASK_HUMAN_CMD@@ @@SET_BRANCH_CMD@@ @@BOUNCE_CMD@@
+@@BOUNCE_TARGET@@ @@BOUNCE_REASON_FILE@@ @@CLI@@ @@PASS@@ @@GATE_CMD@@ @@GATE_RECEIPTS_CMD@@
+@@COMMIT_CONVENTIONS@@`
+
+**The handoff note is a fixed template, not an essay.** The finish protocol hands every step the
+exact shape to write — a `sha:` line naming the commit it covers, then `## Did`, `## Decisions`,
+`## Uncertain`, `## Next step should verify` — capped at 40 lines, with empty sections deleted
+rather than padded. Free-form notes had grown to where streaming one cost 40–80 seconds of a step's
+budget and the next agent still had to hunt for the three facts it needed.
+
+(`@@PASS@@` is which entry into the step this is — 1 on the first, 2+ after a bounce or a `rework`
+— which is how a re-entered step reuses its own previous pass's work instead of redoing it: the
+evidence prompt re-films only the criteria whose files moved since its last handoff's `sha:`.
+`@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@` are the [gate receipt](#gate-receipts) wrapper and reader.)
 
 (`@@COMMIT_CONVENTIONS@@` renders your [`conventions.commits`](#conventions-optional) value when set
 and **nothing** when unset, so an unset key leaves the work/pr prompts byte-identical to before.)
@@ -1473,6 +1529,8 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason|--reason-file … [--
 herdr-factory --repo <name> ask-human <KEY> <step> --question|--question-file … [--source <name>]
 herdr-factory --repo <name> set-branch <KEY> <branch> [--source <name>]   # move the run onto this repo's branch convention
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]
+herdr-factory --repo <name> gate <KEY> <gate-name> [--step <s>] [--pass <n>] -- <command>   # run a check, leave a RECEIPT
+herdr-factory --repo <name> gates <KEY> [--json] [--source <name>]  # which checks already ran, at which commit, with what result
 herdr-factory capture-lock acquire|release <resource> [owner]       # machine-global exclusive_resource lock
 
 # scaffold a repo config from inside the repo (name defaults to --repo, else the checkout dir)

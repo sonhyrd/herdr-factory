@@ -50,8 +50,17 @@ const ReloadResponse = z
   })
   .openapi("Reload");
 const TickResponse = z.object({ ran: z.boolean() }).openapi("Tick");
+// `message` is the agent-facing transition line ("advanced work → evidence"), so it must survive
+// the HTTP path as well as the CLI's in-process fallback — `fromStep`/`nextStep` carry the same
+// fact structurally for anything reading the API.
 const StepDoneResponse = z
-  .object({ ok: z.boolean(), advanced: z.boolean().optional(), message: z.string().optional() })
+  .object({
+    ok: z.boolean(),
+    advanced: z.boolean().optional(),
+    fromStep: z.string().optional(),
+    nextStep: z.string().optional(),
+    message: z.string().optional(),
+  })
   .openapi("StepDone");
 const AskHumanResponse = z
   .object({ ok: z.boolean(), questionId: z.number().optional(), posted: z.boolean().optional(), queued: z.boolean().optional(), message: z.string().optional() })

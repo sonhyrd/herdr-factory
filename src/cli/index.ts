@@ -21,6 +21,7 @@ import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/
 import { RETRY_INTERVAL_SECONDS } from "../schedule.ts";
 import { applySignal, type SignalBody, type SignalResult } from "../core/signals.ts";
 import { runObligations } from "../core/obligations.ts";
+import { formatGateReceipts, runGate } from "../core/gate-receipts.ts";
 import { explainRun, fmtDur } from "../core/explain.ts";
 import { runForeground } from "./run.ts";
 import { triageRun } from "./triage.ts";
@@ -636,7 +637,10 @@ program
   .action(cliAction("step-done", async (key: string, step: string, opts: { source?: string; pass?: string }) => {
     try {
       const d = await dispatchSignal(requireRepo(), "step-done", { key, step, source: opts.source, pass: opts.pass });
-      signalRejected(key, d, "no active run");
+      // Say what happened. A silent exit 0 is indistinguishable from a dropped signal, so the next
+      // agents burned minutes on `status` + sleep-retry loops working out whether the belt moved.
+      if (signalRejected(key, d, "no active run")) return;
+      console.log(`${key}: ${d.message ?? `${step} recorded done`}`);
     } catch (e) {
       fail(e);
     }
@@ -883,6 +887,60 @@ program
       } else {
         fail("capture-lock: acquire|release <resource> [owner]");
       }
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("gate <key> <name> [cmd...]")
+  .description("run a verification command (test/typecheck/lint) and leave a RECEIPT on the run, so a later step trusts it instead of re-running it")
+  .option("--source <name>", "the work source the run belongs to (passed by the agent)")
+  .option("--step <name>", "the step running the gate (stamped into the rendered prompt command)")
+  .option("--pass <n>", "the step's pass (stamped into the rendered prompt command)")
+  .allowUnknownOption() // everything after `--` is the gate's own argv, flags included
+  .action(cliAction("gate", async (key: string, name: string, cmd: string[] = [], opts: { source?: string; step?: string; pass?: string }) => {
+    try {
+      if (cmd.length === 0) fail("gate: give the command to run after `--`, e.g. `gate ABC-1 test -- pnpm test`");
+      const deps = await buildDeps(requireRepo());
+      const run = resolveActiveRun(deps, key, opts.source);
+      if (!run) fail(`${key}: no active run — run the command directly (no receipt will be recorded)`);
+      const { receipt, exitCode } = await runGate(deps, run!, {
+        gate: name,
+        step: opts.step ?? run!.step ?? "(unknown)",
+        pass: opts.pass ? Number(opts.pass) : 1,
+        cmd: cmd[0]!,
+        args: cmd.slice(1),
+      });
+      console.log(
+        `${key}: gate "${name}" ${exitCode === 0 ? "passed" : `FAILED (exit ${exitCode})`} in ${(receipt.durationMs / 1000).toFixed(1)}s at ${receipt.head.slice(0, 12)} — receipt recorded`,
+      );
+      // The wrapper is transparent: the agent sees the gate's own verdict in its exit code, so
+      // `gate … -- pnpm test` can stand in for `pnpm test` anywhere the agent already used it.
+      if (exitCode !== 0) process.exitCode = exitCode;
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("gates <key>")
+  .description("the run's gate receipts — which verification commands already ran, at which commit, and with what result")
+  .option("--source <name>", "the work source the run belongs to (passed by the agent)")
+  .option("--json", "machine-readable receipts")
+  .action(cliAction("gates", async (key: string, opts: { source?: string; json?: boolean }) => {
+    try {
+      const deps = await buildDeps(requireRepo());
+      const run = resolveActiveRun(deps, key, opts.source);
+      if (!run) fail(`${key}: no active run`);
+      const receipts = deps.store.gateReceiptsFor(run!.id);
+      const head = run!.worktreePath ? await deps.git.headSha(run!.worktreePath) : null;
+      if (opts.json) {
+        console.log(JSON.stringify({ head, receipts }, null, 2));
+        return;
+      }
+      console.log(`${key}: HEAD ${head?.slice(0, 12) ?? "(unknown)"} — a CURRENT receipt covers this exact tree; re-run the STALE or DIRTY ones.`);
+      for (const line of formatGateReceipts(receipts, head)) console.log(`  ${line}`);
     } catch (e) {
       fail(e);
     }

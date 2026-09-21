@@ -24,7 +24,10 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { execFileSync, spawnSync } = require("node:child_process");
 
-const SIGNALS = ["step-done", "bounce", "ask-human", "capture-attempt", "evidence-upload", "set-branch"];
+// `gates` MUST precede `gate` — the alternation is first-match, so the shorter name would otherwise
+// swallow the plural and the reader command would never be found. (`gate`/`gates` are not signals;
+// they are parsed out of the prompt the same way because they are rendered the same way.)
+const SIGNALS = ["step-done", "bounce", "ask-human", "capture-attempt", "evidence-upload", "set-branch", "gates", "gate"];
 // Steps whose primitive produces commits — the agent commits there by default and nowhere else, so
 // a `review`/`evidence` behaviour that sets `commit: true` is a deliberate read-only violation.
 const COMMIT_STEPS = new Set(["work", "pr", "fix"]);
@@ -236,6 +239,19 @@ function handle(text) {
     const cmd = cmds["set-branch"];
     if (!cmd) log(`  WANTED set-branch but the prompt renders no such command`);
     else sh(cmd.replace(/<new-branch-name>/, b.setBranch), cwd);
+  }
+
+  // Gate receipts. The behaviour names (gate, command) pairs; the agent substitutes them into the
+  // prompt's OWN rendered @@GATE_CMD@@, exactly as the shipped work prompt tells a real agent to —
+  // so a scenario proves the rendered command, not a hand-built one.
+  for (const [name, command] of b.gates || []) {
+    const t = cmds["gate"];
+    if (!t) log(`  WANTED gate "${name}" but the prompt renders no such command`);
+    else sh(t.replace("<gate-name>", name).replace("<command>", command), cwd);
+  }
+  if (b.readGates) {
+    if (!cmds["gates"]) log(`  WANTED to read gate receipts but the prompt renders no such command`);
+    else sh(cmds["gates"], cwd);
   }
 
   for (const cmd of b.run || []) sh(cmd, cwd);

@@ -90,6 +90,7 @@ export type EventType =
   | "review_done"
   | "step_spawned"
   | "step_done"
+  | "step_timing" // per-step wall / shell / model split, exported into the timeline at step-done
   | "layout_wait_retry" // a layout-pane wait window expired; the engine re-armed it (bounded respawn budget)
   | "idle_nudge" // a running step's pane sat idle past limits.idle_nudge_seconds; it was re-prompted once
   | "bounced"
@@ -98,6 +99,7 @@ export type EventType =
   | "signal_queued" // a durable bounce/ask-human intent couldn't apply immediately (run lock busy) — the tick consumes it
   | "signal_rejected" // a consumed bounce/ask-human intent was invalid by the time it applied (stale/misaddressed)
   | "capture_attempt" // an evidence agent signalled a capture attempt (flaky-capture cap)
+  | "gate_recorded" // a verification command ran under `herdr-factory gate` and left a receipt
   | "evidence_uploaded" // the evidence-upload outbox delivered a capture's media to S3
   | "evidence_upload_failed" // the evidence-upload outbox hit a permanent (non-retryable) failure
   | "stale" // a write-back found the item gone at the source (deleted/transferred)
@@ -222,6 +224,28 @@ export interface RunStep {
    *  the reconciler's spawn branch keys on this instead, routing an undispatched pass through the
    *  bounded layout-wait machinery rather than the budget watchdog. */
   dispatchedAt: number | null;
+}
+
+/** One verification command a step ran through `herdr-factory gate`, pinned to the commit it ran
+ *  against. A LATER step reads these instead of re-running the same gate: a receipt whose `head`
+ *  equals the branch's current HEAD is proof the gate already passed on exactly this tree, so the
+ *  belt's verification cost is once per gate per SHA rather than once per gate per step. */
+export interface GateReceipt {
+  id: number;
+  runId: number;
+  /** The step that ran it, and its pass — attribution only (the identity is run+gate+head). */
+  step: string;
+  pass: number;
+  /** The gate's key, chosen by the agent (`test`, `typecheck`, `lint`, …). */
+  gate: string;
+  command: string;
+  /** The worktree HEAD the gate ran against. */
+  head: string;
+  exitCode: number;
+  durationMs: number;
+  /** The last few lines of the command's combined output (enough to see a failure, not a log dump). */
+  tail: string | null;
+  ranAt: number;
 }
 
 /** Fields the reconciler may patch on a run step. */

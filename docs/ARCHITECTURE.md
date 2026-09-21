@@ -204,6 +204,8 @@ herdr-factory/
                              the single edit surface for adding source N+1 (checklist in its header)
     core/{deps,branch,step,watch,reconcile}.ts
     core/{layout,layout-match,layout-hook}.ts   layout subsystem: tree builder+runner / pure matching / herdr event+startup hooks (§4)
+    core/gate-receipts.ts    the `gate` wrapper + the receipt reader: run a verification command, pin
+                          its verdict to the commit it ran at, so a later step reads it instead of re-running it
     core/pane-display.ts     display-only pane metadata (what the operator sees on a run's pane) — never a rename
     runtime/effect.ts        the shared Effect ManagedRuntime (also hosts the OTel layer)
     telemetry/…              OpenTelemetry spans/metrics (no-op unless HERDR_FACTORY_TELEMETRY)
@@ -752,6 +754,22 @@ CREATE UNIQUE INDEX idx_run_steps ON run_steps(run_id, step);   -- pass still ne
                                          -- an undispatched pass retries under the bounded layout
                                          -- wait instead of tripping the budget watchdog.
 
+CREATE TABLE gate_receipts(              -- one verification command, pinned to the commit it ran at (v39)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  step TEXT NOT NULL, pass INTEGER NOT NULL DEFAULT 1,   -- ATTRIBUTION only (see the UNIQUE below):
+                                         -- which step/pass paid for it — what gateShellMs sums for
+                                         -- the step_timing export.
+  gate TEXT NOT NULL,                    -- the agent's key for the check: test / typecheck / lint
+  command TEXT NOT NULL, head TEXT NOT NULL,             -- what ran, and the worktree HEAD it ran at
+  exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+  tail TEXT, ran_at INTEGER NOT NULL);   -- last ~40 lines of combined output (not a log store)
+CREATE UNIQUE INDEX idx_gate_receipts ON gate_receipts(run_id, gate, head);
+                                         -- the SHA is what makes a receipt trustworthy, so it is
+                                         -- part of the IDENTITY: two steps running the same gate at
+                                         -- the same commit are the same fact, and the second write
+                                         -- supersedes the first rather than accumulating.
+
 CREATE TABLE guard_counters(             -- capped-guard counters keyed (run, step, guard) (v21) —
   run_id INTEGER NOT NULL REFERENCES runs(id), step TEXT NOT NULL, guard TEXT NOT NULL,
   count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,   -- 'bounce_cap' (on the target step)
@@ -1123,9 +1141,9 @@ herdr agent in its own tab/pane, dispatched and gated by the reconciler. The run
 
 | Step | Does | Hands off |
 |---|---|---|
-| **work** | read the work doc + attachments → implement → lint/type/tests → commit | `handoff-work.md` + `step-done work` |
+| **work** | read the work doc + attachments → implement → lint/type/tests (each through `gate`, leaving a receipt) → commit | `handoff-work.md` + `step-done work` |
 | **evidence** *(opt-in)* | derive a test plan from acceptance criteria → read the repo's guidance/skills/local memory *first* (by path) → run the app and **sign in** via the repo's own dev-server/login helpers and credentials (right persona; an SSO+MFA redirect is expected, an un-completable login is ask-human, not a bounce) → capture before/after screenshots+video (`capture-attempt` signals each try) → publish via `evidence.publisher` (s3/local/command) → per-criterion verdict: pass forward or **bounce to work** | `handoff-evidence.md` + `step-done` / `bounce` |
-| **review** | fresh-eyes **read-only** gate — never edits or commits (enforced: a commit parks the run): pass forward, or **bounce to work** with findings | `handoff-review.md` + `step-done` / `bounce` |
+| **review** | fresh-eyes **read-only** gate — never edits or commits (enforced: a commit parks the run): reads the work step's gate receipts rather than re-running its suites, then passes forward or **bounces to work** with findings | `handoff-review.md` + `step-done` / `bounce` |
 | **pr** | push + open the PR (evidence URLs embedded) → drive the automated round (CI green + bot comments) | `step-done pr` → human review |
 
 The steps come from the run's **belt**: each `steps[]` entry names a primitive `type`, resolved
@@ -1300,15 +1318,59 @@ and the evidence step filmed a tree that was about to change.
   and trivially actionable.
   Every step prompt's finish protocol now requires the handoff note to open with `sha: <commit>`.
 
+#### Gate receipts (`core/gate-receipts.ts`) and the per-step timing export
+
+A belt re-derives the same fact once per step unless something records it. On the run this came from
+(a one-cell UI change that took 126 minutes) the full spec suite ran six times, the unit suite six
+times and the scoped typecheck four times, all against one unchanged SHA; the review step's second
+pass alone re-ran 6.2 minutes of the work step's gates. Nothing was wrong with any individual
+decision — a reviewer with no evidence that a check passed can only run it.
+
+`herdr-factory gate <KEY> <name> -- <cmd>` is a **transparent wrapper**: it spawns the argv verbatim
+in the run's worktree (no shell — the argv comes from the prompt, so a gate is not an injection
+seam; env assignments and compound commands therefore go through `-- sh -c '…'`), tees stdout/stderr to its own streams so the agent still sees the output, exits with the
+child's own exit code, and records a **receipt** — command, worktree HEAD, exit code, duration,
+bounded output tail — into `gate_receipts`. It deliberately has **no timeout**: a gate is a whole
+test suite, which the engine's 60 s default exec budget would kill; the step's own budget/heartbeat
+watchdog is the real bound. It is not a `SIGNAL_DESCRIPTORS` entry — it nudges nothing, it writes a
+fact — so its prompt token renders in `step.ts` alongside the capture-lock commands rather than from
+the signal registry.
+
+The receipt's identity is `(run, gate, head)`. The SHA is the whole point: a receipt is trustworthy
+exactly when it was taken at the tree the reader is looking at, so a re-run at the same commit
+SUPERSEDES its receipt instead of accumulating one, and the row count is the honest "how many
+distinct (gate, SHA) pairs did this run actually verify". `herdr-factory gates <KEY>` renders them
+marked **CURRENT** (`head === the worktree's HEAD now`, and the tree was clean) or **STALE** or
+**DIRTY** (a gate run with uncommitted work stores `${HEAD}+dirty` so it can never equal HEAD — the
+tree guard does not cover the work step). The `review` prompt is
+written against that: a current passing receipt is evidence, a current *failing* receipt is re-run
+once through the wrapper and bounced only if it fails again (a flake is not a bounce), and a gate is re-run only when its receipt is missing, stale,
+dirty, or the reviewer has a concrete suspicion about that specific check.
+
+The same rows give `step-done` a **timing export**. At each `step-done` the engine records a
+`step_timing` event — `{step, pass, wallMs, shellMs, modelMs, gates}` — where wall is the pass's
+`dispatched_at → now` and `shellMs` is `gateShellMs(run, step, pass)`, the receipts that step and
+pass paid for. Before this, the split needed decoding the agent harness's own chat store by hand.
+The engine reports only what it MEASURED: a gate run bare, or any other subprocess the agent
+spawned, lands in `modelMs`. Widening it means reading a harness transcript (Cursor's chat store,
+Claude Code's transcript), which is the upgrade path, not a claim this makes.
+
 ### Handoff between steps
 
 A step never inherits the prior step's chat context — that would bloat tokens and,
 for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
 
 - **Structured handoff doc (default).** The outgoing agent writes
-  `.memory/herdr-factory/handoff-<step>.md`: what it did, key decisions and *why*,
-  what's uncertain, what the next step should verify. Deliberately lossy — keeps the
-  signal, drops the transcript noise. This is the next agent's primary input.
+  `.memory/herdr-factory/handoff-<step>.md` against a **fixed template** the finish protocol spells
+  out: a `sha: <commit>` line, then `## Did`, `## Decisions`, `## Uncertain`, `## Next step should
+  verify` — capped at 40 lines, empty sections deleted rather than padded, plus any section this
+  step's prompt requires (verbatim findings, repro steps, verdict tables), which is exempt from
+  the cap. Deliberately lossy —
+  keeps the signal, drops the transcript noise. This is the next agent's primary input. The template
+  is not cosmetic: free-form notes had grown to where streaming one cost 40–80 s of a step's budget
+  and the reader still had to hunt for the three facts it needed. The same cap is stated for PR
+  bodies, which have the same failure mode. Bounce notes are not capped — they travel via
+  `bounce-<step>.md` → `feedback-<step>.md` and the target step needs them in full.
 - **On-demand pointer to the prior session.** The dispatcher hands the next agent the
   prior step's **pane id + session id** (herdr exposes `agent_session.value` per pane via
   `agent list`; captured into `run_steps.session_id`). When the doc isn't enough, the next
@@ -1964,6 +2026,8 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agen
 herdr-factory --repo <name> rework <KEY> <toStep> --note[-file] …      # OPERATOR → send a live run back for another pass
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
+herdr-factory --repo <name> gate <KEY> <name> [--step <s>] [--pass <n>] -- <cmd>  # agent → run a check + leave a receipt (exits with the check's code)
+herdr-factory --repo <name> gates <KEY> [--json] [--source <name>]     # agent → which checks already ran, at which commit, with what result
 herdr-factory --repo <name> runs [--all] | timeline <KEY> | logs [n]   # read the DB / repo log
 herdr-factory --repo <name> explain <KEY> [--source <name>]   # why the run is where it is, in plain language
 herdr-factory --repo <name> triage <KEY> [--print]            # open the operator's agent CLI on the run, pre-briefed
@@ -2560,11 +2624,15 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   release still writes — **contract only a release after** the last writer is gone. And every
   migration must carry in-flight runs forward (the v6 `work_source` backfill / v7 phase-widening
   precedent), never leave them unreconcilable.
-- **A run's ACTIVE STEP is recorded before its dispatch, and a REJECTED signal exits non-zero.**
+- **A run's ACTIVE STEP is recorded before its dispatch, and EVERY signal outcome is spoken.**
   Dispatch blocks on herdr's readiness while the agent already has its prompt, so the window between
   "the agent can signal" and "the engine knows which step it is on" must not exist (§8). And a signal
   the engine refuses must fail loudly: it used to print a note and exit 0, so an agent believed a
-  dropped `step-done` had landed, stopped, and the run sat until its step budget expired. Because
+  dropped `step-done` had landed, stopped, and the run sat until its step budget expired. The
+  ACCEPTED case is the same requirement read the other way: `step-done` prints where the run landed
+  (`advanced review → pr`, or that the dispatcher will advance it on its next pass), because a
+  silent exit 0 is indistinguishable from a dropped signal and had the next agents polling `status`
+  and sleeping to find out whether the belt had moved. Because
   `run.step` is now set during `claiming`, nothing may infer the phase from it — use
   `isPreDispatchClaim` (has any step of this RUN ever been dispatched; not a question about the
   belt's current first step, which mid-flight belt edits change).

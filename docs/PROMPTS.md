@@ -117,7 +117,29 @@ in a matching `@@WHEN:<product>@@` clause to reference it portably.
 | `@@BOUNCE_TARGET@@` | the step name a bounce returns to (empty when this step can't bounce) |
 | `@@BOUNCE_REASON_FILE@@` | path to write bounce findings to (empty when this step can't bounce) |
 | `@@CLI@@` | absolute path to the herdr-factory CLI binary |
+| `@@PASS@@` | which entry into this step this is (1 on the first; 2+ after a bounce or an operator `rework`) |
+| `@@GATE_CMD@@` | wrapper that runs one verification command and records a **gate receipt** against the run (renders with `<gate-name>` / `<command>` placeholders) |
+| `@@GATE_RECEIPTS_CMD@@` | the command that lists this run's gate receipts — which gates already ran, at which commit, with what result |
 | `@@COMMIT_CONVENTIONS@@` | the repo's commit-message conventions (from `conventions.commits`); empty when that key is unset |
+
+### Gate receipts — `@@GATE_CMD@@` / `@@GATE_RECEIPTS_CMD@@` / `@@PASS@@`
+
+A **gate** is one verification command — lint, type-check, a test suite. `@@GATE_CMD@@` is a
+transparent wrapper around it: the factory runs the command in the run's worktree, streams its
+output through unchanged, exits with the command's own exit code, and records a **receipt** —
+command, the worktree HEAD it ran at, exit code, duration and a short output tail — against the run.
+
+The receipt's identity is `(run, gate name, HEAD)`, so re-running a gate at the same commit replaces
+its receipt rather than adding one. A later step lists them with `@@GATE_RECEIPTS_CMD@@`, which
+marks each one **CURRENT** (taken at the branch's present HEAD on a clean tree, so it covers exactly the tree that
+step is looking at), **STALE**, or **DIRTY** (uncommitted work at that SHA), and its prompt tells it to re-run a gate only when the receipt is
+missing, stale, dirty, or it has a concrete suspicion about that specific check. Before this, every step
+re-derived the same fact by paying for it again: one observed run spent 12 minutes re-running spec,
+unit and typecheck suites that had already passed on an unchanged SHA.
+
+`@@PASS@@` is the step's pass number (see `run_steps.pass`). It is what lets a *re-entered* step
+reuse its own prior work — the evidence prompt uses it to re-film only the acceptance criteria whose
+files moved since the sha its previous handoff recorded (or everything, if a shared file moved), instead of re-shooting the whole plan.
 
 `@@SET_BRANCH_CMD@@` renders with a `<new-branch-name>` placeholder the agent replaces. The run's
 identity is its **worktree**, not its branch: the factory names the branch at claim time from what

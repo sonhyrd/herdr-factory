@@ -557,6 +557,43 @@ describe("applySignal — shared run-scoped agent signal effect", () => {
     expect(store.timeline("demo", "K-AS1").some((e) => e.type === "step_done")).toBe(true);
   });
 
+  // ISSUE #68 item 4: a silent exit 0 is indistinguishable from a dropped signal, so the NEXT
+  // agents polled `status` and slept to find out whether the belt had moved. step-done now says it.
+  it("step-done: reports the transition it caused (advanced <from> → <to>)", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-TR1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    const res = await applySignal(deps, "step-done", { key: "K-TR1", step: "review" });
+    expect(res.fromStep).toBe("review");
+    expect(res.nextStep).toBe("pr");
+    expect(res.message).toBe("advanced review → pr");
+    expect(store.getRun(run.id)!.step).toBe("pr");
+  });
+
+  it("step-done: an idempotent replay of an already-done step still reports, and never claims an advance", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-TR2", "running", "pr");
+    store.upsertRunStep(run.id, "review", { done: true });
+    const replay = await applySignal(deps, "step-done", { key: "K-TR2", step: "review" });
+    expect(replay.ok).toBe(true);
+    expect(replay.message).toContain("already recorded done");
+    expect(store.getRun(run.id)!.step).toBe("pr");
+  });
+
+  // ISSUE #68 item 5: the wall/shell/model split used to need decoding the agent harness's own chat
+  // store by hand. The shell half is the time the factory itself measured — gate receipts.
+  it("step-done: exports the pass's wall / shell / model split into the timeline", async () => {
+    const { deps, store, worktree, setNow } = build();
+    const run = seed(store, worktree, "K-TM1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    store.recordGateReceipt({ runId: run.id, step: "review", pass: 1, gate: "test", command: "pnpm test", head: "sha0", exitCode: 0, durationMs: 30_000, tail: null });
+    setNow(1000 + 600); // the step was seeded at t=1000; it finishes ten minutes later
+    await applySignal(deps, "step-done", { key: "K-TM1", step: "review" });
+    const ev = store.timeline("demo", "K-TM1").find((e) => e.type === "step_timing")!;
+    expect(ev, "step-done recorded no step_timing event").toBeTruthy();
+    expect(JSON.parse(ev.detail!)).toMatchObject({ step: "review", pass: 1, wallMs: 600_000, shellMs: 30_000, modelMs: 570_000, gates: 1 });
+  });
+
   it("an in-flight run whose belt is inactive still advances (inactive only gates new claims)", async () => {
     const { deps, store, worktree, shipBelt } = build();
     shipBelt.active = false; // the belt was paused after this run was already claimed
@@ -987,6 +1024,58 @@ describe("@@PR_TEMPLATE@@ + @@COMMIT_CONVENTIONS@@ (end-to-end render of the shi
     const body = readFileSync(join(worktree, MEMORY_DIR, "prompt-fix.md"), "utf8");
     expect(body).toContain("Prefix every commit with the ticket key.");
     expect(body).not.toContain("commit-guide.md"); // the pointer resolved to contents, not echoed
+  });
+});
+
+// ISSUE #68 items 1 + 3: the gate-receipt wrapper and the fixed handoff template are only worth
+// anything if they reach the agent fully rendered — a dangling @@TOKEN@@ is an instruction the
+// agent cannot follow, and a receipt no step records is a receipt no step can read.
+describe("gate receipts + the handoff template reach the agent (end-to-end render)", () => {
+  const shippedWork = readFileSync(new URL("../src/prompts/work.md", import.meta.url), "utf8");
+  const shippedReview = readFileSync(new URL("../src/prompts/review.md", import.meta.url), "utf8");
+
+  const render = async (idx: 0 | 1, body: string, pass = 1) => {
+    const { deps, store, worktree, shipBelt } = build();
+    shipBelt.steps[idx]!.enginePrompt = body;
+    const step = shipBelt.steps[idx]!;
+    const run = seed(store, worktree, "K-GT", "running", step.name);
+    if (pass !== 1) store.upsertRunStep(run.id, step.name, { pass });
+    await renderStepPrompt(deps, run, shipBelt, deps.resolveSource("jira")!, step, null);
+    return readFileSync(join(worktree, MEMORY_DIR, `prompt-${step.name}.md`), "utf8");
+  };
+
+  it("the work prompt renders a runnable gate wrapper, stamped with this step and pass", async () => {
+    const body = await render(0, shippedWork, 3);
+    expect(body).toContain("gate K-GT <gate-name> --source jira --step fix --pass 3 -- <command>");
+    expect(body).toContain("sh -c");
+    expect(body).not.toMatch(/@@[A-Z_]+@@/); // nothing dangling
+  });
+
+  it("the review prompt renders the receipts command and tells the agent to re-run only STALE gates", async () => {
+    const body = await render(1, shippedReview);
+    expect(body).toContain("gates K-GT --source jira");
+    expect(body).toContain("CURRENT");
+    expect(body).toContain("STALE");
+    expect(body).toContain("DIRTY");
+    expect(body).toContain("no receipt for a check the repo requires");
+    expect(body).toContain("recorded command");
+    expect(body).toMatch(/re-run it once through the\s+wrapper/);
+    expect(body).not.toContain("A **failing** CURRENT receipt is a bounce, not a re-run");
+    expect(body).not.toMatch(/@@[A-Z_]+@@/);
+  });
+
+  it("every step's scaffold carries the FIXED handoff template, not a free-form 'write a note'", async () => {
+    const body = await render(0, shippedWork);
+    for (const heading of ["sha: <commit>", "## Did", "## Decisions", "## Uncertain", "## Next step should verify"]) {
+      expect(body, heading).toContain(heading);
+    }
+    expect(body).toContain("Keep it under 40 lines total");
+    expect(body).toContain("exempt from the cap");
+    expect(body).not.toContain("EXACTLY this template");
+    expect(body).toContain("The same brevity applies to a PR body");
+    expect(body).not.toMatch(/brevity applies to a bounce note/);
+    // And it tells the agent step-done reports the landing, so it has no reason to poll `status`.
+    expect(body).toContain("advanced fix → <next step>");
   });
 });
 

@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   Clock,
   EventType,
+  GateReceipt,
   HumanQuestion,
   HumanQuestionPatch,
   Intent,
@@ -121,6 +122,36 @@ function toRunStep(r: RunStepRow): RunStep {
     absentAt: r.absent_at,
     pass: r.pass,
     dispatchedAt: r.dispatched_at,
+  };
+}
+
+interface GateReceiptRow {
+  id: number;
+  run_id: number;
+  step: string;
+  pass: number;
+  gate: string;
+  command: string;
+  head: string;
+  exit_code: number;
+  duration_ms: number;
+  tail: string | null;
+  ran_at: number;
+}
+
+function toGateReceipt(r: GateReceiptRow): GateReceipt {
+  return {
+    id: r.id,
+    runId: r.run_id,
+    step: r.step,
+    pass: r.pass,
+    gate: r.gate,
+    command: r.command,
+    head: r.head,
+    exitCode: r.exit_code,
+    durationMs: r.duration_ms,
+    tail: r.tail,
+    ranAt: r.ran_at,
   };
 }
 
@@ -488,7 +519,7 @@ export class Store {
       // Detach (keep) the timeline; the FK on events(run_id) permits NULL, so the rows survive.
       this.db.prepare(`UPDATE events SET run_id = NULL WHERE run_id IN (${ph})`).run(...ids);
       // Delete every run-scoped child row. Table names are a fixed internal list (never user input).
-      for (const table of ["run_steps", "run_products", "guard_counters", "human_questions", "intents", "watch_state"]) {
+      for (const table of ["run_steps", "run_products", "guard_counters", "gate_receipts", "human_questions", "intents", "watch_state"]) {
         this.db.prepare(`DELETE FROM ${table} WHERE run_id IN (${ph})`).run(...ids);
       }
       this.db.prepare(`DELETE FROM runs WHERE id IN (${ph})`).run(...ids);
@@ -912,6 +943,52 @@ export class Store {
    *  step that never gathers evidence). */
   resetGuardCounter(runId: number, step: StepName, guard: string): void {
     this.db.prepare("DELETE FROM guard_counters WHERE run_id = ? AND step = ? AND guard = ?").run(runId, step, guard);
+  }
+
+  // --- gate receipts (one per verification command per SHA, v39) ---------------
+  // The belt's answer to "has this already been checked on this tree?". A later step reads receipts
+  // instead of re-running the earlier step's gates; the UNIQUE (run, gate, head) makes a re-run at
+  // the same commit REPLACE its receipt rather than pile up, so the row count is the honest
+  // "how many distinct (gate, SHA) pairs did this run actually verify".
+
+  recordGateReceipt(r: Omit<GateReceipt, "id" | "ranAt">): GateReceipt {
+    const now = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO gate_receipts (run_id, step, pass, gate, command, head, exit_code, duration_ms, tail, ran_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(run_id, gate, head) DO UPDATE SET
+           step = excluded.step, pass = excluded.pass, command = excluded.command,
+           exit_code = excluded.exit_code, duration_ms = excluded.duration_ms,
+           tail = excluded.tail, ran_at = excluded.ran_at`,
+      )
+      .run(r.runId, r.step, r.pass, r.gate, r.command, r.head, r.exitCode, r.durationMs, r.tail, now);
+    telemetryEvent("store.gate_receipt.record", { "run.id": r.runId, step: r.step, gate: r.gate, "gate.exit_code": r.exitCode, "gate.duration_ms": r.durationMs });
+    return this.gateReceipt(r.runId, r.gate, r.head)!;
+  }
+
+  gateReceipt(runId: number, gate: string, head: string): GateReceipt | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM gate_receipts WHERE run_id = ? AND gate = ? AND head = ?")
+      .get(runId, gate, head) as GateReceiptRow | undefined;
+    return row ? toGateReceipt(row) : undefined;
+  }
+
+  /** Every receipt this run has, newest first — what `herdr-factory gates <key>` prints and what a
+   *  later step's prompt tells it to trust against the current HEAD. */
+  gateReceiptsFor(runId: number): GateReceipt[] {
+    return (this.db.prepare("SELECT * FROM gate_receipts WHERE run_id = ? ORDER BY ran_at DESC, id DESC").all(runId) as unknown as GateReceiptRow[]).map(
+      toGateReceipt,
+    );
+  }
+
+  /** Total wall time this (run, step, pass) spent inside gate commands — the SHELL half of the
+   *  per-step timing split the step-done export records. */
+  gateShellMs(runId: number, step: string, pass: number): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(SUM(duration_ms), 0) AS ms FROM gate_receipts WHERE run_id = ? AND step = ? AND pass = ?")
+      .get(runId, step, pass) as { ms: number };
+    return row.ms;
   }
 
   // --- transition outbox (source status write-backs, retried until delivered) --

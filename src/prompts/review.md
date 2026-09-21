@@ -31,7 +31,31 @@ findings belong in your handoff or bounce note.
    correctness, edge cases, adherence to the repo's conventions, test coverage, and unnecessary
    complexity / leftover AI slop. Read the previous handoff (`@@HANDOFF_IN@@`).@@WHEN:evidence@@ Also
    inspect the captured evidence in `@@EVIDENCE_DIR@@` and any evidence URLs carried in the handoff.@@END@@
-2. **Decide ONE of:**
+2. **Do not re-run what has already been proven on this tree.** Run `@@GATE_RECEIPTS_CMD@@` first.
+   It lists every verification command an earlier step ran, the commit it ran at, its exit code and
+   the tail of its output, and marks each receipt **CURRENT** (taken at this branch's HEAD — so it
+   covers exactly the tree you are reviewing) or **STALE**. A CURRENT passing receipt is evidence;
+   treat it as such and move on. Run a gate yourself only when:
+   - there is no receipt for a check the repo requires — run it yourself through the wrapper;
+   - its receipt is STALE (the tree moved under it) or DIRTY (the gate ran with uncommitted work);
+   - you have a **concrete** suspicion about that specific check — a test you believe does not
+     cover the change, a command you can see was scoped to skip the touched files. "To be sure" is
+     not a reason: re-running a green suite on an unchanged commit costs minutes and can only tell
+     you what the receipt already did.
+
+   A receipt's identity is the gate **name** plus HEAD, not the command. A CURRENT `test` receipt
+   whose recorded command is `pnpm test one.spec` does not cover the suite the repo requires —
+   check that the command actually ran what this repo's checks demand.
+
+   When you do run one, run it through the wrapper so your result is a receipt too:
+
+   ```
+   @@GATE_CMD@@
+   ```
+
+   A **failing** CURRENT receipt is a flake until proven otherwise: re-run it once through the
+   wrapper. Bounce only if it fails again — the earlier step left a broken gate.
+3. **Decide ONE of:**
    - **Sound.** The change is correct@@WHEN:evidence@@ and the evidence supports it@@END@@. Write your
      handoff note (`@@HANDOFF_OUT@@`)@@WHEN:evidence@@, carrying the evidence URLs forward so a later
      step can use them@@END@@, then run `@@STEP_DONE_CMD@@`. Do **not** edit code, do **not** commit.
