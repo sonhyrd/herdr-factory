@@ -1027,8 +1027,10 @@ before claiming. `max_active_workspaces`: the machine count (`countOccupyingAll`
 without the repo filter, over the one shared DB) and the whole claim section run under the
 **`machine:claim`** heartbeat lock. That closes the cross-repo race: repos tick on separate timers and
 Phase B awaits the network (`listEligible`, `claimImpl`) between counting and `createRun`, so two
-repos could each read `1/2` and both claim. The lock is WAITED on (~10 s of 500 ms polls), not
-try-locked: `serve` ticks every repo on one cadence and in one order, so a repo that skipped on
+repos could each read `1/2` and both claim. The lock is WAITED on (500 ms polls for HALF a tick
+interval, floor 10 s — half, so the pass still finishes inside its own interval and no tick is
+skipped for waiting; it scales with the tick because the number of repos sharing the lock does),
+not try-locked: `serve` ticks every repo on one cadence and in one order, so a repo that skipped on
 contention hit the same mid-hold instant every tick and never claimed again (issue #72 — one repo
 starved four hours). Holders release in seconds (a count plus at most `max_claims_per_tick` claims),
 so every repo gets its turn inside one tick. A repo whose wait is spent logs `machine claim lock held

@@ -419,11 +419,15 @@ const tickLockTtl = (deps: Deps): number => Math.max(deps.config.limits.tickInte
 /** Machine-wide: serializes every repo's machine-count + claim section when machine.yml sets a cap. */
 export const MACHINE_CLAIM_LOCK = "machine:claim";
 
-/** How long Phase B waits for the machine claim lock before deferring its claims to the next tick
- *  (~10 s of 500 ms polls). Holders release in seconds — a claim section is a count plus at most
- *  `max_claims_per_tick` claims — so every repo on the host gets its turn within one tick. */
-const MACHINE_CLAIM_WAIT_TRIES = 20;
-const MACHINE_CLAIM_WAIT_DELAY_MS = 500;
+/** How long Phase B waits for the machine claim lock before deferring its claims, in 500 ms polls:
+ *  HALF a tick interval, floor 10 s. Half, so the pass still finishes well inside its own interval
+ *  and the next tick is never skipped for waiting; a whole interval's worth of holders is what the
+ *  old try-lock silently lost anyway. It scales with the tick because the number of repos sharing
+ *  the lock does: a claim section is a count plus at most `max_claims_per_tick` claims — seconds
+ *  each — and a flat 10 s is already thin for six repos on a 60 s tick. */
+const MACHINE_CLAIM_POLL_MS = 500;
+const machineClaimWaitTries = (deps: Deps): number =>
+  Math.max(1, Math.round(Math.max(10_000, (deps.config.limits.tickIntervalSeconds * 1000) / 2) / MACHINE_CLAIM_POLL_MS));
 
 /**
  * Run `fn` under the per-repo single-instance tick lock (heartbeat-extended; see
@@ -606,7 +610,7 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   // `tick`/`claim` in another process) serializes them. It is WAITED on, not try-locked: `serve`
   // ticks every repo on one cadence and in one order, so a repo that skipped on contention hit
   // the same mid-hold instant every tick and never claimed again (issue #72 — four hours of it).
-  const ran = await withHeartbeatLockWaiting(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), MACHINE_CLAIM_WAIT_TRIES, MACHINE_CLAIM_WAIT_DELAY_MS, async () => {
+  const ran = await withHeartbeatLockWaiting(deps, MACHINE_CLAIM_LOCK, tickLockTtl(deps), machineClaimWaitTries(deps), MACHINE_CLAIM_POLL_MS, async () => {
     const occupying = deps.store.countOccupyingAll();
     const atCapacity = capacityGate(machine, occupying);
     noteMachineGate(deps.log, atCapacity);
