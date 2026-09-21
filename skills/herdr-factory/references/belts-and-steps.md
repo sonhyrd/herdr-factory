@@ -164,7 +164,9 @@ and one final time after the last commit so the receipts sit at HEAD — see
   never parks; it is force-released when the step exits.
 - **Pass 2+ reuses pass 1's footage.** The shipped prompt diffs against the `sha:` its own previous
   handoff recorded and re-films only the criteria whose files moved (plus any that were `not
-  proven`), carrying the untouched rows and their published URLs forward. It also requires **one
+  proven`), carrying the untouched rows and their published URLs forward. If the diff touches a
+  file shared across criteria (shared component or layout, styles, config, `package.json`/lockfile,
+  routing, locales), or the agent is unsure, it re-films everything. It also requires **one
   output directory per capture invocation** — Playwright clears its output dir at the start of a
   run, so two invocations sharing one silently delete the first's videos.
 - Read-only (see below) and, per the shipped prompt, bounces on any acceptance criterion it cannot

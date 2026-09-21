@@ -171,6 +171,8 @@ describe("the shipped evidence prompt does not re-film what has not changed", ()
     expect(body).toContain("git diff --name-only");
     expect(body).toMatch(/Re-film only the criteria that could have changed/);
     expect(body).toMatch(/carry the previous row/i); // untouched criteria keep their asset + URL
+    expect(body).toMatch(/If the diff touches a file shared across criteria/);
+    expect(body).toMatch(/re-film everything/);
   });
 
   it("requires one output directory per capture invocation, and says why", () => {

@@ -103,6 +103,8 @@ handoff.
      unchanged into this pass's table, noting the sha it was filmed at. Do not re-film an unchanged
      criterion "to be consistent": five untouched desktop criteria re-filmed cost four minutes and
      proved exactly what the existing assets already proved.
+   - If the diff touches a file shared across criteria (shared component or layout, styles, config,
+     `package.json`/lockfile, routing, locales), or you are unsure, re-film everything.
    - If the previous handoff is missing or has no usable table, film everything — say so in your
      handoff rather than guessing which assets are current.
 2. **Set up the right environment — and the right account.** The change is only proven if you drive

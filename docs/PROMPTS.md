@@ -139,7 +139,7 @@ unit and typecheck suites that had already passed on an unchanged SHA.
 
 `@@PASS@@` is the step's pass number (see `run_steps.pass`). It is what lets a *re-entered* step
 reuse its own prior work — the evidence prompt uses it to re-film only the acceptance criteria whose
-files moved since the sha its previous handoff recorded, instead of re-shooting the whole plan.
+files moved since the sha its previous handoff recorded (or everything, if a shared file moved), instead of re-shooting the whole plan.
 
 `@@SET_BRANCH_CMD@@` renders with a `<new-branch-name>` placeholder the agent replaces. The run's
 identity is its **worktree**, not its branch: the factory names the branch at claim time from what
