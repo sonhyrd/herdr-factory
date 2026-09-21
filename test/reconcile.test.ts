@@ -4153,7 +4153,7 @@ describe("operator rework — the operator's counterpart to an agent bounce", ()
   });
 });
 
-describe("tree guard — a step that never commits is pinned to the HEAD it was spawned on", () => {
+describe("tree guard — a step that never commits must find the worktree clean", () => {
   /** A belt whose `review` step declares the read-only posture (as evidence/review do in production). */
   const readOnlyReview = (b: BeltRuntime) => { b.steps[1] = stepCfg("review", { readOnly: true }); };
 

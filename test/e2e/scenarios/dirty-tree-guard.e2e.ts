@@ -61,13 +61,16 @@ scenario(
     // ── 2. resume once the tree is clean: the same advance now goes through ───────────────────
     w.git(["checkout", "--", "README.md"], run().worktree_path!);
     expect(w.git(["status", "--porcelain"], run().worktree_path!), "the worktree is clean again").toBe("");
-    // The resume re-prompts the idle WORK agent, which takes another turn — so take the edit out of
-    // its script first, or it would dirty the tree again and re-park on the same cycle. Its second
-    // step-done is an idempotent no-op (the step is already done).
-    // `signal: "none"` on work: the advance may beat its second turn, and a step-done arriving after
-    // the run has moved to the gate is a (correctly) rejected signal the agent would then retry.
+    // Resume may ALSO re-prompt the idle work agent, so take the edit out of its script first — a
+    // second turn that re-dirtied the tree would re-park on the same cycle — and give it no signal:
+    // the advance can beat that turn, and a step-done arriving once the run has moved to the gate is
+    // a (correctly) rejected one the agent would then retry eight times.
     w.setAgentScript({ steps: { work: { commit: false, signal: "none" }, review: { commit: false, run: LEAVE_EDIT_BEHIND } } });
-    await w.resumeUntilNudged(key);
+    // One plain resume — NOT resumeUntilNudged. Nothing here needs the agent woken: the work step is
+    // already done, so the un-park alone re-runs the advance. (The park hands the work pane a turn of
+    // its own — the operator report — so the first resume often reads it as `working` and nudges
+    // nobody; waiting for a nudge that is not needed just times out.)
+    expect(w.resume(key).code, "the operator resumes the parked run").toBe(0);
     await w.waitFor(() => w.db.step(id, "review")?.dispatched_at != null, { label: "the gate starts once the tree is clean", timeoutMs: 120_000 });
 
     // ── 3. …and the gate's own step-done is refused when IT dirties the tree ──────────────────
@@ -82,8 +85,10 @@ scenario(
 
     // The refusal reached the AGENT — non-zero exit with the reason and the stat on stderr, which is
     // the only channel it has. (The harness agent logs every command's rc and output.)
-    expect(w.agentLog(), "the agent saw why it was refused").toContain("cannot finish on this tree");
-    expect(w.agentLog()).toMatch(/rc=1/);
+    await w.waitFor(() => w.agentLog().includes("cannot finish on this tree"), {
+      label: "the agent logs the refusal it read on stderr", // it logs AFTER the CLI returns — the event beats it
+    });
+    expect(w.agentLog(), "with a non-zero exit, which is the agent's only channel").toMatch(/rc=1 .*ERR:.*cannot finish on this tree/s);
 
     // And the belt did not advance on a verdict about code that is already gone.
     expect(w.db.step(id, "review")!.done, "the gate is still not done").toBe(0);

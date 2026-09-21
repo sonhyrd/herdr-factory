@@ -98,7 +98,7 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
         const clock = rs ? effectiveWatchClock(deps, rs, "read_only") : { sig: null, basedAt: null };
         facts.baselineSig = clock.sig ?? null;
         facts.frozenAt = clock.basedAt ?? null; // null = still tracking (absorbing handoff commits)
-        // The tree guard's last refusal (a dirty tree / a HEAD that moved), parked on the same
+        // The tree guard's last refusal (an uncommitted change in the worktree), parked on the same
         // watch row — the operator's only window onto a step-done the engine refused.
         const meta = rs ? deps.store.getWatchState(rs.runId, rs.step, "read_only")?.meta : null;
         if (meta) {

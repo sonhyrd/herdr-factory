@@ -99,13 +99,11 @@ scenario(
     expect(read(feedback), "the operator's note is in the feedback file").toContain(NOTE);
     expect(read(feedback), "which says a person sent it back").toContain("operator");
 
-    // Every handoff names the commit it covers (issue #66's third "Done when").
-    await w.waitFor(() => read(`${run().worktree_path}/.memory/herdr-factory/handoff-work.md`).startsWith("sha: "), {
-      label: "the work handoff opens with the sha it covers",
-      timeoutMs: 120_000,
-    });
-    const handoff = read(`${run().worktree_path}/.memory/herdr-factory/handoff-work.md`);
-    expect(handoff.split("\n")[0]).toMatch(/^sha: [0-9a-f]{40}$/);
+    // Every handoff names the commit it covers (issue #66's third "Done when"). The requirement is
+    // on the PROMPT — the harness's scripted agent is not the shipped one, and teaching it to read
+    // HEAD costs a subprocess per turn that `fast-signal` cannot afford (see agent.cjs).
+    expect(prompt, "the finish protocol asks for the sha the handoff covers").toContain("sha: <commit>");
+    expect(prompt).toContain("git rev-parse HEAD");
 
     // A rewind, not an abort: the belt runs forward from work again and finishes.
     await w.waitForEnd(key, "completed", { label: "the reworked run runs forward and completes", timeoutMs: 180_000 });
