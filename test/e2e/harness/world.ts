@@ -537,6 +537,15 @@ export class World {
       },
       agent: { command: "claude", flags: [] },
     };
+    // A repo's `env` file, 0600. Evaluated HERE, not at spec time: writeConfig runs after
+    // `beforeStart`, so a fake backend's port is already bound by the time a function form is called
+    // (same rule as `config`).
+    const putEnv = (dir: string, env: NonNullable<ScenarioSpec["env"]>, paths: WorldPaths): void => {
+      const resolved = typeof env === "function" ? env(paths) : env;
+      const p = join(dir, "env");
+      writeFileSync(p, `${Object.entries(resolved).map(([k, v]) => `${k}=${v}`).join("\n")}\n`);
+      chmodSync(p, 0o600);
+    };
     const render = (over: Record<string, unknown>): string =>
       `# yaml-language-server: $schema=../../config.schema.json\n${yamlStringify(mergeConfig(base, over), { lineWidth: 0 })}`;
     writeFileSync(join(this.paths.repoConfigDir, "config.yml"), render(this.spec.config(this.paths)));
@@ -550,6 +559,7 @@ export class World {
     // same target checkout) and its own briefs. The endpoints file is what makes `fleet` reach them.
     for (const [, { paths, spec, extraRepos }] of this.fleet) {
       writeFileSync(join(paths.repoConfigDir, "config.yml"), render((spec.config ?? this.spec.config)(paths)));
+      if (spec.env) putEnv(paths.repoConfigDir, spec.env, paths);
       for (const [key, body] of Object.entries(spec.briefs ?? {})) writeFileSync(join(paths.briefs, `${key}.md`), body);
       for (const [, { paths: p, spec: s }] of extraRepos) {
         writeFileSync(join(p.repoConfigDir, "config.yml"), render((s.config ?? spec.config ?? this.spec.config)(p)));
@@ -582,17 +592,7 @@ export class World {
       ),
     );
 
-    if (this.spec.env) {
-      // Evaluated HERE, not at spec time: writeConfig runs after `beforeStart`, so a fake backend's
-      // port is already bound by the time a function form is called (same rule as `config`).
-      const env = typeof this.spec.env === "function" ? this.spec.env(this.paths) : this.spec.env;
-      const body = Object.entries(env)
-        .map(([k, v]) => `${k}=${v}`)
-        .join("\n");
-      const p = join(this.paths.repoConfigDir, "env");
-      writeFileSync(p, `${body}\n`);
-      chmodSync(p, 0o600);
-    }
+    if (this.spec.env) putEnv(this.paths.repoConfigDir, this.spec.env, this.paths);
     for (const [rel, body] of Object.entries(this.spec.configFiles ?? {})) {
       const p = join(this.paths.repoConfigDir, rel);
       mkdirSync(dirname(p), { recursive: true });

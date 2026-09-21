@@ -535,7 +535,9 @@ reverse-engineered during the bash prototype.
   plus its loaded `match` predicate); `resolveBelt` maps a run's `belt` back to its runtime.
 - **`sources/registry.ts`** — one `SourceDescriptor` per type: the zod `configSchema` (the full
   `.strict()` source object), `resolveConfig` (snake_case parse → camelCase block), `create`
-  (build the live client), the `secrets` manifest, and the TUI `defaultBlock`/`fields`.
+  (build the live client), the `secrets` manifest, the TUI `defaultBlock`/`fields`, and the optional
+  `itemUrl(cfg, key, ghRepo)` — the item's web URL **from config alone, no network**, so the
+  dashboard's 3 s status poll can carry it (`local_markdown` omits it: its items have no web page).
   `config.ts` assembles the `work_sources` discriminated union from the descriptors,
   `build-deps` constructs clients via `descriptorFor(type).create(ctx)`, and `doctor`'s secrets
   check + the TUI's type enum / field / credential rows are all descriptor-driven
@@ -2111,6 +2113,13 @@ on every one of them. The render therefore has four editorial rules, all of them
   teaches an operator to skip the top of the screen. The green half needs a fact the API had to start
   carrying: `active[].prGreen`, read straight off the `pr_green` watch state (`watch_state`, step
   `pull_request`) — a DB read on the quick path, never a GitHub call on the 3 s poll.
+  The same payload carries `active[].prUrl` and `active[].itemUrl`, which is what the dashboard's
+  `o`/`O` open and what its OSC 8 `#NN` refs point at. Both are resolved **server-side, from config
+  only** — `prUrl` from the resolved PR repo, `itemUrl` from the source descriptor's `itemUrl` — by
+  the machine that OWNS the run, so a remote machine's row opens in the browser of the machine you
+  are sitting at. A descriptor that throws on a half-resolved block degrades to `null`: a cosmetic
+  link must never cost a status poll. The opener choice itself (`$BROWSER` → `open`/`xdg-open`, and
+  print-instead-of-open on a displayless SSH session) is a pure function in `tui/open-url.ts`.
   Because the section REPEATS rows that also appear under their machine, its targets carry
   `section: "needs"`, which is part of the dashboard's `rowKey`. Without it the two focusables share
   a key, and the highlight — restored by key across every 3 s refresh — snaps back to the section's

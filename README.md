@@ -1733,8 +1733,8 @@ cursor.
 
 - **Dashboard** — repos contain their belts, and each belt contains its active and eligible work
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
-  `x` tears down, `i` expands the collapsed idle repos, and `r` refreshes (mutating actions require
-  confirmation). Empty belts stay hidden.
+  `x` tears down, `o`/`O` open the run's PR / work item in a browser, `i` expands the collapsed idle
+  repos, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
   The board is built to be read at a glance, so it says each thing once and leads with the part that
   is waiting on you:
   - **"needs you" heads the board**, above the hosts and never narrowed by the machine filter: PRs
@@ -1780,6 +1780,17 @@ cursor.
   plus the belt's step-by-step progress (with per-step timing) and the event timeline; on a
   **repo** it opens general AWS SSO/source-auth diagnostics followed by configuration, work counts,
   and a live source/pickup health check for every belt.
+
+  Press `o` on any run to open its **PR** in a browser, falling back to the work item while there is
+  no PR yet; `O` (shift-`o`) always opens the **work item** — the GitHub issue, the Jira
+  `browse/<KEY>` page, the Sentry issue. A source with no web page for its items (`local_markdown`)
+  says so on the action line instead. The opener is `$BROWSER` when set, otherwise `open` on macOS
+  and `xdg-open` elsewhere; over SSH with no display (`SSH_CONNECTION` set and neither `DISPLAY` nor
+  `WAYLAND_DISPLAY`) the URL is printed on the action line rather than opened where nobody would see
+  it. A remote machine's run opens in **this** machine's browser: every URL is resolved from config
+  by the machine that owns the run and travels with it. Where the terminal advertises OSC 8
+  hyperlinks, the `#NN` refs and each card's work key are also Cmd/Ctrl-clickable — including over
+  SSH, where there is no local browser to spawn.
 
   With more than one machine in the [fleet](#fleet--every-run-on-every-machine), the dashboard shows
   **all of them**: a header per machine (reachable?, server version, cap occupancy and memory gate,

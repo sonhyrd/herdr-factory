@@ -65,6 +65,9 @@ export const sentryDescriptor: SourceDescriptor<SentrySourceCfg> = {
       onMerge: b.on_merge,
     };
   },
+  itemUrl(cfg, key) {
+    return `${cfg.baseUrl}/organizations/${cfg.organization}/issues/${key}/`;
+  },
   create(ctx) {
     const cfg = ctx.cfg;
     const client = new SentryClient({ baseUrl: cfg.baseUrl, organization: cfg.organization, token: ctx.env.SENTRY_AUTH_TOKEN ?? "", log: ctx.log });

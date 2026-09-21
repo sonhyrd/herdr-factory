@@ -217,6 +217,9 @@ export interface NeedsYouItem {
   key?: string;
   source?: string | null;
   phase?: string;
+  /** The run's PR / work item on the web, carried through so `o`/`O` work from this section too. */
+  prUrl?: string | null;
+  itemUrl?: string | null;
   stale?: boolean;
 }
 
@@ -246,7 +249,7 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
     for (const r of m.repos) {
       for (const run of r.status?.active ?? []) {
         const at = `${r.repo}${m.local ? "" : ` @${m.name}`}`;
-        const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, stale: m.stale };
+        const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, stale: m.stale };
         if (run.prGreen && run.prNumber != null) {
           green.push({ ...base, text: `✓ ${run.ticketKey}  PR #${run.prNumber} is green — ready to merge  (${at})`, tone: "good" });
         }
