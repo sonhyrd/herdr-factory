@@ -178,7 +178,9 @@ Read-only fresh-eyes gate; exactly one of pass-forward or bounce. Its prompt rea
 receipts** (`@@GATE_RECEIPTS_CMD@@`) before running anything itself: a CURRENT passing receipt (one
 taken at the branch's present HEAD on a clean tree) is evidence, a CURRENT *failing* one is a bounce, and a gate is
 re-run only when its receipt is missing, STALE, DIRTY, or there is a concrete suspicion about that specific
-check. This is what stops each step re-paying for the previous step's suites. **Read-only is enforced by HEAD
+check — and **no receipt for a check the repo requires means run it through the wrapper**. Identity
+is gate name + HEAD, not the command, so the reviewer also checks that the recorded argv covers the
+suite the repo requires. This is what stops each step re-paying for the previous step's suites. **Read-only is enforced by HEAD
 movement**, not by sandboxing: at spawn the engine records the branch HEAD, then *keeps tracking* live
 HEAD (absorbing the prior step's trailing commits) until this step's pane is first observed `working`, at
 which point the baseline **freezes**. Only a post-freeze HEAD change trips, parking
