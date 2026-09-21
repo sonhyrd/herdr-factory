@@ -327,6 +327,7 @@ function build(opts: { multi?: boolean } = {}) {
     sources: sources.map((s) => ({ name: s.name, type: s.type, pollIntervalSeconds: s.pollIntervalSeconds, maxActiveWorkspaces: s.maxActiveWorkspaces, cfg: {} })),
     belts,
     layouts: [],
+    sourceComments: { brand: "herdr-factory" },
     guidance: undefined,
     agent: DEFAULT_AGENT_CONFIG,
     paths: { configDir: "/c", repoDir: "/c/repos/demo", stateRoot: "/s", stateDir: "/s/demo", dbPath: "/s/db", logsDir: join(worktree, "logs") },

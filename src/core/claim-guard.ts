@@ -3,9 +3,10 @@
 // still runs under the tick lock + the v25 unique index; this adds a cross-host arbiter on the
 // tracker itself, using the item's comment stream as an append-only ledger:
 //
-//   1. post `[herdr-factory claim id=<runId> host=<host>]`
+//   1. post `[<brand> claim id=<runId> host=<host>]` (brand = `source_comments.brand`, default
+//      `herdr-factory`; host = `claim_guard.host` ?? machine.yml's `host_alias` ?? os.hostname())
 //   2. wait `settle_ms`, re-read the comments
-//   3. among claims with no matching `[herdr-factory release id=<runId> host=<host>]`, the LOWEST
+//   3. among claims with no matching `[<brand> release id=<runId> host=<host>]`, the LOWEST
 //      server-assigned comment id wins — ids are monotonic, so every factory computes the same winner
 //   4. loser: post its release, delete its (still pristine) run row, log `claimed elsewhere by <host>`
 //   (an item that already shows another open claim is skipped before step 1 — nothing is posted)
@@ -16,9 +17,13 @@
 // could not post its release) is released before arbitrating, because this factory is the authority
 // on its own runs: it can see the row is gone. Nothing else can free those, and left open they fence
 // the item against every host, forever.
+//
+// ROLLOUT: readers accept BOTH the configured brand and the legacy `herdr-factory` one, and fold a
+// host's pre-alias hostname onto its alias (LedgerView) — so a half-migrated fleet arbitrates on one
+// shared ledger and two hosts never both think they own an item.
 import type { Deps, SourceRuntime } from "./deps.ts";
 import type { Run } from "../types.ts";
-import { HERDR_MARKER } from "./deps.ts";
+import { DEFAULT_BRAND, LEGACY_BRAND } from "./deps.ts";
 
 /** A comment as the ledger sees it: the server-assigned id (numeric string) + its plain text. */
 export interface LedgerComment {
@@ -34,14 +39,36 @@ export interface ClaimTag {
 /** Hosts are embedded in the marker and re-parsed, so they are restricted to a token-safe charset
  *  (enforced at config load). */
 export const CLAIM_HOST_RE = /^[A-Za-z0-9._-]+$/;
-const LEDGER_RE = /\[herdr-factory (claim|release) id=(\d+) host=([A-Za-z0-9._-]+)\]/g;
 
-export const claimMarker = (t: ClaimTag): string => `${HERDR_MARKER} claim id=${t.runId} host=${t.host}]`;
-export const releaseMarker = (t: ClaimTag): string => `${HERDR_MARKER} release id=${t.runId} host=${t.host}]`;
+/** How a READER sees the ledger during (and after) a rollout. Both fields are about reading lines
+ *  this factory did not write:
+ *  - `brand` — the configured brand's lines are parsed ALONGSIDE the legacy `[herdr-factory …]`
+ *    ones, because other hosts (and this item's history) may still be on the old spelling.
+ *  - `host` + `aliases` — every `aliases` token is folded onto `host`, so a legacy claim this host
+ *    posted under its raw hostname is recognised as its own once `host_alias` renames it. Without
+ *    the folding a host would see its own old claim as a foreign one and both sides would fence. */
+export interface LedgerView {
+  brand?: string;
+  host?: string;
+  aliases?: readonly string[];
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+
+/** Matches the configured brand's lines AND the legacy ones (see LedgerView). */
+const ledgerRe = (brand: string = DEFAULT_BRAND): RegExp => {
+  const brands = brand === LEGACY_BRAND ? [LEGACY_BRAND] : [brand, LEGACY_BRAND];
+  return new RegExp(`\\[(?:${brands.map(escapeRe).join("|")}) (claim|release) id=(\\d+) host=([A-Za-z0-9._-]+)\\]`, "g");
+};
+
+export const claimMarker = (t: ClaimTag, brand: string = DEFAULT_BRAND): string => `[${brand} claim id=${t.runId} host=${t.host}]`;
+export const releaseMarker = (t: ClaimTag, brand: string = DEFAULT_BRAND): string => `[${brand} release id=${t.runId} host=${t.host}]`;
 
 /** Every open claim (no matching release), lowest comment id first. Pure. Quoted (`> `) lines are
  *  ignored, so a human quoting a claim neither claims nor releases anything. */
-export function openClaims(comments: readonly LedgerComment[]): (ClaimTag & { commentId: number })[] {
+export function openClaims(comments: readonly LedgerComment[], view?: LedgerView): (ClaimTag & { commentId: number })[] {
+  const re = ledgerRe(view?.brand);
+  const canon = (h: string): string => (view?.host && view.aliases?.includes(h) ? view.host : h);
   const released = new Set<string>();
   const claims: (ClaimTag & { commentId: number })[] = [];
   for (const c of comments) {
@@ -49,8 +76,8 @@ export function openClaims(comments: readonly LedgerComment[]): (ClaimTag & { co
       .split(/\r?\n/)
       .filter((l) => !l.trimStart().startsWith(">"))
       .join("\n");
-    for (const m of text.matchAll(LEDGER_RE)) {
-      const tag = { runId: Number(m[2]), host: m[3]! };
+    for (const m of text.matchAll(re)) {
+      const tag = { runId: Number(m[2]), host: canon(m[3]!) };
       if (m[1] === "release") released.add(`${tag.runId}@${tag.host}`);
       else claims.push({ ...tag, commentId: Number(c.id) });
     }
@@ -61,8 +88,8 @@ export function openClaims(comments: readonly LedgerComment[]): (ClaimTag & { co
 }
 
 /** The open claim with the lowest comment id, or null when none is open. Pure. */
-export function claimWinner(comments: readonly LedgerComment[]): (ClaimTag & { commentId: number }) | null {
-  return openClaims(comments)[0] ?? null;
+export function claimWinner(comments: readonly LedgerComment[], view?: LedgerView): (ClaimTag & { commentId: number }) | null {
+  return openClaims(comments, view)[0] ?? null;
 }
 
 /** Is the guard active for this source? Needs both the config switch and the source's comment hooks. */
@@ -82,16 +109,17 @@ export function guarded(src: SourceRuntime): src is SourceRuntime & { claimGuard
 export async function arbitrateClaim(deps: Deps, src: SourceRuntime, run: Run): Promise<ClaimTag | null> {
   if (!guarded(src)) return null;
   const me: ClaimTag = { runId: run.id, host: src.claimGuard.host };
+  const brand = deps.config.sourceComments.brand;
   const isMe = (t: ClaimTag | null): boolean => !!t && t.runId === me.runId && t.host === me.host;
   let winner: ClaimTag | null;
   let posted = false;
   try {
-    winner = await readLedger(deps, src, run.ticketKey, me.host);
+    winner = await readLedger(deps, src, run.ticketKey);
     if (!winner) {
       posted = true;
-      await src.client.postClaimComment!(run.ticketKey, claimMarker(me));
+      await src.client.postClaimComment!(run.ticketKey, claimMarker(me, brand));
       await deps.sleep(src.claimGuard.settleMs);
-      winner = await readLedger(deps, src, run.ticketKey, me.host);
+      winner = await readLedger(deps, src, run.ticketKey);
     }
   } catch (e) {
     if (posted) await releaseClaim(deps, src, run);
@@ -115,11 +143,13 @@ function claimIsLive(deps: Deps, runId: number): boolean {
 /** Read the ledger, first releasing any claim THIS host holds for a run that no longer exists locally
  *  (see the header) — so a crashed or half-torn-down factory stops fencing the item, for itself and
  *  for every other host. Returns the open claim that wins after those releases. */
-async function readLedger(deps: Deps, src: SourceRuntime & { claimGuard: NonNullable<SourceRuntime["claimGuard"]> }, key: string, host: string): Promise<(ClaimTag & { commentId: number }) | null> {
-  const open = openClaims(await src.client.listClaimComments!(key));
+async function readLedger(deps: Deps, src: SourceRuntime & { claimGuard: NonNullable<SourceRuntime["claimGuard"]> }, key: string): Promise<(ClaimTag & { commentId: number }) | null> {
+  const host = src.claimGuard.host;
+  const brand = deps.config.sourceComments.brand;
+  const open = openClaims(await src.client.listClaimComments!(key), { brand, host, aliases: src.claimGuard.hostAliases });
   const stale = open.filter((c) => c.host === host && !claimIsLive(deps, c.runId));
   for (const tag of stale) {
-    await src.client.postClaimComment!(key, releaseMarker(tag));
+    await src.client.postClaimComment!(key, releaseMarker(tag, brand));
     deps.log("info", `${key}: released our own stale claim (run ${tag.runId} no longer exists here)`);
   }
   return open.find((c) => !stale.includes(c)) ?? null;
@@ -130,9 +160,10 @@ async function readLedger(deps: Deps, src: SourceRuntime & { claimGuard: NonNull
 export async function releaseClaim(deps: Deps, src: SourceRuntime, run: Run): Promise<void> {
   if (!guarded(src)) return;
   const tag = { runId: run.id, host: src.claimGuard.host };
+  const brand = deps.config.sourceComments.brand;
   try {
-    await src.client.postClaimComment!(run.ticketKey, releaseMarker(tag));
+    await src.client.postClaimComment!(run.ticketKey, releaseMarker(tag, brand));
   } catch (e) {
-    deps.log("error", `${run.ticketKey}: could not post claim release (post "${releaseMarker(tag)}" by hand to free the item): ${e instanceof Error ? e.message : String(e)}`);
+    deps.log("error", `${run.ticketKey}: could not post claim release (post "${releaseMarker(tag, brand)}" by hand to free the item): ${e instanceof Error ? e.message : String(e)}`);
   }
 }

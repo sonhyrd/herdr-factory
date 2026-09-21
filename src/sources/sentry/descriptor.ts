@@ -68,7 +68,7 @@ export const sentryDescriptor: SourceDescriptor<SentrySourceCfg> = {
   create(ctx) {
     const cfg = ctx.cfg;
     const client = new SentryClient({ baseUrl: cfg.baseUrl, organization: cfg.organization, token: ctx.env.SENTRY_AUTH_TOKEN ?? "", log: ctx.log });
-    return new SentrySource(cfg, client, ctx.store, ctx.repoName, ctx.sourceName, ctx.log);
+    return new SentrySource(cfg, client, ctx.store, ctx.repoName, ctx.sourceName, ctx.log, ctx.brand);
   },
   supportsCustomStatuses: false, // internal-ledger: canonical states only (custom would need a work_items CHECK migration)
   customStatusKeys: () => [],

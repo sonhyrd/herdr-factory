@@ -18,7 +18,7 @@
 // active run) are filtered out — the internal ledger is what satisfies INV-1 re-claim convergence.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, HERDR_MARKER, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import type { Store } from "../db/store.ts";
 import {
   StaleItemError,
@@ -62,8 +62,8 @@ const REOPENABLE_STATES = new Set<WorkState>(["merged", "done"]);
  *  budget (Sentry rate-limits REST polling hard). The overflow is re-checked on the next poll. */
 const MAX_REGRESSION_PROBES_PER_POLL = 20;
 
-const QUESTION_MARKER = `${HERDR_MARKER} question:`;
-const MERGED_NOTE_PREFIX = `${HERDR_MARKER}] Fixed by`;
+const questionMarker = (brand: string): string => `${markerPrefix(brand)} question:`;
+const mergedNotePrefix = (brand: string): string => `${markerPrefix(brand)}] Fixed by`;
 
 /** Neutralize untrusted text before it reaches an agent prompt (INV-4; the raw payload stays in
  *  issue.json). Sentry titles/messages/stacktraces/tags are ATTACKER-INFLUENCED — an exception value
@@ -87,15 +87,15 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function humanQuestionComment(input: HumanAskInput): string {
+function humanQuestionComment(input: HumanAskInput, brand: string): string {
   return [
-    `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`,
+    `${questionMarker(brand)} ${input.repo}/${input.runId}/${input.questionId}]`,
     `Work item: ${input.key}`,
     `Step: ${input.step ?? "unknown"}`,
     "",
     input.question.trim(),
     "",
-    "Reply in a NEW comment on this Sentry issue — herdr-factory resumes automatically when it sees the reply.",
+    `Reply in a NEW comment on this Sentry issue — ${brand} resumes automatically when it sees the reply.`,
   ].join("\n");
 }
 
@@ -106,14 +106,16 @@ export class SentrySource implements WorkSource {
   private readonly repo: string;
   private readonly name: string;
   private readonly log: Logger;
+  private readonly brand: string; // what our comments call the factory (source_comments.brand)
 
-  constructor(cfg: SentrySourceCfg, sentry: SentryClient, store: Store, repo: string, name: string, log: Logger = () => {}) {
+  constructor(cfg: SentrySourceCfg, sentry: SentryClient, store: Store, repo: string, name: string, log: Logger = () => {}, brand: string = DEFAULT_BRAND) {
     this.cfg = cfg;
     this.sentry = sentry;
     this.store = store;
     this.repo = repo;
     this.name = name;
     this.log = log;
+    this.brand = brand;
   }
 
   readonly spec: WorkSourceSpec = {
@@ -274,10 +276,12 @@ export class SentrySource implements WorkSource {
       return;
     }
     // "comment": drop a marker-tagged note linking the PR, unless a retried intent already left one.
-    const existing = (await this.sentry.listComments(key)).find((c) => (c.data?.text ?? "").startsWith(MERGED_NOTE_PREFIX));
+    // Both spellings: a note left before this host switched brands still counts as already-posted.
+    const prefixes = markerPrefixes(this.brand).map((p) => `${p}] Fixed by`);
+    const existing = (await this.sentry.listComments(key)).find((c) => prefixes.some((m) => (c.data?.text ?? "").startsWith(m)));
     if (existing) return;
     const prRef = ctx?.prUrl ?? (ctx?.prNumber != null ? `PR #${ctx.prNumber}` : "a merged pull request");
-    await this.sentry.addComment(key, `${MERGED_NOTE_PREFIX} ${prRef} (merged by herdr-factory).`);
+    await this.sentry.addComment(key, `${mergedNotePrefix(this.brand)} ${prRef} (merged by ${this.brand}).`);
   }
 
   /** Render the issue + its latest event's stacktrace/breadcrumbs/request into memDir as task.md
@@ -345,17 +349,18 @@ export class SentrySource implements WorkSource {
   }
 
   async postNote(key: string, note: string): Promise<void> {
-    await this.sentry.addComment(key, `${HERDR_MARKER}] ${note}`);
+    await this.sentry.addComment(key, `${markerPrefix(this.brand)}] ${note}`);
   }
 
   async askHuman(input: HumanAskInput): Promise<HumanAskResult> {
-    const marker = `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`;
+    // Both spellings: a question posted before this host switched brands must not be re-asked.
+    const markers = markerPrefixes(this.brand).map((p) => `${p} question: ${input.repo}/${input.runId}/${input.questionId}]`);
     try {
       // Idempotent per questionId (INV-5): scan for this question's marker before posting so a lost
       // response doesn't ask the human twice.
-      const existing = (await this.sentry.listComments(input.key)).find((c) => (c.data?.text ?? "").startsWith(marker));
+      const existing = (await this.sentry.listComments(input.key)).find((c) => markers.some((m) => (c.data?.text ?? "").startsWith(m)));
       if (existing) return { externalId: String(existing.id), externalCreatedAt: existing.dateCreated ?? null };
-      const posted = await this.sentry.addComment(input.key, humanQuestionComment(input));
+      const posted = await this.sentry.addComment(input.key, humanQuestionComment(input, this.brand));
       return { externalId: String(posted.id), externalCreatedAt: posted.dateCreated ?? null };
     } catch (e) {
       if (isSentryNotFound(e)) throw new StaleItemError(`sentry: issue ${input.key} is gone`);
@@ -386,7 +391,7 @@ export class SentrySource implements WorkSource {
         const text = c.data?.text ?? "";
         // INV-6: skip our own artifacts (questions AND marked notes), blockquote-aware. NO author
         // filtering — an operator using their own token IS the token's user; the marker is what disambiguates.
-        if (bearsHerdrMarker(text)) continue;
+        if (bearsHerdrMarker(text, this.brand)) continue;
         if (!text.trim()) continue;
         return { body: text, externalId: String(c.id), externalCreatedAt: c.dateCreated ?? null, author: c.user?.name ?? c.user?.email ?? c.user?.username ?? null };
       }

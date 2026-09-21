@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, HERDR_MARKER, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import { HttpStatusError } from "./http.ts";
 import type { JiraAuth } from "../auth/jira-provider.ts";
 import type {
@@ -25,7 +25,7 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB
 const isMedia = (mime: string): boolean => mime.startsWith("image/") || mime.startsWith("video/");
 
-const QUESTION_MARKER = `${HERDR_MARKER} question:`;
+const questionMarker = (brand: string): string => `${markerPrefix(brand)} question:`;
 
 /** Is this failure "the ticket is no longer ours"? Jira answers 404 for an issue that was deleted,
  *  moved to a project the token can't see, or had its permissions revoked, and 410 for a hard-deleted
@@ -79,16 +79,16 @@ function commentText(comment: JiraComment): string {
   return bodyText(comment.body).replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function humanQuestionComment(input: HumanAskInput): string {
+function humanQuestionComment(input: HumanAskInput, brand: string): string {
   const step = input.step ?? "unknown";
   return [
-    `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`,
+    `${questionMarker(brand)} ${input.repo}/${input.runId}/${input.questionId}]`,
     `Work item: ${input.key}`,
     `Step: ${step}`,
     "",
     input.question.trim(),
     "",
-    "Reply in a new Jira comment. herdr-factory will resume automatically when it sees the reply.",
+    `Reply in a new Jira comment. ${brand} will resume automatically when it sees the reply.`,
   ].join("\n");
 }
 
@@ -103,9 +103,11 @@ function humanQuestionComment(input: HumanAskInput): string {
 export class JiraSource implements WorkSource {
   private readonly jira: JiraClient;
   private readonly cfg: JiraSourceCfg;
+  private readonly brand: string; // what our comments call the factory (source_comments.brand)
   readonly spec: WorkSourceSpec;
-  constructor(cfg: JiraSourceCfg, auth: JiraAuth) {
+  constructor(cfg: JiraSourceCfg, auth: JiraAuth, brand: string = DEFAULT_BRAND) {
     this.cfg = cfg;
+    this.brand = brand;
     this.jira = new JiraClient(auth);
     // mappedStates must mirror statusFor: with statusDone set, merged/done become network-bearing
     // transitions (and drop out of the contract's zero-network unmapped set); aborted never maps.
@@ -225,18 +227,19 @@ export class JiraSource implements WorkSource {
   async postNote(key: string, note: string): Promise<void> {
     // Marker-tagged so pollHumanReply never mistakes our own attention note for a human reply
     // (INV-6 — an unmarked note posted while a question was pending used to poison the loop).
-    await this.jira.addComment(key, `${HERDR_MARKER}] ${note}`);
+    await this.jira.addComment(key, `${markerPrefix(this.brand)}] ${note}`);
   }
 
   async askHuman(input: HumanAskInput): Promise<HumanAskResult> {
     // Idempotent per questionId (INV-5): askHuman is re-invoked every tick until an externalId is
     // PERSISTED — if an earlier POST succeeded but the response was lost, re-posting would ask
     // the human twice. Scan for this question's marker first.
-    const marker = `${QUESTION_MARKER} ${input.repo}/${input.runId}/${input.questionId}]`;
+    // Both spellings: a question posted before this host switched brands must not be re-asked.
+    const markers = markerPrefixes(this.brand).map((p) => `${p} question: ${input.repo}/${input.runId}/${input.questionId}]`);
     try {
-      const existing = (await this.jira.listComments(input.key)).find((c) => commentText(c).includes(marker));
+      const existing = (await this.jira.listComments(input.key)).find((c) => markers.some((m) => commentText(c).includes(m)));
       if (existing) return { externalId: existing.id, externalCreatedAt: existing.created ?? null };
-      const comment = await this.jira.addComment(input.key, humanQuestionComment(input));
+      const comment = await this.jira.addComment(input.key, humanQuestionComment(input, this.brand));
       return { externalId: comment.id, externalCreatedAt: comment.created ?? null };
     } catch (e) {
       // A question can't be asked on a ticket that no longer exists — escalate the run rather than
@@ -270,7 +273,7 @@ export class JiraSource implements WorkSource {
       const text = commentText(comment);
       // Skip EVERY herdr-authored artifact — questions AND marked notes (INV-6). Blockquote-aware:
       // a human reply that quotes the question must still be accepted as a reply.
-      if (bearsHerdrMarker(text)) continue;
+      if (bearsHerdrMarker(text, this.brand)) continue;
       if (!text && !comment.body) continue;
       return {
         body: text || "(Jira comment had no extractable text.)",

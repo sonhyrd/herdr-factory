@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db/index.ts";
 import { Store } from "../src/db/store.ts";
 import { claimTicket } from "../src/core/reconcile.ts";
-import { arbitrateClaim, claimMarker, claimWinner, releaseClaim, releaseMarker, type LedgerComment } from "../src/core/claim-guard.ts";
+import { arbitrateClaim, claimMarker, claimWinner, openClaims, releaseClaim, releaseMarker, type LedgerComment } from "../src/core/claim-guard.ts";
 import { bearsHerdrMarker, type BeltRuntime, type Deps, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import type { Config } from "../src/config.ts";
 import { DEFAULT_AGENT_CONFIG } from "../src/types.ts";
@@ -24,7 +24,7 @@ type Tracker = ReturnType<typeof fakeTracker>;
 
 /** A minimal factory: its OWN DB, a guarded source over the shared tracker, and a claim that throws
  *  past the guard stops at a throwing herdr stub. */
-function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?: () => Promise<void> } = {}) {
+function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?: () => Promise<void>; brand?: string; hostAliases?: readonly string[] } = {}) {
   const store = new Store(openDb(":memory:"), () => 1000);
   const client: WorkSource = {
     spec: { statusOfRecord: "external", mappedStates: ["in_development"], replyChannel: "comments" },
@@ -51,12 +51,12 @@ function factory(tracker: Tracker, host: string, opts: { guard?: boolean; sleep?
     pollIntervalSeconds: 60,
     maxActiveWorkspaces: 9,
     lastPolledAt: new Map(), lastEligible: new Map(),
-    claimGuard: opts.guard === false ? undefined : { host, settleMs: 2000 },
+    claimGuard: opts.guard === false ? undefined : { host, settleMs: 2000, hostAliases: opts.hostAliases ?? [] },
   };
   const belt: BeltRuntime = { name: "ship", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: [], watchPr: true };
   const logs: string[] = [];
   const deps = {
-    config: { repoName: "demo", repo: { path: "/m", baseRef: "origin/main" }, limits: { maxActiveWorkspaces: 9 }, agent: DEFAULT_AGENT_CONFIG } as unknown as Config,
+    config: { repoName: "demo", repo: { path: "/m", baseRef: "origin/main" }, limits: { maxActiveWorkspaces: 9 }, agent: DEFAULT_AGENT_CONFIG, sourceComments: { brand: opts.brand ?? "herdr-factory" } } as unknown as Config,
     env: {},
     store,
     ghRepo: "o/n",
@@ -107,6 +107,73 @@ describe("claim ledger — claimWinner", () => {
   it("claim and release comments are ignored by human-reply polling (INV-6)", () => {
     expect(bearsHerdrMarker(claimMarker({ runId: 1, host: "a" }))).toBe(true);
     expect(bearsHerdrMarker(releaseMarker({ runId: 1, host: "a" }))).toBe(true);
+  });
+});
+
+describe("claim ledger — brand + host alias (issue #70)", () => {
+  const legacy = (kind: "claim" | "release", runId: number, host: string) => `[herdr-factory ${kind} id=${runId} host=${host}]`;
+
+  it("the default brand writes byte-identical lines to the pre-brand factory", () => {
+    expect(claimMarker({ runId: 112, host: "vmi3481757" })).toBe("[herdr-factory claim id=112 host=vmi3481757]");
+    expect(releaseMarker({ runId: 112, host: "vmi3481757" })).toBe("[herdr-factory release id=112 host=vmi3481757]");
+  });
+
+  it("a configured brand + host alias writes the branded line", () => {
+    expect(claimMarker({ runId: 112, host: "contabo" }, "hf")).toBe("[hf claim id=112 host=contabo]");
+    expect(releaseMarker({ runId: 112, host: "contabo" }, "hf")).toBe("[hf release id=112 host=contabo]");
+    expect(bearsHerdrMarker("[hf] question: demo/1/2]", "hf")).toBe(true);
+    expect(bearsHerdrMarker("[herdr-factory] question: demo/1/2]", "hf")).toBe(true); // legacy still ours
+    expect(bearsHerdrMarker("[hf] question: demo/1/2]")).toBe(false); // a default-brand factory never wrote it
+  });
+
+  it("a ledger mixing legacy and branded lines resolves exactly as an all-legacy one would", () => {
+    const mixed: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 1, "mac") },
+      { id: "101", body: claimMarker({ runId: 2, host: "linux" }, "hf") },
+      { id: "102", body: claimMarker({ runId: 1, host: "mac" }, "hf") }, // mac re-claimed under the new brand
+      { id: "103", body: legacy("release", 1, "mac") }, // …and a LEGACY release frees both
+    ];
+    expect(claimWinner(mixed, { brand: "hf" })).toMatchObject({ runId: 2, host: "linux", commentId: 101 });
+    const allLegacy: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 1, "mac") },
+      { id: "101", body: legacy("claim", 2, "linux") },
+      { id: "102", body: legacy("claim", 1, "mac") },
+      { id: "103", body: legacy("release", 1, "mac") },
+    ];
+    expect(claimWinner(mixed, { brand: "hf" })).toMatchObject({ runId: claimWinner(allLegacy)!.runId, host: claimWinner(allLegacy)!.host });
+  });
+
+  it("a legacy claim under this host's raw hostname is folded onto its alias", () => {
+    const view = { brand: "hf", host: "contabo", aliases: ["vmi3481757"] };
+    // Claimed under the hostname, released under the alias — one host, so nothing stays open.
+    const comments: LedgerComment[] = [
+      { id: "100", body: legacy("claim", 5, "vmi3481757") },
+      { id: "101", body: claimMarker({ runId: 5, host: "contabo" }, "hf") },
+    ];
+    expect(openClaims(comments, view)).toHaveLength(2); // both are ours…
+    expect(openClaims(comments, view).every((c) => c.host === "contabo")).toBe(true); // …under ONE name
+    expect(claimWinner([...comments, { id: "102", body: releaseMarker({ runId: 5, host: "contabo" }, "hf") }], view)).toBeNull();
+  });
+
+  it("our own LEGACY stale claim is released after the rename (no self-fencing across the switch)", async () => {
+    const t = fakeTracker();
+    t.post("K-1", legacy("claim", 7, "vmi3481757")); // posted before host_alias/brand were set
+    const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
+    const run = f.newRun("K-1");
+    expect(await arbitrateClaim(f.deps, f.src, run)).toBeNull();
+    expect(t.comments("K-1").map((c) => c.body)).toEqual([
+      legacy("claim", 7, "vmi3481757"),
+      releaseMarker({ runId: 7, host: "contabo" }, "hf"),
+      claimMarker({ runId: run.id, host: "contabo" }, "hf"),
+    ]);
+  });
+
+  it("another host's LEGACY claim still fences a branded factory", async () => {
+    const t = fakeTracker();
+    t.post("K-1", legacy("claim", 7, "other"));
+    const f = factory(t, "contabo", { brand: "hf", hostAliases: ["vmi3481757"] });
+    expect(await arbitrateClaim(f.deps, f.src, f.newRun("K-1"))).toMatchObject({ runId: 7, host: "other" });
+    expect(t.comments("K-1")).toHaveLength(1); // nothing posted — fence, never reap
   });
 });
 

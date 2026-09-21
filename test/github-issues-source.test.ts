@@ -279,6 +279,27 @@ describe("GithubIssuesSource — human loop", () => {
     expect(reply!.author).toBe("operator");
   });
 
+  it("a configured brand marks new artifacts and still reads legacy ones (issue #70)", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const src = makeSource(fake, {}, undefined, "hf");
+    await src.postNote("7", "⚠ parked for attention");
+    expect(fake.issues.get(7)!.comments[0]!.body).toBe("[hf] ⚠ parked for attention");
+    const input = { repo: "demo", runId: 4, questionId: 9, key: "7", step: "fix", question: "Which flag wins?" };
+    const q = await src.askHuman(input);
+    expect(fake.issues.get(7)!.comments[1]!.body).toContain("[hf question: demo/4/9]");
+    // A LEGACY question for the SAME id (posted before this host switched) must not be re-asked…
+    const legacySrc = makeSource(fake, {}, undefined, "hf");
+    fake.addComment(7, "[herdr-factory question: demo/4/10]\nWork item: #7");
+    const legacyQ = await legacySrc.askHuman({ ...input, questionId: 10 });
+    expect(legacyQ.externalId).toBe(String(fake.issues.get(7)!.comments[2]!.id));
+    // …and neither our branded nor the legacy artifact may read as a human reply (INV-6).
+    const poll = { key: "7", questionId: 9, externalId: q.externalId, externalCreatedAt: q.externalCreatedAt };
+    expect(await src.pollHumanReply(poll)).toBeNull();
+    fake.addComment(7, "Use the new flag.", "operator");
+    expect((await src.pollHumanReply(poll))!.body).toContain("Use the new flag.");
+  });
+
   it("askHuman/pollHumanReply on a gone issue throw StaleItemError (escalates instead of polling forever)", async () => {
     fake = makeFakeGithub();
     fake.addIssue(7);

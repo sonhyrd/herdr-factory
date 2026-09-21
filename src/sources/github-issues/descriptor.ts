@@ -101,7 +101,7 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
     // and the seam the e2e harness points at its own fake. Validated in the client — an unusable
     // value throws HERE, at startup, not at the first poll.
     const client = new GithubIssuesClient(repo, ctx.env.GITHUB_TOKEN, undefined, undefined, ctx.log, ctx.env.GITHUB_API_URL);
-    return new GithubIssuesSource({ ...ctx.cfg, repo }, client, ctx.ghRepo || repo, ctx.log);
+    return new GithubIssuesSource({ ...ctx.cfg, repo }, client, ctx.ghRepo || repo, ctx.log, ctx.brand);
   },
   secrets: [
     {

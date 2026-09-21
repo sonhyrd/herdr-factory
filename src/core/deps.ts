@@ -146,18 +146,38 @@ export interface SourceAuthStatus {
   detail?: string;
 }
 
-/** Every artifact a source writes to its reply channel carries this visible prefix, and reply
- *  polling skips artifacts bearing it (INV-6). Shared so all sources mark and filter uniformly. */
-export const HERDR_MARKER = "[herdr-factory";
+/** The brand every comment the factory writes carries, when the repo configures none. It is ALSO
+ *  the permanent LEGACY brand: hosts roll out at different times and open items carry lines written
+ *  before the switch, so every reader (the claim ledger, the marker filter, question detection)
+ *  recognises BOTH the configured brand and this one. Writers only ever use the configured brand. */
+export const LEGACY_BRAND = "herdr-factory";
+export const DEFAULT_BRAND = LEGACY_BRAND;
 
-/** INV-6's filter primitive: does this comment body carry the herdr marker OUTSIDE blockquotes?
+/** Every artifact a source writes to its reply channel carries this visible prefix, and reply
+ *  polling skips artifacts bearing it (INV-6). Shared so all sources mark and filter uniformly.
+ *  The legacy (= default-brand) spelling; `markerPrefix(brand)` is the configurable one. */
+export const HERDR_MARKER = `[${LEGACY_BRAND}`;
+
+/** The visible marker prefix for a brand — `[hf` for `brand: hf`, `[herdr-factory` by default. */
+export function markerPrefix(brand: string = DEFAULT_BRAND): string {
+  return `[${brand}`;
+}
+
+/** Both prefixes a READER must accept: the configured brand's and the legacy one (deduped). */
+export function markerPrefixes(brand: string = DEFAULT_BRAND): string[] {
+  return brand === LEGACY_BRAND ? [HERDR_MARKER] : [markerPrefix(brand), HERDR_MARKER];
+}
+
+/** INV-6's filter primitive: does this comment body carry a herdr marker OUTSIDE blockquotes?
  *  Quote-reply UIs (GitHub's "Quote reply") prepend the question — marker included — as `> ` lines
- *  into a genuine human reply; a marker appearing only inside quotes must NOT disqualify it. */
-export function bearsHerdrMarker(body: string): boolean {
+ *  into a genuine human reply; a marker appearing only inside quotes must NOT disqualify it.
+ *  Legacy-aware: an artifact written under the old brand is still ours. */
+export function bearsHerdrMarker(body: string, brand: string = DEFAULT_BRAND): boolean {
+  const prefixes = markerPrefixes(brand);
   return body
     .split(/\r?\n/)
     .filter((line) => !line.trimStart().startsWith(">"))
-    .some((line) => line.includes(HERDR_MARKER));
+    .some((line) => prefixes.some((p) => line.includes(p)));
 }
 
 /**
@@ -314,8 +334,9 @@ export interface SourceRuntime {
    *  (account-wide) GitHub budget and starve the tick's own claims. In-memory, so a fresh process
    *  serves nothing until its first tick. A failed, gated or held poll leaves the last good list. */
   lastEligible: Map<string, { items: MatchItem[]; at: number }>;
-  /** The resolved claim guard (INV-10); undefined ⇒ disabled, claiming is local-store only. */
-  claimGuard?: { host: string; settleMs: number };
+  /** The resolved claim guard (INV-10); undefined ⇒ disabled, claiming is local-store only.
+   *  `hostAliases` = other host tokens that mean THIS host in older ledger lines (read-only). */
+  claimGuard?: { host: string; settleMs: number; hostAliases?: readonly string[] };
 }
 
 /** A configured belt's resolved config + its loaded `match` predicate (undefined = accept all from

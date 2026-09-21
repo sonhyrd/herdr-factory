@@ -1698,7 +1698,7 @@ async function closePendingQuestionAsMoot(deps: Deps, run: Run, terminal: "step-
   await src.client
     .postNote(
       run.ticketKey,
-      `✅ herdr-factory: no answer needed for the question above — the ${step} step resolved it itself and moved on (${terminal}). Leaving this thread here for the record.`,
+      `✅ ${deps.config.sourceComments.brand}: no answer needed for the question above — the ${step} step resolved it itself and moved on (${terminal}). Leaving this thread here for the record.`,
     )
     .catch((e) => deps.log("warn", `${run.ticketKey}: moot-question note not posted to ${src.name}: ${err(e)}`));
 }
