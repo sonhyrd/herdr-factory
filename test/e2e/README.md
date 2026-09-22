@@ -46,7 +46,11 @@ scenario({ name: "...", briefs: {...}, config: (p) => ({...}), agent: {...} }, a
   two runs different startup behaviour): `HF_AGENT_EXIT_FIRST=<key>[=<n>]` makes the first `n` execs
   (default 1) for that item exit before reporting any state, so herdr's adoption fails and the pane is
   left at a shell prompt with no agent (Claude Code's folder-trust prompt, in shape); `HF_AGENT_BUSY_BOOT=<key>=<ms>`
-  holds `working` after adoption, so a step's wait expires against an agent that IS there.
+  holds `working` after adoption, so a step's wait expires against an agent that IS there;
+  `HF_AGENT_SILENT=<key>[,…]` reports NOTHING ever — no OSC title, no status file — so herdr can see
+  the process and its kind but never its state (`agent_status: unknown`), which is what a freshly
+  started `cursor-agent` looks like on Linux (issue #80). The agent still works normally; only its
+  state is unobservable.
 - **`agent`** is the behaviour script: `commit`, `hangMs`, `signal` (`step-done`/`bounce`/
   `ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`, `openPr`, `setBranch`
   (rename onto the repo's branch convention via the prompt's `set-branch` command), `run`. Resolution
@@ -85,6 +89,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `custom-belt` | a `custom` pipeline, config-folder prompt files, token rendering, `completed`, no PR machinery |
 | `layouts` | plugin hook, `layout.apply` per tab, blocking setup, splits, step→pane dispatch, pane display metadata, hand-created worktrees |
 | `layout-setup-on-agent-pane` | regression: an agent pane that also runs the layout's setup still gets its agent |
+| `layout-unknown-agent` | issue #80 *(fake lane — a real herdr 0.7.5 reports a quiet adopted process as `idle`, so `unknown` can only be asked of this lane)*: a step dispatches into a layout pane whose agent is LIVE but whose `agent_status` herdr cannot read, instead of waiting it out and parking; a later step still waiting for a pane of its own never retags the previous step's pane as itself (`hf_step` names the owning step, while the run-level `hf_state=attention` still rides the active pane); and `resume` of exactly that park dispatches into the now-up unknown pane |
 | `layout-agent-restart` | issue #44: the worktree is trusted in Claude's own config before a claude agent starts (one key, the rest of the file untouched), a failed `agent start` reports herdr's own error code in the log and the notification, and an expired layout wait re-runs that start on a pane left at a shell prompt — while leaving a pane that already has a live agent alone |
 | `fast-signal` | regression: a `step-done` that beats its own dispatch is accepted, not dropped |
 | `budget-park` | an agent that finishes without signalling is parked, reported three ways, and healed by `resume` re-prompting it |

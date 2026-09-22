@@ -52,6 +52,20 @@ function log(msg) {
   }
 }
 
+/** `HF_AGENT_SILENT=<key>[,…]` — this work item's agent NEVER reports a state: no OSC title (so
+ *  herdr's detection manifests have nothing to match) and no status file (so the fake lane has
+ *  nothing to read). herdr can see the process and its kind but cannot say what it is doing, which is
+ *  exactly `agent_status: unknown` — the shape a freshly started cursor-agent has on Linux, where the
+ *  harness has never fired the lifecycle hook herdr derives the status from (issue #80).
+ *
+ *  Everything else about the agent is normal: it takes its turns, commits, and runs the signal
+ *  command out of the rendered prompt. The point is only that nothing it does is ever OBSERVABLE as a
+ *  status, so the step targeting its pane must decide to dispatch on something else. */
+const SILENT = (() => {
+  const key = process.env.HERDR_FACTORY_TICKET || "";
+  return key !== "" && String(process.env.HF_AGENT_SILENT || "").split(",").map((s) => s.trim()).includes(key);
+})();
+
 // ── herdr-observed state ────────────────────────────────────────────────────────────────────────
 // The OSC terminal title, which is exactly how herdr's shipped detection manifests read a real
 // harness: claude.toml's `osc_title_working` matches a leading braille glyph, `osc_title_idle` a
@@ -60,6 +74,7 @@ function log(msg) {
 // fails on `agent.get`. Real harnesses don't call it; neither do we.) The status FILE alongside is
 // how the fake-herdr lane observes the same transitions.
 function setState(state) {
+  if (SILENT) return; // this agent never tells herdr anything — see SILENT
   const title = state === "working" ? "⠋ working" : "✳ idle";
   try {
     process.stdout.write(`\x1b]0;${title}\x07`);
