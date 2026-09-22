@@ -108,15 +108,19 @@ scenario(
     expect(w.db.step(parked.id, "review")?.pane_id ?? null, "…which never dispatched anywhere").toBeNull();
     expect(parked.pane_id, "…so the run's pane is still the WORK step's").toBe(workPane);
 
-    // Every metadata write on the work pane — including the `⚠ ATTENTION` one the park publishes —
-    // names WORK, the step that owns it. Never `review`, which has no pane of its own.
+    // The park's own cue DOES still land on the work pane: the posture is the RUN's, and that is the
+    // pane the operator is looking at. Only the step NAME was ever wrong. Waited for rather than read
+    // straight off the park — `escalateAttention` writes the DB row before it publishes, so the
+    // metadata call is still in flight when the phase flip is observed.
+    const wroteAttention = () =>
+      w.herdr.paneMetadata().some((m) => m.paneId === workPane && m.argv.join(" ").includes("hf_state=attention"));
+    await w.waitFor(wroteAttention, { label: "the park's attention cue reaches the work pane", timeoutMs: 60_000 });
+
+    // And every metadata write on that pane — including that `⚠ ATTENTION` one — names WORK, the step
+    // that owns it. Never `review`, which has no pane of its own.
     const owned = stepTokensOn(workPane);
     expect(owned.length, "the engine published hf_step on the work pane").toBeGreaterThan(0);
     expect([...new Set(owned)], "hf_step on the work pane names only the step that owns it").toEqual(["work"]);
-    // The park's own cue does still land there: the posture is the RUN's, and that is the pane the
-    // operator is looking at. Only the step NAME was ever wrong.
-    const lastWrite = w.herdr.paneMetadata().filter((m) => m.paneId === workPane).at(-1)!;
-    expect(lastWrite.argv.join(" "), "the attention cue is published on it").toContain("hf_state=attention");
 
     // ── 3. resume of exactly this park dispatches on the next tick ─────────────────────────────
     const reviewPane = buildPane("review", parked);
