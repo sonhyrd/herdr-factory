@@ -470,6 +470,14 @@ reverse-engineered during the bash prototype.
     `pane:` target keeps resolving for the pane's whole life) while the operator still sees
     `<step>:<KEY>`, an `⚠ ATTENTION <KEY>` title on a park, and `hf_step`/`hf_key`/`hf_state` tokens
     a user's `[ui.sidebar]` rows and herdr's agent-view queries can render, style and filter on.
+    **`hf_step` always names the step that OWNS the pane, never merely the run's current step.**
+    `run.paneId` is whichever step *dispatched last*, so a step still waiting for its own layout pane
+    has dispatched nowhere — publishing its name on `run.paneId` retagged the PREVIOUS step's
+    (finished) pane as the waiting one, while the pane the step was actually waiting for carried no
+    tokens at all. Every reconciler write to `run.paneId` therefore goes through `showRunPaneOwner`,
+    which resolves the owner from the run's own `run_steps` rows. The run-level posture (`hf_state`)
+    still rides on the last active pane: that is a property of the RUN, and it is the pane the
+    operator is looking at.
   - `agentFocus(pane)` (bring a pane + its tab to the front) and `focusedPane() →
     {paneId, workspaceId, tabId, label}` (the one globally-focused pane, from `pane list`'s
     `focused` flag — herdr exposes no focus-change event to subscribe to, so it's polled)
@@ -1562,9 +1570,19 @@ step (`spawnStep`):
 1. **Dispatch** — two modes, by whether the step has a configured `tab`/`pane` (from the step's
    `steps[]` entry, resolved onto its `StepConfig`):
    - **Configured** (a pane the belt's layout built — see [§4](#4-herdr-ownership-boundary)): find
-     that pane and require an agent
-     that is present **and idle** (agent-agnostic — claude *or* opencode), then `agent prompt`
-     it (atomic submit + Enter). The submission is **confirmed**: herdr reports whether it actually
+     that pane and require an agent that is present and **may accept a dispatch**
+     (agent-agnostic — claude *or* opencode), then `agent prompt`
+     it (atomic submit + Enter). "May accept" is `mayAcceptDispatch` in types.ts: `idle`/`done`
+     (`isReadyForInput`) **plus `unknown`**. herdr derives `agent_status` from the harness's own
+     lifecycle hooks, and a harness that has never been prompted may never have fired one — a freshly
+     adopted cursor-agent sits at its prompt reporting `unknown` indefinitely, and gating on
+     idle/done alone burned every wait window and parked `layout_wait_timeout` against a pane that
+     was ready the whole time. `unknown` is not a claim of readiness, only that herdr cannot say; the
+     confirmation below is what settles it, so an `unknown` pane that was *not* ready costs a retry
+     rather than a bad dispatch. `working`/`blocked` (a real busy) and `gone` (no agent at all) stay
+     out — those herdr *can* read. The wider gate is deliberately NOT `isReadyForInput` itself: its
+     other callers (the resume and idle nudges) act on an agent the factory already dispatched to,
+     where the cost of guessing wrong is a message mid-turn rather than a parked run. The submission is **confirmed**: herdr reports whether it actually
      moved the agent — or, when this harness's status never flips, whether the pane's `revision`
      advanced (see [§4](#4-herdr-ownership-boundary)) — and an unconfirmed one is treated as `waiting`:
      the pass stays undispatched and
@@ -1743,7 +1761,9 @@ the budget watchdog reading the prior pass's stale clock and parking it as "over
 records the event, fires a notification, **flags the run's active pane** with an `⚠ ATTENTION
 <KEY>` title + an `hf_state=attention` token (herdr's `agent_status` is owned by the agent's own
 lifecycle hook and can't be set externally, so a display cue is the persistent signal — published as
-metadata so the pane's real label, which a step's `pane:` target resolves by, is never touched), and
+metadata so the pane's real label, which a step's `pane:` target resolves by, is never touched; its
+`hf_step` names that pane's OWNING step, which for a layout-wait park is the previous one — see §5's
+`showRunPaneOwner`), and
 **routes the reason by what broke** (`WORK_ERROR_REASONS`): a *mechanical* failure — every factory
 watchdog and plumbing code (budgets, stalls, layout waits, capture caps, poll failures, config
 drift, plugin guards) — is reported into the run's own agent pane (`reportToPane`, a framed

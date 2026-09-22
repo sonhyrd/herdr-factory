@@ -21,7 +21,7 @@ import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
 import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { checkStepTree, recordTreeRefusal } from "./tree-guard.ts";
-import { reportToPane, showRunPane } from "./pane-display.ts";
+import { reportToPane, showRunPane, type PaneRunState } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
 import { flushOutbox, type OutboxFlow } from "./outbox.ts";
 import { consumeIntentHandoffs, ledgerFlow, notifySuspended } from "./ledger.ts";
@@ -1170,6 +1170,23 @@ function isPreDispatchClaim(deps: Deps, run: Run): boolean {
  *  agent pane instead (`reportToPane`), alongside the desktop notification. */
 const WORK_ERROR_REASONS = new Set(["bounce_limit", "pr_closed"]);
 
+/** Publish run state on `run.paneId` — the pane of whichever step DISPATCHED LAST, which is not
+ *  necessarily `run.step`.
+ *
+ *  A step that is still waiting for its own layout pane never dispatched, so `run.paneId` is the
+ *  PREVIOUS step's pane; naming `run.step` on it retags that pane as a step it does not host, and
+ *  the operator (and herdr's sidebar/agent-view queries, which read the `hf_*` tokens) then sees
+ *  the waiting step's tokens sitting on a pane that is done — while the pane the step is actually
+ *  waiting for carries none (issue #80). So the label is always the step that OWNS this pane, taken
+ *  from the run's own step rows; `fallback` covers a pane no run_step claims (a PR-watch pane).
+ *  The run-level posture (`hf_state`) still rides on the last active pane — that is a property of
+ *  the RUN, and it is the pane the operator is looking at. */
+async function showRunPaneOwner(deps: Deps, run: Run, state: PaneRunState, fallback?: string | null): Promise<void> {
+  if (!run.paneId) return;
+  const owner = deps.store.runStepsFor(run.id).find((s) => s.paneId === run.paneId)?.step;
+  await showRunPane(deps, run.paneId, { key: run.ticketKey, step: owner ?? fallback ?? run.step, state });
+}
+
 /** Park a run for human attention: flip phase, record the reason, fire a notification, and put
  *  the reason where the humans already look. WHERE depends on what broke: a mechanical failure
  *  (the factory's own workings) reports into the run's agent pane; an error about the designated
@@ -1193,7 +1210,7 @@ async function escalateAttention(
   // most visible persistent cue — unlike the one-shot notification, it stays in the tab/pane list
   // until the run resolves. Published as display metadata (never a rename), so it decorates the pane
   // without touching the label a step's `pane:` target resolves by. Best-effort.
-  if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: "attention" });
+  await showRunPaneOwner(deps, run, "attention");
   await deps.herdr.notify(`herdr-factory: ${run.ticketKey} needs attention`, opts.body).catch(() => {});
   const commands = `Resume with: herdr-factory --repo ${deps.config.repoName} resume ${run.ticketKey}\nOr let your agent diagnose it: herdr-factory --repo ${deps.config.repoName} triage ${run.ticketKey}`;
   // Work errors write back to the source (once, on escalation — the periodic re-notify stays
@@ -1347,7 +1364,7 @@ async function resumeAfterHumanReply(deps: Deps, run: Run, belt: BeltRuntime, sr
     // Confirmed submission: if the reply prompt never landed, fall through to a respawn rather than
     // leaving the run "running" against an agent that never heard the answer it was waiting for.
     if (await deps.herdr.agentSend(run.paneId, prompt, { confirm: true })) {
-      await showRunPane(deps, run.paneId, { key: run.ticketKey, step, state: "running" });
+      await showRunPaneOwner(deps, run, "running", step);
       deps.log("info", `${run.ticketKey}: resumed ${step} with human reply #${q.id}`);
       return;
     }
@@ -1481,7 +1498,7 @@ export async function bounceStep(
       type: "resumed",
       detail: { reason, step: fromStep },
     });
-    if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: fromStep, state: "running" });
+    await showRunPaneOwner(deps, run, "running", fromStep);
     deps.log("info", `${run.ticketKey}: ${fromStep} bounced after a ${parked === "human" ? "human" : "watchdog"} park — un-parking`);
   }
 
@@ -1790,7 +1807,7 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
         type: "resumed",
         detail: { reason: "step_done_after_human_park", step: run.step },
       });
-      if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: "running" });
+      await showRunPaneOwner(deps, run, "running");
       deps.log("info", `${run.ticketKey}: ${run.step} finished while waiting for a human — un-parking and advancing`);
       return reconcileStep(deps, deps.store.getRun(run.id)!, belt, src, step);
     }
@@ -2607,7 +2624,7 @@ async function reconcileAttention(deps: Deps, run: Run, belt: BeltRuntime, src: 
         detail: { reason: "step_done_after_watchdog_park", step: run.step },
       });
       // Clear the "⚠ ATTENTION …" cue the escalation published (best-effort).
-      if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: "running" });
+      await showRunPaneOwner(deps, run, "running");
       deps.log("info", `${run.ticketKey}: ${run.step} finished after a watchdog park — un-parking and advancing`);
       return reconcileStep(deps, deps.store.getRun(run.id)!, belt, src, step);
     }
@@ -2643,12 +2660,9 @@ async function reconcileAttention(deps: Deps, run: Run, belt: BeltRuntime, src: 
         detail: { reason: "layout_wait_respawn", phase, step: step.name, attempt, limit },
       });
       // Clear the "⚠ ATTENTION …" cue the escalation published. run.paneId here belongs to some
-      // EARLIER step (this step's own spawn never landed — that's why it parked), so the display
-      // state names the OWNING step, not the parked step.
-      if (run.paneId) {
-        const owner = deps.store.runStepsFor(run.id).find((s) => s.paneId === run.paneId)?.step;
-        await showRunPane(deps, run.paneId, { key: run.ticketKey, step: owner ?? step.name, state: "running" });
-      }
+      // EARLIER step (this step's own spawn never landed — that's why it parked), which is exactly
+      // what showRunPaneOwner resolves.
+      await showRunPaneOwner(deps, run, "running", step.name);
       deps.log("info", `${run.ticketKey}: layout-wait park auto-rescue (${attempt}/${limit}) — re-attempting the ${step.name} dispatch`);
       return dispatchPhase(deps, deps.store.getRun(run.id)!, belt, src, ctx);
     }
@@ -2778,7 +2792,7 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
   // resume actually saw (working ⇒ left mid-turn by design, gone ⇒ the respawn path owns it).
   deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "resumed", detail: { phase, step: run.step, nudged, worker } });
   // Clear the ⚠ cue (best-effort; a re-spawn would re-publish it anyway).
-  if (run.paneId) await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: run.step ? "running" : "watching" });
+  await showRunPaneOwner(deps, run, run.step ? "running" : "watching");
   deps.log("info", `${run.ticketKey}: resumed from attention -> ${phase}${run.step ? ` (${run.step})` : ""}`);
   return { ok: true, phase };
 }

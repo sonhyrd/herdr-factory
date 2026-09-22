@@ -96,9 +96,12 @@ autonomous task — do not pause to ask for confirmation.`
 Pane targeting (`src/core/step.ts`):
 
 - **`tab` + `pane` set** — the factory resolves, in order: the recorded live `pane_id`; then a pane
-  matching the configured `tab`/`pane` *titles* (must be `idle`). That label stays valid for the pane's
+  matching the configured `tab`/`pane` *titles* (whose agent must be `idle`, `done`, or `unknown` —
+  see [architecture.md](./architecture.md) §"Layout wait"). That label stays valid for the pane's
   whole life — run state is published as display METADATA (`<step>:<KEY>` as the agent name, an
-  `⚠ ATTENTION` title when parked, `hf_step`/`hf_key`/`hf_state` tokens), never by renaming the pane. A
+  `⚠ ATTENTION` title when parked, `hf_step`/`hf_key`/`hf_state` tokens), never by renaming the pane.
+  `hf_step` always names the step that **owns** that pane, so a step still waiting for its own layout
+  pane never retags the previous step's pane as itself. A
   third tier still matches a pane renamed `<step>:<KEY>` by pre-metadata code, as a drain-window shim.
   No target ⇒ the step waits and the `layout_wait` guard runs. The factory **never spawns its own pane
   when `tab`+`pane` are set** — the layout must supply it, and config-load rejects a target pane that

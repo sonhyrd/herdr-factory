@@ -1383,6 +1383,14 @@ while herdr still reports the pane `idle` — the factory falls back to whether 
 changed. Either way the dispatch counts and no later tick re-sends it, so an agent is never handed
 the same prompt twice; only a pane that showed no sign of the prompt at all is retried.
 
+A pane counts as available once it holds an agent herdr reports as `idle`, `done`, **or
+`unknown`** — the last because herdr reads `agent_status` from the harness's own lifecycle hooks,
+and a harness that has never been prompted may never fire one (a freshly started `cursor-agent`
+sits at its prompt reporting `unknown` indefinitely). `unknown` is not a claim that the agent is
+ready, only that herdr cannot say; the confirmation above settles it, so a pane that was *not*
+ready costs a retry rather than a bad dispatch. A pane with **no** agent, or one herdr reports as
+`working`/`blocked`, is still waited for.
+
 A step whose `tab`/`pane` names a pane the layout doesn't (yet) provide waits up to
 `limits.layout_wait_seconds`; an expired window is automatically re-armed up to 3 times (a
 transient herdr/layout race self-heals — even from an already-parked run), and only then does the
