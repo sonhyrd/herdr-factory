@@ -113,12 +113,21 @@ scenario(
     // Each repo claims the FIRST ticket its own predicate accepts; the second stays ready. Waiting on
     // both claims is also what pins the poll: after this, every repo is at its cap, so Phase B skips
     // the poll entirely and the snapshots below are stable.
+    //
+    // Wait for each claim's write-back to LAND, not just for the run row: the claim's own Jira
+    // traffic (materialize, the `in_development` transition) is settled work, and measuring the
+    // dashboard's cost while it is still in flight would count it against the refreshes below.
     await w.waitFor(
       async () => {
         const beta = await w.factory.api<{ active: { ticketKey: string }[] }>("GET", `/repos/${BETA}/status`);
-        return w.db.run("APP-1")?.phase === "running" && beta.active.some((r) => r.ticketKey === "APP-3");
+        return (
+          w.db.run("APP-1")?.phase === "running" &&
+          beta.active.some((r) => r.ticketKey === "APP-3") &&
+          jira.status("APP-1") === "In Progress" &&
+          jira.status("APP-3") === "In Progress"
+        );
       },
-      { label: "each repo claims the first ticket its own match accepts", timeoutMs: 180_000, tickEveryMs: 1000 },
+      { label: "each repo claims the first ticket its own match accepts, and its write-back lands", timeoutMs: 180_000, tickEveryMs: 1000 },
     );
 
     // ── AC1: each repo lists ONLY what its own belts' match accepts ────────────────────────────
