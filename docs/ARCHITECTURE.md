@@ -1160,8 +1160,16 @@ stamped on the *attempt* so a paused/erroring source still backs off to its inte
 process (a one-shot `tick`) starts empty and polls immediately. A **successful** poll also stores its
 items under the same key (`SourceRuntime.lastEligible`, with the time it was taken): that snapshot is
 what `GET /repos/:repo/eligible` serves, so the tick's poll is the **only** thing that ever queries a
-source for eligible work (a failed, gated or held poll leaves the last good list standing). An item with
-an **undelivered status write-back is skipped** — its "eligible" listing is known-stale (this is
+source for eligible work (a failed, gated or held poll leaves the last good list standing). What is
+stored is **match-filtered**: the `match` predicates of the active belts sharing that `(source, label)`
+fetch run over the items once, and only the accepted ones are cached (a belt with no `match` accepts
+everything, so the filter collapses to a no-op; a throwing predicate drops the item, logged). Without
+it, two repo configs polling one Jira query each listed the *other* repo's tickets as ready — items their belts would never claim. Those verdicts are then **read again at the
+claim** rather than recomputed, so a predicate is evaluated (and a throwing one logged) exactly once
+per pass and a claim can never disagree with what `/eligible` showed as ready. The one behavioural
+consequence: every belt in the fetch's group is asked about every item, where the claim loop used to
+stop at the first belt that accepted one — a `match` is a pure predicate on the item, so the cost is
+the extra calls and nothing else. An item with an **undelivered status write-back is skipped** — its "eligible" listing is known-stale (this is
 what prevents a merged run whose transition never landed from being claimed and re-done). One
 source's backend hiccup is caught per-source and never starves the others. Per-run errors are
 caught → recorded as an `error` event → the tick continues; the per-repo tick lock prevents
@@ -2273,6 +2281,7 @@ the TUI's fleet dashboard is the next.
 | `fleet/shapes.ts` | The API response shapes, as a zero-import leaf — moved out of `tui/api.ts` (which re-exports them) so a UI or a CLI reader can depend on what the server answers without dragging in reconcile. |
 | `fleet/read.ts` | The **merged view** (`readFleet`), the **routing rule** (`routeRun`), and the primitive both the CLI and the TUI read through: `readMachines(clients, read)` — every machine in parallel under its own budget, each answering `ok` with whatever the caller went there for, or `unverifiable` with the time it last answered (and the transport's reason when it has one). WHAT is read differs per surface (the CLI wants statuses, the TUI also wants eligible work); the timeout, the verdict and the last-seen memo must not, or one surface will eventually report a machine it could not reach as a machine with nothing on it. |
 | `tui/fleet-view.ts` | The **TUI's** window onto the fleet: the merged per-machine view the Dashboard renders (repos, runs, eligible work), the carry-forward that keeps an unverifiable machine's last known rows on screen, the header/status formatting, the board's editorial rules (`needsYou`, `sharedProblems`/`shortProblem`, `isIdleRepo`/`idleLine` — see below), and `clientFor` — the one route an action may take. Eligible work is read in a second phase, as the single-machine dashboard always has, so a lagging source query can never turn a healthy machine `unverifiable`. |
+| `tui/eligible-cache.ts` | The one rule about the board's **ready** lane: an item that is already an active run must not also render as ready. `fleetClaimed(machines)` collects the `(source, key)` of every active run across **every machine and repo** in the view — a ticket is claimed once for the whole fleet, and a server only knows its own runs — and `withoutClaimed(eligible, claimed)` drops any ready item in that set. Stale machines count: their rows are last-known, and last-known-claimed still beats showing it ready. The set is built from all machines, not just the shown ones, so the machine filter cannot resurrect a claimed item. |
 
 Two invariants carry `read.ts`, and both exist because the alternative misleads an operator:
 
@@ -2343,9 +2352,9 @@ what the old per-repo `watch` did, but collapsed into a single process plus a lo
   (the mutating CLI paths — `retry-now` is the bulk operator due-now: clear the repo's, or one
   run's, suspensions, re-queue its waiting pending intents, and flush them under the tick lock, §6) ·
   `GET /repos/:repo/{status,runs,eligible,timeline}` (reads for the
-  web UI — `eligible` answers from the tick's last poll (`SourceRuntime.lastEligible`, each item
-  carrying its `polledAt`), minus anything that already has an active run; it **never** calls a
-  source. It used to query live, and one open TUI refreshing every 3s across every machine and repo
+  web UI — `eligible` answers from the tick's last poll (`SourceRuntime.lastEligible`, already
+  narrowed to what the belts' `match` accepts, each item carrying its `polledAt`), minus anything
+  that already has an active run; it **never** calls a source. It used to query live, and one open TUI refreshing every 3s across every machine and repo
   spent the whole account-wide GitHub budget and delayed the factory's own claims. Nothing polled
   yet ⇒ nothing listed) · `GET /repos/:repo/obligations?key=` ("why is this run waiting and what would move
   it": the run's undelivered outbox intents + pending signal/question, and its armed watches —

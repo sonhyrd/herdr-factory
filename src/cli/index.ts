@@ -393,11 +393,23 @@ program
       // (source, key) since two belts could name the same source (with distinct labels).
       const seen = new Set<string>();
       for (const belt of deps.belts) {
+        // Mirror the tick (and `/eligible`): an inactive belt takes on no new work, and only the
+        // items its `match` accepts are claimable — so only those are listed. Without this the CLI
+        // and the dashboard disagree, and each repo sharing a source lists the other's items.
+        if (!belt.active) continue;
         const src = deps.resolveSource(belt.source);
         if (!src) continue;
         try {
           for (const t of await src.client.listEligible(belt.label)) {
             if (seen.has(`${src.name} ${t.key}`)) continue;
+            if (belt.match) {
+              try {
+                if (!(await belt.match({ item: t, source: { name: src.name, type: src.type } }))) continue;
+              } catch (e) {
+                deps.log("warn", `belt ${belt.name}: match predicate threw for ${t.key}: ${e instanceof Error ? e.message : String(e)}`);
+                continue;
+              }
+            }
             seen.add(`${src.name} ${t.key}`);
             out.push({ source: src.name, key: t.key, summary: t.summary, type: t.type });
           }

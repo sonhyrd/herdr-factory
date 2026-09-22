@@ -51,6 +51,26 @@ export class Factory {
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
 
+  /** The same invocation, spawned ASYNCHRONOUSLY. `cli()` is `spawnSync`, which blocks the test
+   *  process's event loop for the whole run — so a command that talks to a fake backend HOSTED in
+   *  that process (a `JiraFake`, a `GhFake` over HTTP) deadlocks: the request can never be answered
+   *  and the CLI is killed at its timeout. Use this for any CLI read that dials a stub backend. */
+  cliAsync(args: string[], opts: { repoScoped?: boolean; timeoutMs?: number } = {}): Promise<CliResult> {
+    const full = opts.repoScoped === false ? args : ["--repo", this.repo, ...args];
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [this.cliEntry, ...full], { env: this.env, cwd: this.repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+      const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 120_000);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code: code ?? -1, stdout, stderr });
+      });
+    });
+  }
+
   async serve(): Promise<void> {
     const out = createWriteStream(this.logPath, { flags: "a" });
     this.proc = spawn(process.execPath, [this.cliEntry, "serve"], {

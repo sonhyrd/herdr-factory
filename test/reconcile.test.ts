@@ -2803,6 +2803,35 @@ describe("belt routing (match predicates, first match wins)", () => {
     expect(store.activeRunForTicket("demo", "jira", "K-task")?.belt).toBe("rest"); // fell through to the catch-all
   });
 
+  it("caches only match-accepted items in lastEligible — the board never shows the other repo's work", async () => {
+    // Two repo configs poll one query and differ only in their belts' `match`; an unfiltered
+    // snapshot made each repo's /eligible list the other's tickets (issue #81).
+    const { deps, state, sources } = build();
+    const appBelt: BeltRuntime = { name: "app", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true, match: ({ item }) => item.summary.includes("[app]") };
+    deps.belts = [appBelt];
+    deps.resolveBelt = (n) => (n === "app" ? appBelt : undefined);
+    state.eligible = [{ ...ticket("K-1", "Task"), summary: "[FE] - [app] hide text" }, { ...ticket("K-2", "Task"), summary: "[FE] - [widget] hide text" }];
+    await reconcileRepo(deps);
+    expect(sources[0]!.lastEligible.get("")!.items.map((i) => i.key)).toEqual(["K-1"]);
+  });
+
+  it("a throwing match drops the item from the cached snapshot too", async () => {
+    const { deps, state, sources } = build();
+    const boom: BeltRuntime = { name: "boom", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true, match: ({ item }) => { if (item.key === "K-2") throw new Error("nope"); return true; } };
+    deps.belts = [boom];
+    deps.resolveBelt = (n) => (n === "boom" ? boom : undefined);
+    state.eligible = [ticket("K-1", "Task"), ticket("K-2", "Task")];
+    await reconcileRepo(deps);
+    expect(sources[0]!.lastEligible.get("")!.items.map((i) => i.key)).toEqual(["K-1"]);
+  });
+
+  it("a belt without a match still caches everything the source returned", async () => {
+    const { deps, state, sources } = build();
+    state.eligible = [ticket("K-1", "Task"), ticket("K-2", "Task")];
+    await reconcileRepo(deps);
+    expect(sources[0]!.lastEligible.get("")!.items.map((i) => i.key)).toEqual(["K-1", "K-2"]);
+  });
+
   it("an item no belt matches is left unclaimed", async () => {
     const { deps, store, state } = build();
     const onlyBugs: BeltRuntime = { name: "bugs", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true, match: (ctx) => ctx.item.type === "Bug" };
@@ -4305,9 +4334,12 @@ describe("claim ledger — release at teardown", () => {
 // snapshot.
 describe("/eligible serves the tick's last poll — the API never queries a source", () => {
   it("empty before the first tick, the tick's items after it, and 0 source calls throughout", async () => {
-    const { deps, state, calls, shipBelt } = build();
-    shipBelt.match = () => false; // polled, never claimed — the snapshot is what we're after here
-    state.eligible = [ticket("A-2")];
+    const { deps, state, calls, config } = build();
+    // Two eligible items, one claim allowed per tick: A-1 is claimed (and so drops out of the
+    // payload as a running row), A-2 stays in the snapshot — which is what we're after here.
+    // The belt has no `match`, so both are cached; a rejected item is no longer cached at all.
+    config.limits.maxClaimsPerTick = 1;
+    state.eligible = [ticket("A-1"), ticket("A-2")];
     const app = createApp({
       getRepo: (name: string) => (name === "demo" ? ({ ticking: false, deps } as unknown as RepoRuntime) : undefined),
     } as unknown as ServerContext);
