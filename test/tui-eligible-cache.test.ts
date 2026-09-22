@@ -30,25 +30,6 @@ const run = (over: Partial<ActiveRun> & { ticketKey: string }): ActiveRun => ({
   ...over,
 });
 
-describe("withoutClaimed — drop eligible items already running", () => {
-  it("drops an eligible item that now has an active run (same source+key)", () => {
-    const eligible = [item({ key: "a" }), item({ key: "b" })];
-    const active = [run({ ticketKey: "a", workSource: "markdown" })];
-    expect(withoutClaimed(eligible, active).map((i) => i.key)).toEqual(["b"]);
-  });
-
-  it("is source-scoped — same key under a different source is NOT dropped", () => {
-    const eligible = [item({ key: "a", source: "jira" })];
-    const active = [run({ ticketKey: "a", workSource: "markdown" })];
-    expect(withoutClaimed(eligible, active).map((i) => i.key)).toEqual(["a"]);
-  });
-
-  it("returns everything when there are no active runs", () => {
-    const eligible = [item({ key: "a" }), item({ key: "b" })];
-    expect(withoutClaimed(eligible, [])).toHaveLength(2);
-  });
-});
-
 const machine = (name: string, repos: { repo: string; active: ActiveRun[] }[]): MachineView =>
   ({
     name,
@@ -61,6 +42,26 @@ const machine = (name: string, repos: { repo: string; active: ActiveRun[] }[]): 
     stale: false,
     repos: repos.map((r) => ({ repo: r.repo, eligible: [], status: { active: r.active } })),
   }) as unknown as MachineView;
+
+/** One machine's runs as the claimed set — the same shape `dashboard.ts` builds, for one host. */
+const claimedOn = (...runs: ActiveRun[]): Set<string> => fleetClaimed([machine("alpha", [{ repo: "r", active: runs }])]);
+
+describe("withoutClaimed — drop eligible items already running", () => {
+  it("drops an eligible item that now has an active run (same source+key)", () => {
+    const eligible = [item({ key: "a" }), item({ key: "b" })];
+    expect(withoutClaimed(eligible, claimedOn(run({ ticketKey: "a", workSource: "markdown" }))).map((i) => i.key)).toEqual(["b"]);
+  });
+
+  it("is source-scoped — same key under a different source is NOT dropped", () => {
+    const eligible = [item({ key: "a", source: "jira" })];
+    expect(withoutClaimed(eligible, claimedOn(run({ ticketKey: "a", workSource: "markdown" }))).map((i) => i.key)).toEqual(["a"]);
+  });
+
+  it("returns everything when there are no active runs", () => {
+    const eligible = [item({ key: "a" }), item({ key: "b" })];
+    expect(withoutClaimed(eligible, claimedOn())).toHaveLength(2);
+  });
+});
 
 describe("fleetClaimed — a ticket is claimed once for the whole fleet", () => {
   it("drops machine A's eligible item when machine B has an active run for it", () => {

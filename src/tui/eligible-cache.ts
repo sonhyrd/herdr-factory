@@ -9,7 +9,7 @@
 //
 // (The carry-forward itself lives in `fleet-view.ts`, keyed per machine AND repo, since it also has
 // to drop the entries of a repo a reachable machine no longer serves.)
-import type { ActiveRun, EligibleItem } from "./api.ts";
+import type { EligibleItem } from "./api.ts";
 import type { MachineView } from "./fleet-view.ts";
 
 /** Source+key identity of a work item — the (work_source, ticket_key) pair the engine dedups on. */
@@ -31,14 +31,11 @@ export function fleetClaimed(machines: MachineView[]): Set<string> {
 }
 
 /**
- * Drop eligible items that already appear as an active run (same source+key). A carried-forward
- * eligible item can collide with a run that claimed it since the last successful fold-in — without
- * this it would render as BOTH a running row and an eligible row for a frame.
- *
- * Pass a `fleetClaimed` set to dedupe against the whole fleet; an `ActiveRun[]` scopes it to one
- * machine+repo, which is all a single-machine dashboard has.
+ * Drop eligible items that already appear as an active run (same source+key), given `fleetClaimed`'s
+ * set. A carried-forward eligible item can collide with a run that claimed it since the last
+ * successful fold-in — without this it would render as BOTH a running row and an eligible row for a
+ * frame.
  */
-export function withoutClaimed(eligible: EligibleItem[], active: ActiveRun[] | ReadonlySet<string>): EligibleItem[] {
-  const claimed = active instanceof Set ? active : new Set((active as ActiveRun[]).map((r) => idOf(r.workSource, r.ticketKey)));
+export function withoutClaimed(eligible: EligibleItem[], claimed: ReadonlySet<string>): EligibleItem[] {
   return eligible.filter((i) => !claimed.has(idOf(i.source, i.key)));
 }
