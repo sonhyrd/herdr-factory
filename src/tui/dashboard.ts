@@ -31,7 +31,7 @@ import type { KeyEvent } from "@opentui/core";
 import { text } from "./render.ts";
 import { listConfiguredRepos } from "../config-paths.ts";
 import type { ActiveRun } from "./api.ts";
-import { withoutClaimed } from "./eligible-cache.ts";
+import { fleetClaimed, withoutClaimed } from "./eligible-cache.ts";
 import {
   createFleetSource,
   filterMachines,
@@ -465,7 +465,7 @@ export function createDashboard(
   }
 
   /** One machine's repos, belts and boards. Emits into `specs`; returns nothing. */
-  function pushMachine(m: MachineView, specs: LineSpec[], nowSec: number, badge: boolean): void {
+  function pushMachine(m: MachineView, specs: LineSpec[], nowSec: number, badge: boolean, claimed: ReadonlySet<string>): void {
     const blank = () => specs.push({ kind: "text", content: "", fg: theme.text.tertiary });
     /** Lay a set of lanes out and emit one board line per rendered row, carrying each card's target. */
     const pushBoard = (lanes: ReturnType<typeof buildLanes>, resolve: (card: { kind: string; key: string }) => Target | undefined) => {
@@ -542,9 +542,11 @@ export function createDashboard(
         if (active.length === 0) specs.push({ kind: "text", content: "  (no runs when it last answered)", fg: theme.text.tertiary });
         continue;
       }
-      // Filter carried-forward eligible items against current runs: one may have been claimed since
-      // the last successful fold-in, and would otherwise show as both a running and an eligible row.
-      const eligible = withoutClaimed(cached, active);
+      // Filter carried-forward eligible items against the FLEET's current runs: one may have been
+      // claimed since the last successful fold-in — by this repo, by the other repo config on the
+      // same source, or by another host — and would otherwise show as a ready card next to the run
+      // that already owns it.
+      const eligible = withoutClaimed(cached, claimed);
       let boards = 0;
       for (const belt of st.belts) {
         const beltRuns = active.filter((r) => r.belt === belt.name);
@@ -614,6 +616,9 @@ export function createDashboard(
     const shown = filterMachines(view, machineFilter);
     const nowSec = Date.now() / 1000;
     const specs: LineSpec[] = [];
+    // Built from EVERY machine, not just the shown ones: a run hidden by the machine filter still
+    // holds the claim, so its ticket must not come back as ready on the host that is shown.
+    const claimed = fleetClaimed(view.machines);
     // What needs a human, across the WHOLE fleet — above the hosts, and never narrowed by the
     // machine filter: a PR waiting to merge on another box is still waiting.
     pushNeedsYou(view.machines, specs);
@@ -640,7 +645,7 @@ export function createDashboard(
         }
         continue;
       }
-      pushMachine(m, specs, nowSec, fleet);
+      pushMachine(m, specs, nowSec, fleet, claimed);
     }
     if (specs.length === 0) {
       specs.push({ kind: "text", content: "  no repos configured under ~/.config/herdr-factory/repos", fg: theme.text.tertiary });

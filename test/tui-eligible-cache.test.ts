@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ActiveRun, EligibleItem } from "../src/tui/api.ts";
-import { withoutClaimed } from "../src/tui/eligible-cache.ts";
+import type { MachineView } from "../src/tui/fleet-view.ts";
+import { fleetClaimed, withoutClaimed } from "../src/tui/eligible-cache.ts";
 
 const item = (over: Partial<EligibleItem> & { key: string }): EligibleItem => ({
   source: "markdown",
@@ -45,5 +46,40 @@ describe("withoutClaimed — drop eligible items already running", () => {
   it("returns everything when there are no active runs", () => {
     const eligible = [item({ key: "a" }), item({ key: "b" })];
     expect(withoutClaimed(eligible, [])).toHaveLength(2);
+  });
+});
+
+const machine = (name: string, repos: { repo: string; active: ActiveRun[] }[]): MachineView =>
+  ({
+    name,
+    local: false,
+    sshTarget: null,
+    state: "ok",
+    version: null,
+    uptimeSec: null,
+    lastSeenAt: null,
+    stale: false,
+    repos: repos.map((r) => ({ repo: r.repo, eligible: [], status: { active: r.active } })),
+  }) as unknown as MachineView;
+
+describe("fleetClaimed — a ticket is claimed once for the whole fleet", () => {
+  it("drops machine A's eligible item when machine B has an active run for it", () => {
+    const a = machine("alpha", [{ repo: "hyrd-widget", active: [] }]);
+    const b = machine("beta", [{ repo: "hyrd-widget", active: [run({ ticketKey: "MAMAS-9951", workSource: "jira" })] }]);
+    const eligible = [item({ key: "MAMAS-9951", source: "jira" }), item({ key: "MAMAS-9952", source: "jira" })];
+    expect(withoutClaimed(eligible, fleetClaimed([a, b])).map((i) => i.key)).toEqual(["MAMAS-9952"]);
+  });
+
+  it("drops an item claimed by another REPO on the same machine (one source, two repo configs)", () => {
+    const m = machine("alpha", [
+      { repo: "hyrd-widget", active: [] },
+      { repo: "nuxt-hyrd-chrysus", active: [run({ ticketKey: "MAMAS-9951", workSource: "jira" })] },
+    ]);
+    expect(withoutClaimed([item({ key: "MAMAS-9951", source: "jira" })], fleetClaimed([m]))).toEqual([]);
+  });
+
+  it("is still source-scoped across the fleet", () => {
+    const m = machine("alpha", [{ repo: "r", active: [run({ ticketKey: "a", workSource: "markdown" })] }]);
+    expect(withoutClaimed([item({ key: "a", source: "jira" })], fleetClaimed([m])).map((i) => i.key)).toEqual(["a"]);
   });
 });

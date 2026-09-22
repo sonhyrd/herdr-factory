@@ -684,6 +684,41 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
   // fetched once PER DISTINCT label (label-driven sources filter server-side on it, so different
   // belts see disjoint items; a label-less source ignores it and collapses to one fetch).
   const eligibleCache = new Map<string, MatchItem[]>();
+  // Which active belts share each (source, label) fetch — so the cached snapshot can be narrowed to
+  // what those belts would actually claim, below.
+  const beltsForFetch = new Map<string, BeltRuntime[]>();
+  for (const belt of deps.belts) {
+    if (!belt.active) continue;
+    const src = deps.resolveSource(belt.source);
+    if (!src) continue;
+    const key = `${src.name}\0${belt.label ?? ""}`;
+    const group = beltsForFetch.get(key) ?? [];
+    group.push(belt);
+    beltsForFetch.set(key, group);
+  }
+  /** The subset of a poll's items that SOME belt on this fetch accepts — what the board may call
+   *  "ready". Two repo configs polling one Jira query differ only in their belts' `match`, so an
+   *  unfiltered snapshot shows each repo the other's tickets, which it will never claim. A belt
+   *  without a `match` accepts everything, so the filter collapses to a no-op. A throwing predicate
+   *  drops the item (logged), exactly as at the claim below. */
+  const matchAccepted = async (cacheKey: string, src: SourceRuntime, items: MatchItem[]): Promise<MatchItem[]> => {
+    const belts = beltsForFetch.get(cacheKey) ?? [];
+    if (belts.some((b) => !b.match)) return items;
+    const accepted: MatchItem[] = [];
+    for (const item of items) {
+      for (const belt of belts) {
+        try {
+          if (await belt.match!({ item, source: { name: src.name, type: src.type } })) {
+            accepted.push(item);
+            break;
+          }
+        } catch (e) {
+          deps.log("warn", `belt ${belt.name}: match predicate threw for ${item.key}: ${err(e)}`);
+        }
+      }
+    }
+    return accepted;
+  };
   const getEligible = async (src: SourceRuntime, label: string | undefined): Promise<MatchItem[]> => {
     const cacheKey = `${src.name}\0${label ?? ""}`;
     const cached = eligibleCache.get(cacheKey);
@@ -721,7 +756,7 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
       noteSourceRateLimitCleared(deps, src.name); // …and that the budget is back
       // The tick's poll is the ONLY thing that queries a source for eligible work; `/eligible` serves
       // this snapshot. Only a success overwrites it, so a blip keeps the last good list on the board.
-      src.lastEligible.set(label ?? "", { items, at: deps.now() });
+      src.lastEligible.set(label ?? "", { items: await matchAccepted(cacheKey, src, items), at: deps.now() });
     } catch (e) {
       // A source that can't authenticate is PAUSED, not broken: record + notify (once) and skip its
       // claims this tick — it auto-resumes when a later poll succeeds. A rate-limited source is held

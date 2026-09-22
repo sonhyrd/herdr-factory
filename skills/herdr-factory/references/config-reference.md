@@ -505,7 +505,9 @@ glob matches and whose layout exists wins; else `belt.default_layout`; else noth
 [layouts.md](./layouts.md).
 
 **Belt claim order**: belts are stable-sorted by `priority` ascending (ties keep config order); at claim
-time the first belt whose `match` accepts an item wins.
+time the first belt whose `match` accepts an item wins. `match` also gates what is listed as **ready**:
+the tick caches only match-accepted items, so `eligible`, `GET /eligible` and the dashboard show what
+this repo would actually claim (a throwing predicate drops the item, logged).
 
 **Derived, never written**: whether the factory watches a PR (some step produces `pull_request`), and
 the display-only belt type label.
