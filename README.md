@@ -595,7 +595,8 @@ brief's front-matter). Route bugs to one belt and stories to another, programmat
 `match` also decides what is shown as **ready**: the tick caches only the items its active belts'
 `match` accepts, so `eligible`, `GET /eligible` and the dashboard all list what this repo would
 actually claim — two repo configs sharing one Jira query no longer show each other's tickets. A
-predicate that throws drops the item (logged), exactly as at the claim. The dashboard also drops a
+predicate that throws drops the item (logged once per poll — the claim reads the same verdict rather
+than re-running it). The dashboard also drops a
 ready item that is an active run **anywhere on the fleet**: a ticket is claimed once, so a run on
 another host is not "ready" here.
 

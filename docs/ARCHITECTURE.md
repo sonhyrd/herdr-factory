@@ -1155,11 +1155,13 @@ what `GET /repos/:repo/eligible` serves, so the tick's poll is the **only** thin
 source for eligible work (a failed, gated or held poll leaves the last good list standing). What is
 stored is **match-filtered**: the `match` predicates of the active belts sharing that `(source, label)`
 fetch run over the items once, and only the accepted ones are cached (a belt with no `match` accepts
-everything, so the filter collapses to a no-op; a throwing predicate drops the item, logged, exactly
-as at the claim). Without it, two repo configs polling one Jira query each listed the *other* repo's
-tickets as ready — items their belts would never claim. The claim path below keeps its own `match`
-check, so nothing claimable changes. An item with
-an **undelivered status write-back is skipped** — its "eligible" listing is known-stale (this is
+everything, so the filter collapses to a no-op; a throwing predicate drops the item, logged). Without
+it, two repo configs polling one Jira query each listed the *other* repo's tickets as ready — items their belts would never claim. Those verdicts are then **read again at the
+claim** rather than recomputed, so a predicate is evaluated (and a throwing one logged) exactly once
+per pass and a claim can never disagree with what `/eligible` showed as ready. The one behavioural
+consequence: every belt in the fetch's group is asked about every item, where the claim loop used to
+stop at the first belt that accepted one — a `match` is a pure predicate on the item, so the cost is
+the extra calls and nothing else. An item with an **undelivered status write-back is skipped** — its "eligible" listing is known-stale (this is
 what prevents a merged run whose transition never landed from being claimed and re-done). One
 source's backend hiccup is caught per-source and never starves the others. Per-run errors are
 caught → recorded as an `error` event → the tick continues; the per-repo tick lock prevents

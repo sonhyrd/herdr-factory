@@ -696,26 +696,40 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
     group.push(belt);
     beltsForFetch.set(key, group);
   }
-  /** The subset of a poll's items that SOME belt on this fetch accepts — what the board may call
-   *  "ready". Two repo configs polling one Jira query differ only in their belts' `match`, so an
-   *  unfiltered snapshot shows each repo the other's tickets, which it will never claim. A belt
-   *  without a `match` accepts everything, so the filter collapses to a no-op. A throwing predicate
-   *  drops the item (logged), exactly as at the claim below. */
+  /** Each belt's `match` verdict for each polled item, decided ONCE per poll and read again at the
+   *  claim below — so a predicate is evaluated (and a throwing one logged) exactly once per pass,
+   *  and the claim can never disagree with what the board showed as ready. Keyed by belt+item; a
+   *  belt with no `match` gets no entry, because it accepts everything. */
+  const matchVerdict = new Map<string, boolean>();
+  const verdictKey = (belt: BeltRuntime, item: MatchItem) => `${belt.name}\0${item.key}`;
+  /** Run those verdicts and return the union: the items SOME belt on this fetch would claim, which
+   *  is the only thing the board may call "ready". Two repo configs polling one Jira query differ
+   *  only in their belts' `match`, so an unfiltered snapshot showed each repo the OTHER's tickets —
+   *  items it would never claim. A throwing predicate drops the item, exactly as at the claim.
+   *
+   *  Note this evaluates every belt in the group, where the claim loop used to stop at the first
+   *  belt that accepted an item: a `match` is a pure predicate on the item (README), so the only
+   *  cost is the extra calls, and knowing the whole group's verdicts is what the snapshot needs. */
   const matchAccepted = async (cacheKey: string, src: SourceRuntime, items: MatchItem[]): Promise<MatchItem[]> => {
     const belts = beltsForFetch.get(cacheKey) ?? [];
-    if (belts.some((b) => !b.match)) return items;
     const accepted: MatchItem[] = [];
     for (const item of items) {
+      let anyBelt = false;
       for (const belt of belts) {
+        if (!belt.match) {
+          anyBelt = true; // a belt with no match accepts everything its label surfaced
+          continue;
+        }
+        let ok = false;
         try {
-          if (await belt.match!({ item, source: { name: src.name, type: src.type } })) {
-            accepted.push(item);
-            break;
-          }
+          ok = !!(await belt.match({ item, source: { name: src.name, type: src.type } }));
         } catch (e) {
           deps.log("warn", `belt ${belt.name}: match predicate threw for ${item.key}: ${err(e)}`);
         }
+        matchVerdict.set(verdictKey(belt, item), ok);
+        anyBelt ||= ok;
       }
+      if (anyBelt) accepted.push(item);
     }
     return accepted;
   };
@@ -805,16 +819,10 @@ async function claimNewWork(deps: Deps, machineSlots = Infinity): Promise<void> 
         deps.log("warn", `${item.key}: skipping claim — a status write-back to "${src.name}" is still pending`);
         continue;
       }
-      if (belt.match) {
-        let accepted: boolean;
-        try {
-          accepted = !!(await belt.match({ item, source: { name: src.name, type: src.type } }));
-        } catch (e) {
-          deps.log("warn", `belt ${belt.name}: match predicate threw for ${item.key}: ${err(e)}`);
-          continue;
-        }
-        if (!accepted) continue;
-      }
+      // The verdict was decided by this pass's poll (`matchAccepted` above), which is also what the
+      // board's snapshot was built from — so the predicate is not re-run here, a throwing one is not
+      // logged twice, and a claim can never disagree with what `/eligible` listed as ready.
+      if (belt.match && !matchVerdict.get(verdictKey(belt, item))) continue;
       // claim() creates the run row FIRST (which immediately counts toward countActive), so the
       // slot is consumed even if the rest of the claim throws — decrement before the try, or a
       // burst of claim failures in one pass would transiently spawn past maxActive. Decrement the
