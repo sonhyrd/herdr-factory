@@ -8,7 +8,9 @@
 //     wakes a resolver in the worktree, which holds a concurrency slot only while it is working; and
 //   * a PR that is GREEN and mergeable notifies the operator once per green HEAD — including after a
 //     push on a repo with no CI, where nothing else in the signature moves — and is never merged by
-//     the factory (the human stays the merge gate).
+//     the factory (the human stays the merge gate); and
+//   * "green" waits for the pr step's OWN step-done (issue #78): the hand-off above happens while
+//     that agent is still polling CI and may still push, so the watch stays silent until it finishes.
 import { expect } from "vitest";
 import { scenario } from "../harness/index.ts";
 
@@ -52,10 +54,25 @@ scenario(
     expect(w.db.step(w.db.run(key)!.id, "pr")?.done, "…and it really was never signalled done").toBe(0);
     expect(w.db.run(key)!.resolver_active, "an idle watch holds no concurrency slot").toBe(0);
 
-    // ── green ─────────────────────────────────────────────────────────────────────────────────
-    // Nothing unresolved, nothing failing, nothing pending: the operator is told once, with the URL.
-    await w.waitForEvent(key, "pr_green", { label: "a green PR notifies the operator", timeoutMs: 120_000 });
+    // ── green, but the pr step is still running (issue #78) ───────────────────────────────────
+    // Nothing unresolved, nothing failing, nothing pending — and yet NOT "ready to merge": the pr
+    // agent that opened this PR has not signalled done, so it may still be polling CI and pushing.
     const ready = () => w.herdr.notifications().filter((n) => /ready to merge/i.test(n.title));
+    for (let i = 0; i < 4; i++) await w.tick(); // explicit passes: a silent watch emits no event to wait on
+    expect(w.db.eventTypes(key), "no pr_green while the pr step is unfinished").not.toContain("pr_green");
+    expect(ready().length, "…and the operator is not told to merge it").toBe(0);
+    const busy = await w.factory.repoApi<{ active: { ticketKey: string; prGreen?: boolean }[] }>("GET", "status?quick=1");
+    expect(busy.active.find((r) => r.ticketKey === key)?.prGreen, "…and `/status` (the board) does not show it green").toBe(false);
+
+    // ── the pr step finishes ──────────────────────────────────────────────────────────────────
+    // run.step is null in `reviewing`, so this is the one step-done the identity check lets through.
+    const done = w.factory.cli(["step-done", key, "pr", "--source", "briefs"]);
+    expect(done.code, `step-done pr must be accepted in the PR watch:\n${done.stderr}`).toBe(0);
+    expect(w.db.step(w.db.run(key)!.id, "pr")?.done, "…and it is recorded").toBe(1);
+
+    // ── green ─────────────────────────────────────────────────────────────────────────────────
+    // Same PR, same head, nothing about GitHub changed — finishing the step is what made it news.
+    await w.waitForEvent(key, "pr_green", { label: "a green PR notifies the operator once the pr step is done", timeoutMs: 120_000 });
     expect(ready().length, "exactly one ready-to-merge notification, not one per tick").toBe(1);
     expect(ready()[0]!.body, "the notification is actionable on a phone — it carries the PR URL").toContain(`/pull/${pr}`);
     expect(w.gh.pr(pr)?.state, "the factory NEVER merges — it only says the PR could be").toBe("OPEN");

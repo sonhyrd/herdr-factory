@@ -115,10 +115,14 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       //    is misaddressed and rejected loudly instead of being recorded then silently wiped by
       //    the next entry's re-base.
       //  - a carried pass stamp must match the step's CURRENT pass (see SIGNAL_DESCRIPTORS).
-      if (step !== run.step) {
-        if (deps.store.getRunStep(run.id, step)?.done) {
-          return { ok: true, message: `step "${step}" is already recorded done — nothing to do` };
-        }
+      // The PR-opening step is the one exception: enterReviewing hands the run to the PR watch as
+      // soon as a review-ready PR is adopted, clearing run.step while that agent is still polling
+      // CI. Its step-done still has to land — the "ready to merge" notification waits on it.
+      const prWatchDone = run.phase === "reviewing" && !!belt && belt.steps.find((s) => s.opensPr)?.name === step;
+      if (step !== run.step && deps.store.getRunStep(run.id, step)?.done) {
+        return { ok: true, message: `step "${step}" is already recorded done — nothing to do` };
+      }
+      if (step !== run.step && !prWatchDone) {
         deps.log("warn", `${body.key}: step-done for "${step}" ignored — the active step is "${run.step ?? "(none)"}"`);
         return { ok: false, message: `"${step}" is not the run's active step ("${run.step ?? "none"}") — signal ignored` };
       }
@@ -146,6 +150,15 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
       deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done", detail: { step, pass: rs?.pass } });
       recordStepTiming(deps, run, step, rs);
       deps.log("info", `${body.key}: step-done ${step} recorded`);
+      // The PR-watch case has NOTHING to advance — the belt already moved when the PR was adopted —
+      // and an inline reconcile here is unbatched (no tick ctx), so it costs a per-run `pr view` +
+      // review-signature query that the tick's one batched snapshot would have covered for free.
+      // The next pass picks the flag up and lifts the ready-to-merge gate. (perf-call-budgets pins
+      // watching N PRs at one GitHub query per tick; a per-run call here is exactly the decay it
+      // exists to catch.)
+      if (prWatchDone) {
+        return { ok: true, advanced: false, fromStep: step, message: `${step} recorded done — the PR watch picks it up on the next pass` };
+      }
       // fire-and-forget (lockDiscipline "fire-and-forget"): the done flag is a monotonic edge, so a
       // per-run lock is enough — the nudge lands even mid-tick, and if this run is busy the next pass
       // advances it.

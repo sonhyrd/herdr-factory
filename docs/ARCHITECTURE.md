@@ -1212,7 +1212,12 @@ re-advance, and each pass's re-rendered prompt stamps its `step-done`/`bounce` c
 call, a server+fallback double-apply, an agent re-running a remembered command from a previous
 pass — is **rejected** instead of completing (or rewinding) a pass it doesn't belong to; a
 `step-done` naming a non-active step is likewise rejected loudly (or acknowledged as a no-op when
-that step is already done) rather than recorded and silently wiped by the next entry's re-base.
+that step is already done) rather than recorded and silently wiped by the next entry's re-base. The
+one exception is the belt's PR-opening step while the run is in `reviewing`: the hand-off to the PR
+watch clears `run.step` before that agent signals, so its `step-done` is accepted there — and it has
+to be, because the ready-to-merge watch waits on it. That one skips the signal's usual inline
+reconcile: there is no belt move left to make, and an out-of-tick reconcile would cost a per-run PR
+poll instead of riding the tick's single batched snapshot. The next pass lifts the gate.
 When a rework pass completes, its `feedback-<step>.md` is archived as
 `feedback-<step>-addressed-pass<N>.md`, so a later pass's re-render can't resurrect
 already-addressed findings. The bounce re-dispatch goes through `spawnStep` — the single dispatch
@@ -1258,7 +1263,14 @@ the adopted PR) — it tears the run down with outcome `merged`.
 **Ready-to-merge notification (the factory never merges).** Every `reviewing` pass evaluates the
 PR's *green* predicate on the signature it already has — open, not a draft, `unresolved === 0`,
 `failing === 0` **and `pending === 0`** ("not failing" is true the instant CI starts; green means
-every check CONCLUDED) — and on the first pass that sees it, notifies the operator once through the
+every check CONCLUDED) — **and the PR-opening step finished**: `enterReviewing` hands off the moment
+a review-ready PR is adopted, *before* `step-done`, so that agent may still be polling CI and may
+still push. While its `run_steps` row exists and is not `done` the PR is treated as not green (any
+existing mark is cleared), so the first tick after its `step-done` is the one that notifies — and a
+bounce back into the step re-arms it. A run adopted into `reviewing` without ever spawning the step
+has no row and keeps the unconditional behaviour. Because the run's active step is `null` by then,
+`step-done` for the belt's PR-opening step is accepted in `reviewing` as the one exception to the
+"must name the active step" identity check. On the first pass that sees it green, notify once through the
 same `deps.herdr.notify` path as attention/auth escalations, with the key, PR title, repo and URL.
 It is a notification *only*: nothing in the engine merges, and `gh pr merge` appears nowhere in the
 codebase. The episode state is one row in `watch_state` (run, `'pull_request'`, `'pr_green'`) whose

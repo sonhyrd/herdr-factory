@@ -84,9 +84,11 @@ scenario(
     },
     agent: {
       steps: {
-        // The PR agent opens the PR and stops: the belt's PR is not a draft, so the run hands off to
-        // the review watch on its own, and the gh fake's PR has no checks and no threads — green.
-        shippr: { signal: "none" },
+        // The PR agent opens the PR and signals done. The belt's PR is not a draft, so the run may
+        // hand off to the review watch before that signal lands (step-done is accepted in `reviewing`
+        // either way) — and the gh fake's PR has no checks and no threads, so it is green. The signal
+        // is load-bearing: since #78 a PR is not "ready to merge" while its pr step is still running.
+        shippr: {},
         // Commits (so the heartbeat is satisfied) and then goes idle without signalling: the budget
         // watchdog parks it — the commonest park in the wild.
         parkwork: { signal: "none" },
