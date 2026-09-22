@@ -128,6 +128,13 @@ There is no terminal and no herdr detection here, so `agent_status` is read from
 `working` / `idle`. Anything else the file says is passed through verbatim; an unwritten file reads as
 `unknown`.
 
+That last case is a scenario tool, not just a gap: `HF_AGENT_SILENT=<key>` makes the scripted agent
+write no status file at all, so its pane is a LIVE agent whose state herdr cannot read — the shape a
+freshly started `cursor-agent` has on Linux, and the only lane that can produce it (a real herdr
+0.7.5 reports a quiet adopted process as `idle`). `agent start` then answers `agent_start_timeout`
+while leaving the process running and the pane recorded as that agent's, which is faithful: the
+adoption handshake failed, the agent is still there. See `layout-unknown-agent` (issue #80).
+
 That keeps `working` — the state that vetoes the budget and stall watchdogs and freezes the read-only
 baseline — honest: the fake cannot invent it. It also means `HF_AGENT_STATE_DIR` is **required**;
 `agent start` fails fast rather than blocking out its whole adoption timeout without it.

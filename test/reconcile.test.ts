@@ -48,6 +48,9 @@ interface FakeState {
   paneState: string;
   deadPanes: Set<string>; // panes herdr no longer tracks (paneAlive → false)
   tabPane: string | null; // what tabPaneByLabel resolves for the CONFIGURED label ("agent") — null ⇒ no match
+  /** Per-TAB override of `tabPane`, keyed by tab title — a layout that gives each step its own pane
+   *  (which is what makes "whose pane did the tokens land on" answerable). */
+  tabPanes: Record<string, string | null>;
   tabPaneByName: Record<string, string>; // what tabPaneByLabel resolves for a NON-configured label (the drain-window dispatch name `${step}:${key}`)
   headSha: string;
   /** What `git status --porcelain` + `git diff --stat` report for the run's worktree — null ⇒ the
@@ -141,7 +144,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -149,7 +152,7 @@ function build(opts: { multi?: boolean } = {}) {
     agentSend: [] as [string, string][],
     // Display-only pane state (herdr `pane report-metadata`) — [paneId, agentName, title ?? null].
     // This replaced the pane RENAMES the factory used to convey step/attention state with.
-    paneDisplay: [] as [string, string | undefined, string | null][],
+    paneDisplay: [] as [string, string | undefined, string | null, Record<string, string | null>][],
     agentFocus: [] as string[],
     // Layout agent adoptions the engine issued — [paneId, name, kind, args] (the layout wait's
     // restart). The NAME matters: herdr refuses one that a live agent already holds.
@@ -255,7 +258,8 @@ function build(opts: { multi?: boolean } = {}) {
     agentSessionId: async () => state.sessionId,
     // Configured label ("agent") resolves to state.tabPane; a renamed dispatch name resolves from
     // state.tabPaneByName (empty ⇒ null), mirroring how the first dispatch renames a pane's label.
-    tabPaneByLabel: async (_ws, _tab, pane) => (pane === "agent" ? state.tabPane : (state.tabPaneByName[pane] ?? null)),
+    tabPaneByLabel: async (_ws, tab, pane) =>
+      pane === "agent" ? (Object.hasOwn(state.tabPanes, tab) ? state.tabPanes[tab]! : state.tabPane) : (state.tabPaneByName[pane] ?? null),
     agentStart: async () => { calls.agentStart += 1; return "w1:p2"; },
     paneRun: async () => {},
     paneClose: async () => {},
@@ -277,7 +281,7 @@ function build(opts: { multi?: boolean } = {}) {
     agentSend: async (p, t) => { calls.agentSend.push([p, t]); return !state.promptStalls; },
     agentFocus: async (id) => { calls.agentFocus.push(id); },
     focusedPane: async () => state.focusedPane,
-    reportPaneDisplay: async (p, d) => { calls.paneDisplay.push([p, d.agentName, d.title ?? null]); },
+    reportPaneDisplay: async (p, d) => { calls.paneDisplay.push([p, d.agentName, d.title ?? null, d.tokens ?? {}]); },
     notify: async (title, body) => { calls.notify += 1; calls.notified.push([title, body]); },
   };
   const github: GitHubApi = {
@@ -1303,6 +1307,82 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.transitions).not.toContainEqual(["W-1", "in_development"]);
   });
 
+  it("dispatches into a layout pane whose agent herdr reports `unknown` (#80)", async () => {
+    // A cursor-agent that has never been prompted never fires the lifecycle hook herdr derives
+    // `agent_status` from, so it sits idle at its prompt reporting `unknown` indefinitely. Gating
+    // the dispatch on idle/done alone burned every layout-wait window and parked
+    // `layout_wait_timeout` against a pane that was ready the whole time.
+    const { deps, store, state, calls } = build();
+    state.eligible = [ticket("W-80")];
+    state.paneState = "unknown";
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-80")!;
+    expect(calls.agentSend.length).toBe(1); // the prompt went in…
+    expect(calls.agentStart).toBe(0); // …into the LAYOUT pane, not one we spawned
+    const rs = store.getRunStep(run.id, "fix")!;
+    expect(rs.paneId).toBe("w1:p1");
+    expect(rs.dispatchedAt).toBe(1000);
+    expect(run.phase).toBe("running"); // never waits, so it can never reach the park
+  });
+
+  it("a pane with NO agent (`gone`) still waits — `unknown` is the only state the gate opened to", async () => {
+    const { deps, store, state, calls } = build();
+    state.eligible = [ticket("W-81")];
+    state.paneState = "gone";
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-81")!;
+    expect(calls.agentSend.length).toBe(0);
+    expect(run.phase).toBe("claiming");
+  });
+
+  it("a step parked in its layout wait never retags the PREVIOUS step's pane as itself (#80)", async () => {
+    // run.paneId is whichever step dispatched LAST. A step still waiting for its own pane has
+    // dispatched nowhere, so publishing its name there put `hf_step: review` on the *evidence*
+    // pane — while the pane the step was actually waiting for carried no tokens at all.
+    const { deps, store, state, calls, setNow, worktree } = build();
+    const run = seed(store, worktree, "K-80T", "running", "review", { paneId: "w1:pfix" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    store.upsertRunStep(run.id, "review", { paneId: null, dispatchedAt: null, startedAt: 1000 });
+    state.tabPanes = { fix: "w1:pfix", review: null }; // review's layout pane never comes up
+    for (const t of [1000, 1701, 2402, 3103, 3804]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+    const parked = store.timeline("demo", "K-80T").filter((e) => e.type === "attention");
+    expect(parked.map((e) => JSON.parse(e.detail ?? "{}").reason)).toEqual(["layout_wait_timeout"]);
+    // Every write to the fix pane names FIX — the step that owns it — never the parked review step.
+    const onFixPane = calls.paneDisplay.filter(([pane]) => pane === "w1:pfix");
+    expect(onFixPane.length).toBeGreaterThan(0);
+    expect(onFixPane.map(([, name]) => name)).toEqual(onFixPane.map(() => "fix:K-80T"));
+    expect(onFixPane.map(([, , , tokens]) => tokens.hf_step)).toEqual(onFixPane.map(() => "fix"));
+  });
+
+  it("resume of a layout_wait park dispatches the step on the next tick (#80)", async () => {
+    const { deps, store, state, calls, setNow, worktree } = build();
+    const run = seed(store, worktree, "K-80R", "running", "review", { paneId: "w1:pfix" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    store.upsertRunStep(run.id, "review", { paneId: null, dispatchedAt: null, startedAt: 1000 });
+    state.tabPanes = { fix: "w1:pfix", review: null };
+    for (const t of [1000, 1701, 2402, 3103, 3804]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+    // The operator resumes; the review pane is now up with an untouched cursor agent.
+    state.tabPanes.review = "w1:prev";
+    state.paneState = "unknown";
+    calls.agentSend.length = 0;
+    expect((await resumeRun(deps, store.getRun(run.id)!)).ok).toBe(true);
+    setNow(3900);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentSend.filter(([pane]) => pane === "w1:prev").length).toBe(1);
+    const rs = store.getRunStep(run.id, "review")!;
+    expect(rs.paneId).toBe("w1:prev");
+    expect(rs.dispatchedAt).toBe(3900);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+  });
+
   it("a prompt herdr reports as STALLED is not a dispatch — the pass stays undispatched and retries", async () => {
     // The failure this guards: a submission whose keystrokes were dropped used to look like a
     // successful dispatch, so the step's budget clock started against an agent that never got the
@@ -1326,7 +1406,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     const rs2 = store.getRunStep(run.id, "fix")!;
     expect(rs2.dispatchedAt).not.toBeNull();
     expect(rs2.paneId).toBe("w1:p1");
-    expect(calls.paneDisplay).toContainEqual(["w1:p1", "fix:ST-1", null]);
+    expect(calls.paneDisplay).toContainEqual(["w1:p1", "fix:ST-1", null, expect.anything()]);
   });
 
   it("a confirmed dispatch is submitted ONCE, however idle herdr keeps reporting the pane", async () => {
@@ -1693,7 +1773,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     // The rescue is on the timeline; the ⚠ label was restored to the pane's OWNING step (fix);
     // and the successful dispatch refunds the respawn budget for future waits.
     expect(store.timeline("demo", "K-LWP").some((e) => e.type === "resumed" && (e.detail ?? "").includes("layout_wait_respawn"))).toBe(true);
-    expect(calls.paneDisplay).toContainEqual(["w1:pfix", "fix:K-LWP", null]);
+    expect(calls.paneDisplay).toContainEqual(["w1:pfix", "fix:K-LWP", null, expect.anything()]);
     expect(store.guardCounter(run.id, "evidence", "layout_wait")).toBe(0);
   });
 
@@ -2181,7 +2261,7 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(calls.notify).toBe(1);
     // the active pane is relabelled to a glaring attention marker (the persistent herdr cue)
-    expect(calls.paneDisplay).toContainEqual(["w1:p1", "review:K-B1", "⚠ ATTENTION K-B1"]);
+    expect(calls.paneDisplay).toContainEqual(["w1:p1", "review:K-B1", "⚠ ATTENTION K-B1", expect.anything()]);
   });
 
   it("review step over budget but still working → extended (stays running)", async () => {

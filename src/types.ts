@@ -775,6 +775,25 @@ export function isReadyForInput(agentStatus: string): boolean {
   return agentStatus === "idle" || agentStatus === "done";
 }
 
+/** May a step's prompt be submitted into this pane's agent — the LAYOUT DISPATCH gate?
+ *
+ *  Wider than `isReadyForInput` by exactly one state: `unknown`. herdr derives `agent_status` from
+ *  the harness's own lifecycle hooks, and a harness that has never been prompted may never have
+ *  fired one — a freshly adopted cursor-agent sits at its prompt reporting `unknown` indefinitely
+ *  (issue #80: two runs burned every layout-wait window and parked `layout_wait_timeout` against a
+ *  pane that was idle at its prompt the whole time). `unknown` is not a claim that the agent is
+ *  ready, only that herdr cannot say; the dispatch that follows is CONFIRMED (`agentSend`'s
+ *  `--until working|blocked` plus its pane-progress probe), so a prompt that does NOT land is still
+ *  reported `waiting` and retried under the same bounded wait. The states herdr CAN read stay out:
+ *  `working`/`blocked` are a real "busy", and `gone` means no agent is there to prompt at all.
+ *
+ *  Deliberately NOT folded into `isReadyForInput`: its other callers (the resume/idle nudges) act on
+ *  an agent the factory already dispatched to, where `unknown` really is "we cannot tell" and the
+ *  cost of guessing wrong is an unsolicited message mid-turn rather than a parked run. */
+export function mayAcceptDispatch(agentStatus: string): boolean {
+  return isReadyForInput(agentStatus) || agentStatus === "unknown";
+}
+
 export const HERDR_AGENT_KINDS: readonly string[] = [
   "pi", "claude", "codex", "gemini", "cursor", "devin", "agy", "cline", "omp", "mastracode",
   "opencode", "copilot", "kimi", "kiro", "droid", "amp", "grok", "hermes", "kilo", "qodercli", "maki",

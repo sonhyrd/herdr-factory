@@ -424,7 +424,10 @@ export class World {
     // `exec -a claude node agent.cjs` is adopted in ~3s). So the scripted agent is exec'd UNDER the
     // kind's own name rather than copied to it — which also keeps the implementation editable in
     // place instead of duplicated into every world.
-    for (const kind of ["claude", "opencode"]) {
+    // `cursor` rides along as a third kind so a scenario can put a CURSOR agent in a layout pane —
+    // the harness whose status herdr cannot read on Linux (issue #80), and the only way to prove the
+    // dispatch gate against the kind the failure was actually reported for.
+    for (const kind of ["claude", "opencode", "cursor"]) {
       // The ds4 tier replaces ONE of them with the real model CLI: `opencode` becomes a wrapper that
       // records the argv herdr built (the interesting part — how a prompt reaches that kind is herdr's
       // manifest's business) and execs the real binary. `claude` stays scripted, so a ds4 scenario can

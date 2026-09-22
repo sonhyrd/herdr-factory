@@ -148,7 +148,7 @@ A crash mid-teardown leaves `phase='tearing_down'` with `ended_at NULL`, so the 
 
 | Phase | Waiting for | Driven by | Holds a concurrency slot? |
 |---|---|---|---|
-| `claiming` | the herdr worktree, then the first step's configured pane showing an **idle** agent | every tick, bounded by `layout_wait_seconds` | **yes** |
+| `claiming` | the herdr worktree, then the first step's configured pane showing an agent that may accept a dispatch (`idle`, `done`, or `unknown`) | every tick, bounded by `layout_wait_seconds` | **yes** |
 | `running` | the step agent's `step-done` / `bounce` / `ask-human` | nudge (edge) + watchdogs (level) | **yes** |
 | `waiting_for_human` | a source-native human reply to the posted question | poll on a flat 30 s cadence | no |
 | `reviewing` | the PR to merge or close; actionable review state to wake a resolver | one batched GraphQL query per tick; **no time limit** | only while `resolverActive` |
@@ -205,7 +205,7 @@ Re-bases **write NULL rows, never delete** — a delete would let a legacy fallb
 
 The wait window is `limits.layout_wait_seconds` (600). Past it, if the step's `layout_wait` counter is below the respawn limit (3), the layout pane's **own agent is re-started** when that pane resolves and is sitting at a shell prompt with no agent (the same `agent start` the build issues — kind and args off the layout pane, under the name the build gave it, Claude's folder trust pre-answered; the layout hook starts a pane's agent only once, so a start that failed would otherwise never be retried), and the wait is then **re-armed in place** (`layout pane … not up after Ns — re-arming the wait (retry i/limit)`). Only when the budget is spent does it park `layout_wait_timeout`. Wall clock before a park: `(1 + 3) × layout_wait_seconds` ≈ 40 min at defaults. The same 3 credits are shared by the in-place re-arm and the post-park rescue; a successful dispatch or a `resume` refunds them.
 
-Dispatch never spawns its own pane when a `tab`/`pane` is configured — a fresh pane must be `idle`, and a reused pane that is `working` defers rather than queue into a foreign turn. The prompt submission itself is **confirmed** (`herdr agent prompt --wait --until working`): an unconfirmed one counts as "not dispatched" and retries under the same wait, so a dropped prompt can't start the budget clock. See [layouts.md](./layouts.md).
+Dispatch never spawns its own pane when a `tab`/`pane` is configured — a fresh pane must hold an agent that may accept a dispatch, and a reused pane that is `working` defers rather than queue into a foreign turn. **"May accept" is `idle`, `done`, or `unknown`**: herdr reads `agent_status` from the harness's own lifecycle hooks, and a harness that has never been prompted may never fire one (a freshly adopted `cursor-agent` sits at its prompt reporting `unknown` indefinitely — gating on idle/done alone parked such runs `layout_wait_timeout` against a pane that was ready all along). `unknown` is not a readiness claim, only "herdr cannot say"; the confirmation below settles it. `working`/`blocked` (really busy) and no-agent-at-all still wait. The prompt submission itself is **confirmed** (`herdr agent prompt --wait --until working`): an unconfirmed one counts as "not dispatched" and retries under the same wait, so a dropped prompt can't start the budget clock. See [layouts.md](./layouts.md).
 
 ### Gate receipts and the per-step timing export
 
