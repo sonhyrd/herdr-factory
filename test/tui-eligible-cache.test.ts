@@ -64,18 +64,18 @@ const machine = (name: string, repos: { repo: string; active: ActiveRun[] }[]): 
 
 describe("fleetClaimed — a ticket is claimed once for the whole fleet", () => {
   it("drops machine A's eligible item when machine B has an active run for it", () => {
-    const a = machine("alpha", [{ repo: "hyrd-widget", active: [] }]);
-    const b = machine("beta", [{ repo: "hyrd-widget", active: [run({ ticketKey: "MAMAS-9951", workSource: "jira" })] }]);
-    const eligible = [item({ key: "MAMAS-9951", source: "jira" }), item({ key: "MAMAS-9952", source: "jira" })];
-    expect(withoutClaimed(eligible, fleetClaimed([a, b])).map((i) => i.key)).toEqual(["MAMAS-9952"]);
+    const a = machine("alpha", [{ repo: "alpha-repo", active: [] }]);
+    const b = machine("beta", [{ repo: "alpha-repo", active: [run({ ticketKey: "K-1", workSource: "jira" })] }]);
+    const eligible = [item({ key: "K-1", source: "jira" }), item({ key: "K-2", source: "jira" })];
+    expect(withoutClaimed(eligible, fleetClaimed([a, b])).map((i) => i.key)).toEqual(["K-2"]);
   });
 
   it("drops an item claimed by another REPO on the same machine (one source, two repo configs)", () => {
     const m = machine("alpha", [
-      { repo: "hyrd-widget", active: [] },
-      { repo: "nuxt-hyrd-chrysus", active: [run({ ticketKey: "MAMAS-9951", workSource: "jira" })] },
+      { repo: "alpha-repo", active: [] },
+      { repo: "beta-repo", active: [run({ ticketKey: "K-1", workSource: "jira" })] },
     ]);
-    expect(withoutClaimed([item({ key: "MAMAS-9951", source: "jira" })], fleetClaimed([m]))).toEqual([]);
+    expect(withoutClaimed([item({ key: "K-1", source: "jira" })], fleetClaimed([m]))).toEqual([]);
   });
 
   it("is still source-scoped across the fleet", () => {

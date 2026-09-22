@@ -2724,13 +2724,13 @@ describe("belt routing (match predicates, first match wins)", () => {
   });
 
   it("caches only match-accepted items in lastEligible — the board never shows the other repo's work", async () => {
-    // Two repo configs poll one Jira query and differ only in their belts' `match`; an unfiltered
+    // Two repo configs poll one query and differ only in their belts' `match`; an unfiltered
     // snapshot made each repo's /eligible list the other's tickets (issue #81).
     const { deps, state, sources } = build();
-    const chrysus: BeltRuntime = { name: "chrysus", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true, match: ({ item }) => item.summary.includes("[Chrysus]") };
-    deps.belts = [chrysus];
-    deps.resolveBelt = (n) => (n === "chrysus" ? chrysus : undefined);
-    state.eligible = [{ ...ticket("K-1", "Task"), summary: "[FE] - [Chrysus] hide text" }, { ...ticket("K-2", "Task"), summary: "[FE] - [Widget] hide text" }];
+    const appBelt: BeltRuntime = { name: "app", beltType: "work_to_pull_request", source: "jira", priority: 1, active: true, steps: prSteps(), watchPr: true, match: ({ item }) => item.summary.includes("[app]") };
+    deps.belts = [appBelt];
+    deps.resolveBelt = (n) => (n === "app" ? appBelt : undefined);
+    state.eligible = [{ ...ticket("K-1", "Task"), summary: "[FE] - [app] hide text" }, { ...ticket("K-2", "Task"), summary: "[FE] - [widget] hide text" }];
     await reconcileRepo(deps);
     expect(sources[0]!.lastEligible.get("")!.items.map((i) => i.key)).toEqual(["K-1"]);
   });
