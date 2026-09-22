@@ -25,7 +25,8 @@ import { expectParked, expectStepDone, expectTimeline, scenario } from "../harne
 
 const KEY = "unknown-item";
 /** Compressed, and comfortably longer than one tick: the scenario has to build each pane INSIDE a
- *  wait window for the first half, and let a window expire four times over for the second. */
+ *  wait window for the first half, and let the review step's window expire through its three bounded
+ *  re-arms into a park for the second. */
 const WAIT_SECONDS = 20;
 
 scenario(
