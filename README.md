@@ -448,7 +448,24 @@ at), then returns to the watch. A push that touches only docs, Markdown or trans
 `translations/`) keeps today's behaviour. Each such rework counts toward `max_bounces`. Until the
 gates pass at the new head there is no "ready to merge": the dashboard shows `↻ <KEY>  PR #<n>
 evidence stale since <sha> (head <sha>) — re-running`, and `explain <KEY>` prints the evidence SHA
-against the PR head. Merge → teardown (worktree removed,
+against the PR head. **A factory review of a PR this run owns is handed to it.** When a review run
+(an `hf-review`-style belt on a PR-polling source) posts its verdict as a PR review — marker lines
+`<brand>-review-verdict:`, `<brand>-review-round:`, `<brand>-review-head:` and a numbered checklist
+(`- [ ] 1. **must-fix** …`, then should-fix and nits) — on the head the watched PR still has, the
+watch wakes this run's resolver with the findings: on `changes-requested`, and on `clean` that lists
+a should-fix (never `unchanged`, nits-only `clean`, or `needs-human`). No inline thread, no relabel.
+The resolver fixes every must-fix and should-fix in one pass (nits when cheap), pushes, and posts
+one comment mapping each finding to its commit. The run then **self-checks**: its gates re-run
+over `git diff <reviewed head>..<new head>` only (evidence re-films just the criteria that diff
+touches — even for a docs-only fix), and the last gate posts the result as the next round with the
+normal markers (round N+1, the new head) instead of bouncing. At most **2** fix passes per run: the
+last self-check posts `needs-human` if a must-fix remains, and a later verdict that still wants a
+fix only notifies you. Markers are read brand-agnostically (and the legacy `herdr-review:`);
+the self-check writes the configured [`source_comments.brand`](#comment-brand--source_comments-optional).
+A PR no run watches — a human's, another bot's — is untouched: the review goes to its author as
+before. The board shows `↻ <KEY>  PR #<n>: fixing hf-review round 1 (5 findings)`, then
+`self-check round 2 running` / `clean` / `hf-review round 3 needs a human`, and so does `explain`;
+none of them is ready to merge until the verdict is clean. Merge → teardown (worktree removed,
 every local branch the run created deleted — the name it was claimed under and any name it was
 renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).

@@ -944,7 +944,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
-pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
+pr_opened · resolver_woken · review_handoff · review_verdict · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
 match on (the e2e suite asserts exactly that).
@@ -1322,7 +1322,36 @@ naming both SHAs and the changed files (and telling the step to mark the PR body
 `superseded … re-filming` — the engine's GitHub client stays read-only), counts toward
 `max_bounces`, and records a `rework` event with `by: "pr_watch"`. The forward pass re-enters
 `reviewing` through the normal PR adoption; the re-spawned gate's baseline is the new head, so the
-verdict clears and the next green notifies. The dashboard (`active[].evidenceStale`) and `explain`
+verdict clears and the next green notifies.
+
+**A factory review verdict is handed to the run that owns the PR (`core/review-verdict.ts`, issue
+#86).** A review run (an `hf-review`-style belt on a PR source) posts its findings as one PR review
+whose body carries `<brand>-review-verdict:` / `-review-round:` / `-review-head:` marker lines and a
+numbered checklist. The batched snapshot carries the PR's last 20 reviews (`PrSnapshot.review` = the
+latest one with a verdict marker; readers are brand-agnostic, plus the legacy `herdr-review:`), so the
+hand-off costs no extra call. `observeReviewVerdict` reads a review once (the `watch_state` row (run,
+`'pull_request'`, `'hf_review'`): `sig` = the handled review id, `meta` = `{phase, round, reviewedHead,
+findings, fixes}`) and only when its head marker is the PR's current head — a verdict the head has moved
+past was already acted on (by hand, or before this engine), so it is only marked seen. `changes-requested`,
+or `clean` with a should-fix, while `fixes < MAX_SELF_CHECKS` (2), is a **hand-off**: it makes the round
+`fresh`, and `wakeResolver` appends the review body plus "fix every must-fix and should-fix in one pass,
+push, post one findings→commits comment, don't post a verdict" after the (user-overridable) resolver
+prompt. Only a successful wake records it (phase `fixing`, `fixes+1`, a `review_handoff` event) — the
+same "retry on a failed spawn" rule as a thread round. Any other verdict is recorded as `clean` or
+`needs-human` (its marker, or a fix still wanted after 2 passes — the engine's backstop; it notifies
+the operator and never wakes a third time), with a `review_verdict` event. **Self-check:** while
+`fixing`, the PR head leaving `reviewedHead` — once the resolver is idle and the pr step done — takes
+the evidence-head rework path above **even when the push is docs-only**, so a round is always posted.
+Every verification step gets a self-check note (the first through `bounceStep`'s reason, the later ones
+written directly as their `feedback-<step>.md`, surfaced by the rework banner when the forward pass
+enters them): judge only `git diff reviewedHead..newHead`, re-film only the criteria it touches, and —
+for the last gate — post the pass as the next round (`round N+1`, `head <new>`, the configured brand)
+via `gh pr review --comment` and step-done **instead of bouncing**, adding `needs-human` on the second
+pass if a must-fix remains. Phase `self-check`; the posted round is then read like any verdict. The
+engine's GitHub client stays read-only: every post is the agent's. A phase other than `clean` vetoes
+the ready-to-merge notification. The dashboard (`active[].hfReview`) and `explain`
+(`RunObligations.hfReview`) render one line from the row. A PR no run watches is never looked at.
+Known edge: a resolver that pushes nothing leaves the phase at `fixing` until the next verdict. The dashboard (`active[].evidenceStale`) and `explain`
 (`RunObligations.evidence`) read the same row. Known edge: a rebase onto the base branch diffs as
 code, so it re-runs the gates. A **custom** belt runs the same
 machinery over user-defined steps with no PR watch — its last `step-done` tears the run down with

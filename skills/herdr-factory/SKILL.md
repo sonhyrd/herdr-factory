@@ -175,6 +175,12 @@ Use these words precisely; the config and the CLI both key off them.
   current head. A code push during the PR watch (a resolver fix, a pr-step CI fix) sends the run
   back through its read-only gates and the `pr` step on the new head automatically (a `rework` event
   `by: "pr_watch"`, counted toward `max_bounces`); a docs/Markdown/translations-only push does not.
+- **a factory review on a factory-owned PR goes to its run** — an `hf-review` verdict
+  (`<brand>-review-verdict: changes-requested`, or `clean` with a should-fix) on the head a watched PR
+  still has wakes that run's resolver with the findings; no inline thread or relabel needed. It fixes
+  them all, posts a findings→commits comment, then the run's gates re-check only
+  `reviewed-head..new-head` and post the next round themselves. At most 2 fix passes, then
+  `needs-human`. A PR no run watches keeps today's flow (findings go to its author).
 - **the tree guard** — a step that never commits (`evidence`, `review`, a `read_only` custom step)
   must find the worktree clean: its `step-done` is refused (with the diff stat) while the tree is
   dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from
