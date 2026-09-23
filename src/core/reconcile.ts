@@ -2168,6 +2168,30 @@ async function parkIfTreeDirty(deps: Deps, run: Run, step: StepConfig): Promise<
   return true;
 }
 
+/** EVIDENCE GATE at the advance into a PR-opening step: the run's LATEST evidence publish must have
+ *  landed (`evidence_uploaded`), or the PR ships dead links. Pending → hold (the advance re-runs each
+ *  pass; the background upload / outbox retry is still working). Failed, or suspended after
+ *  MAX_RETRY_ATTEMPTS → park with the reason. No publish at all (no evidence step / no `evidence:`
+ *  block / nothing captured), or delivered → pass. Returns true when the advance must not proceed. */
+async function holdForEvidenceUpload(deps: Deps, run: Run, next: StepConfig): Promise<boolean> {
+  const latest = deps.store.listIntents(deps.config.repoName, { kind: "evidence_publish", runId: run.id, limit: 1 })[0];
+  if (!latest) return false;
+  const stuck = latest.status === "failed" || (latest.status === "pending" && latest.suspendedAt != null);
+  if (latest.status === "pending" && !stuck) {
+    deps.log("info", `${run.ticketKey}: ${next.name} waits for the evidence upload (attempt ${latest.attempts}${latest.lastError ? `, last error: ${latest.lastError}` : ""})`);
+    return true;
+  }
+  if (!stuck) return false;
+  const why = latest.lastError ?? "unknown error";
+  await escalateAttention(deps, run, {
+    reason: "evidence_upload_failed",
+    attentionReason: `${next.name} cannot start — evidence upload ${latest.status === "failed" ? "failed" : "stuck"}: ${why}`,
+    body: `${run.ticketKey}: the ${next.name} step embeds the evidence URLs, but the upload never landed (${why}), so they would be dead links.\n\nFix the publisher (\`herdr-factory --repo ${deps.config.repoName} doctor --deep\`), then resume — that retries a stuck upload at once (a FAILED one can't be retried: \`rework ${run.ticketKey} <evidence step>\` re-captures it).`,
+    detail: { step: next.name, intentId: latest.id, status: latest.status, error: why },
+  });
+  return true;
+}
+
 async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: SourceRuntime, step: StepConfig): Promise<void> {
   const rs = deps.store.getRunStep(run.id, step.name);
 
@@ -2224,6 +2248,11 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   // Advance when the agent signalled step-done (or its PR merged out from under us, or a review-ready
   // PR was adopted before step-done).
   if (rs.done || livePr?.state === "MERGED" || prReadyForReview) {
+    const next = nextStep(belt, step.name);
+    // EVIDENCE GATE, before any of the advance's side effects (so a held advance re-runs cleanly
+    // next pass): a PR-opening step embeds the evidence URLs, so it never starts on bytes that
+    // haven't landed.
+    if (next?.opensPr && (await holdForEvidenceUpload(deps, run, next))) return;
     releaseStepLocks(deps, run, step); // leaving the step → free any exclusive_resource it held
     // The step completed this pass — archive an addressed rework note (feedback-<step>.md) under a
     // pass-stamped name. The rework banner keys on the file's existence, so a re-render in a LATER
@@ -2247,7 +2276,6 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
         await fireEffect(deps, run, belt, src, { on: "produce", product });
       }
     }
-    const next = nextStep(belt, step.name);
     if (next) {
       // TREE GUARD before ANY of the next step's entry bookkeeping (the pointer move, the enter
       // effect, the pass bump): a park here leaves the run on the step that just finished, so the

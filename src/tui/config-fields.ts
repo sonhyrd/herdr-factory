@@ -242,6 +242,7 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
           d.push({ kind: "text", label: "command", path: cmdPath, placeholder: "./publish-evidence.sh", indent: 1 });
         }
         d.push({ kind: "text", label: "timeout_seconds", path: ["evidence", "timeout_seconds"], placeholder: "300", numeric: true, clearable: true, indent: 1 });
+        d.push({ kind: "text", label: "public_base_url", path: ["evidence", "public_base_url"], placeholder: "(optional; set ⇒ predicted URLs + background upload)", indent: 1 });
       }
       // Shared across every publisher (uniform key layout).
       d.push({ kind: "text", label: "github_username", path: ["evidence", "github_username"], placeholder: "(optional; default = gh login)", indent: 1 });

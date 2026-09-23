@@ -98,6 +98,16 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
           `${resumeCmd.replace(" resume ", " rework ")} <step> --note "…"   # if the work itself must be redone`,
         ],
       };
+    case "evidence_upload_failed":
+      return {
+        headline: `The run is parked: the PR-opening step can't start — its evidence upload never landed (${reason}).`,
+        body: ["Opening the PR now would embed dead evidence links, so the evidence gate holds it until `evidence_uploaded`."],
+        next: [
+          `${resumeCmd.replace(/ resume .*/, " doctor --deep")}   # prove the publisher works`,
+          resumeCmd + "   # retries a stuck upload at once; the step starts once it lands",
+          `${resumeCmd.replace(" resume ", " rework ")} <evidence step>   # a FAILED upload can't be retried — re-capture`,
+        ],
+      };
     case "capture_limit":
       return {
         headline: `The run is parked: the evidence step re-captured past the attempt cap (${reason}).`,

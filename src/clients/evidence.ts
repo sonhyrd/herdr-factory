@@ -51,8 +51,8 @@ export interface EvidenceDelivery {
 export interface EvidencePublisher {
   readonly kind: EvidenceConfig["publisher"];
   /** Deterministic public URLs known WITHOUT delivering (prefix + filename), or `null` when only the
-   *  delivery itself can produce them (`command`, whose URLs come from its stdout). Lets the CLI embed
-   *  links up-front even when the byte upload is deferred. */
+   *  delivery itself can produce them (`command` with no `public_base_url`, whose URLs come from its
+   *  stdout). Lets the CLI embed links up-front even when the byte upload is deferred. */
   predictUrls(prefix: string, files: string[]): string[] | null;
   /** Deliver every file under `dir` at `prefix`; returns the files + their public URLs. Throws on
    *  failure (the caller classifies via `classifyError` and defers to the outbox). Idempotent per
@@ -194,7 +194,12 @@ function evidenceClient(ev: S3EvidenceConfig): S3Client {
 /** The public CloudFront URL per file (each ends with its filename, so callers can bind it to the right
  *  evidence row). Deterministic from the prefix + filenames — computable without the upload succeeding. */
 export function evidenceUrls(cloudfrontDomain: string, prefix: string, files: string[]): string[] {
-  return files.map((f) => `https://${cloudfrontDomain}/${prefix}/${f.split("/").map(encodeURIComponent).join("/")}`);
+  return prefixUrls(`https://${cloudfrontDomain}`, prefix, files);
+}
+
+/** `<base>/<prefix>/<file>` per file, path segments URL-encoded — the shared "prefix + filename" shape. */
+export function prefixUrls(base: string, prefix: string, files: string[]): string[] {
+  return files.map((f) => `${base}/${prefix}/${f.split("/").map(encodeURIComponent).join("/")}`);
 }
 
 /** Upload every file under `dir` to `s3://<bucket>/<prefix>/…` (re-enumerated here so it always matches
@@ -378,9 +383,10 @@ class CommandPublisher implements EvidencePublisher {
   constructor(ev: CommandEvidenceConfig) {
     this.ev = ev;
   }
-  /** URLs come only from the command's stdout — nothing to predict up-front. */
-  predictUrls(): null {
-    return null;
+  /** With a declared `public_base_url` the layout is known (`<base>/<prefix>/<file>`); without one
+   *  the URLs come only from the command's stdout — nothing to predict up-front. */
+  predictUrls(prefix: string, files: string[]): string[] | null {
+    return this.ev.publicBaseUrl ? prefixUrls(this.ev.publicBaseUrl, prefix, files) : null;
   }
   async publish({ dir, prefix }: { dir: string; prefix: string }): Promise<EvidenceDelivery> {
     const files = enumerateEvidenceFiles(dir);
