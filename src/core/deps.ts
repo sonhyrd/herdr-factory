@@ -404,6 +404,8 @@ export interface GitApi {
   dirtyStat(repoCwd: string): Promise<string | null>;
   /** Paths that differ between two commits; null ⇒ git couldn't diff them. */
   changedFiles(repoCwd: string, from: string, to: string): Promise<string[] | null>;
+  /** Whether `ancestor` is an ancestor of `head` (or the same commit). null ⇒ git couldn't tell. */
+  isAncestor(repoCwd: string, ancestor: string, head: string): Promise<boolean | null>;
 }
 
 export type Logger = (level: "info" | "warn" | "error", msg: string) => void;

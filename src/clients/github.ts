@@ -128,12 +128,12 @@ export class GitHubClient {
           (n) =>
             `pr${n}: pullRequest(number: ${n}) { number state url isDraft title headRefOid ` +
             `reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { id } } } } ` +
-            `reviews(last: 20) { nodes { id body } } ` +
+            `reviews(last: 20) { nodes { id body author { login } } } ` +
             `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ` +
             `__typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } } }`,
         )
         .join(" ");
-      const query = `query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ ${fields} } }`;
+      const query = `query($owner:String!,$name:String!){ viewer { login } repository(owner:$owner,name:$name){ ${fields} } }`;
       interface BatchPr {
         number: number;
         state: string;
@@ -142,7 +142,7 @@ export class GitHubClient {
         title?: string;
         headRefOid?: string;
         reviewThreads?: { nodes?: { isResolved: boolean; comments?: { nodes?: { id: string }[] } }[] };
-        reviews?: { nodes?: { id: string; body?: string }[] };
+        reviews?: { nodes?: { id: string; body?: string; author?: { login?: string | null } | null }[] };
         commits?: {
           nodes?: {
             commit?: {
@@ -153,10 +153,14 @@ export class GitHubClient {
       }
       // allowFail: a missing PR makes gh exit non-zero while still printing the partial data —
       // use whatever resolved and let absent entries stay absent.
-      const resp = await this.runJson<{ data?: { repository?: Record<string, BatchPr | null> } }>(
+      const resp = await this.runJson<{ data?: { viewer?: { login?: string }; repository?: Record<string, BatchPr | null> } }>(
         ["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`],
         { allowFail: true },
-      ).catch(() => ({}) as { data?: { repository?: Record<string, BatchPr | null> } });
+      ).catch(() => ({}) as { data?: { viewer?: { login?: string }; repository?: Record<string, BatchPr | null> } });
+      // The same identity `gh` posts as. Resolved once per process: the first batch that carries
+      // `viewer` fills the memo `currentLogin` already keeps, so a later hand-off does not call `gh api user`.
+      const viewer = resp.data?.viewer?.login?.trim();
+      if (this.login === undefined && viewer) this.login = viewer;
       for (const pr of Object.values(resp.data?.repository ?? {})) {
         if (!pr || typeof pr.number !== "number") continue;
         const unresolvedIds = (pr.reviewThreads?.nodes ?? [])
@@ -173,7 +177,7 @@ export class GitHubClient {
           title: pr.title,
           headOid: pr.headRefOid,
           sig: { unresolved: unresolvedIds.length, failing: failing.length, pending, sig },
-          ...(review ? { review: { id: review.id, body: review.body ?? "" } } : {}),
+          ...(review ? { review: { id: review.id, body: review.body ?? "", author: review.author?.login ?? null } } : {}),
         });
       }
     }

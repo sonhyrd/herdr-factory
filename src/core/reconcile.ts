@@ -2620,7 +2620,7 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
     if (res.ok) return;
     deps.log("warn", `${run.ticketKey}: PR #${pr.number} evidence is stale but the rework did not start — ${res.message}`);
   }
-  const handoff = observeReviewVerdict(deps, run, pr, snap?.review);
+  const handoff = await observeReviewVerdict(deps, run, pr, snap?.review);
   const hfNow = readHfReview(deps, run);
   // A verdict still being fixed (or left to the operator) is not ready to merge, whatever CI says.
   const hfBusy = handoff != null || (hfNow != null && hfNow.phase !== "clean");
@@ -2648,6 +2648,9 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
     // Reached only when we believed the resolver was active (guard above): once it goes idle, drop
     // the flag so the watch stops holding a slot. The PR keeps being watched — just for free.
     if (!working) {
+      // A fix pass that pushed nothing never trips the self-check (the head is still reviewedHead).
+      // Settle it here, or hfBusy stays true and the board never says ready to merge.
+      settleIdleFix(deps, run, pr);
       deps.store.updateRun(run.id, { resolverActive: false });
       deps.log("info", `${run.ticketKey}: resolver idle — PR #${pr.number} watch no longer holds a slot`);
     }
@@ -2663,7 +2666,7 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
 
   // Only record the signature as handled (and claim a slot) if the resolver actually launched —
   // otherwise a failed spawn would mark it done and never retry, silently dropping the review round.
-  const woke = await wakeResolver(deps, run, pr.number, handoff ? fixBrief(pr.number, handoff.id, handoff.verdict, handoff.body) : "");
+  const woke = await wakeResolver(deps, run, pr.number, handoff ? fixBrief(pr.number, handoff.id, handoff.verdict, handoff.body, pr.headOid) : "");
   if (!woke) {
     deps.log("warn", `${run.ticketKey}: resolver spawn failed; retrying next tick`);
     return;
@@ -2671,7 +2674,7 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
   deps.store.updateRun(run.id, { lastThreadSig: sig.sig, resolverActive: true });
   if (handoff) {
     const v = handoff.verdict;
-    const fixing: HfReview = { phase: "fixing", round: v.round ?? (hfNow?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes: (hfNow?.fixes ?? 0) + 1 };
+    const fixing: HfReview = { phase: "fixing", round: v.round ?? (hfNow?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes: (hfNow?.fixes ?? 0) + 1, must: v.must };
     writeHfReview(deps, run, fixing, handoff.id);
     deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "review_handoff", detail: { number: pr.number, review: handoff.id, ...fixing } });
     deps.log("info", `${run.ticketKey}: PR #${pr.number} review round ${fixing.round} handed to the resolver (${fixing.findings} findings, fix ${fixing.fixes}/${MAX_SELF_CHECKS})`);
@@ -2682,29 +2685,44 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
 /**
  * Read the PR's latest review verdict (issue #86) and decide what the watching run does with it.
  * Returns the verdict to hand to the resolver — the caller marks it handled only once the resolver
- * actually woke — or null. Everything else is settled here: a verdict on a head the PR has since
- * moved past was already acted on (or predates this run's watch), so it is only marked seen; a
- * `clean` / `unchanged` / `needs-human` verdict is recorded; and past MAX_SELF_CHECKS fix passes a
+ * actually woke — or null. A verdict is accepted only from the factory's own GitHub login, and only
+ * when its head is the PR's current head or an ancestor of it. Anything else is marked seen
+ * (`review_verdict_skipped`) except a login that could not be resolved, which is retried next tick.
+ * A `clean` / `unchanged` / `needs-human` verdict is recorded; past MAX_SELF_CHECKS fix passes a
  * verdict that still wants a fix goes to the operator instead of another round.
  */
-function observeReviewVerdict(
+async function observeReviewVerdict(
   deps: Deps,
   run: Run,
   pr: PrInfo,
   review: PrSnapshot["review"],
-): { id: string; body: string; verdict: NonNullable<ReturnType<typeof parseVerdict>> } | null {
+): Promise<{ id: string; body: string; verdict: NonNullable<ReturnType<typeof parseVerdict>> } | null> {
   if (!review || review.id === deps.store.getWatchState(run.id, HF_REVIEW_WATCH.step, HF_REVIEW_WATCH.watch)?.sig) return null;
   const v = parseVerdict(review.body);
-  const onHead = !!v?.head && !!pr.headOid?.startsWith(v.head);
-  const prev = readHfReview(deps, run);
-  if (!v || !onHead) {
+  if (!v) {
     deps.store.upsertWatchState(run.id, HF_REVIEW_WATCH.step, HF_REVIEW_WATCH.watch, { sig: review.id });
     return null;
   }
+  const login = await deps.github.currentLogin();
+  if (!login) return null; // can't tell who posted it — leave it unseen and try next tick
+  if ((review.author ?? "").toLowerCase() !== login.toLowerCase()) {
+    skipReview(deps, run, pr, review, v, "author");
+    return null;
+  }
+  const onHead = !!v.head && !!pr.headOid?.startsWith(v.head);
+  if (!onHead) {
+    const ancestor = await reviewHeadIsAncestor(deps, run, v.head, pr.headOid);
+    if (ancestor == null) return null; // the fetch failed — the objects may arrive next tick
+    if (!ancestor) {
+      skipReview(deps, run, pr, review, v, "not-ancestor");
+      return null;
+    }
+  }
+  const prev = readHfReview(deps, run);
   const fixes = prev?.fixes ?? 0;
-  if (wantsFix(v) && fixes < MAX_SELF_CHECKS) return { ...review, verdict: v };
+  if (wantsFix(v) && fixes < MAX_SELF_CHECKS) return { id: review.id, body: review.body, verdict: v };
   const human = v.verdicts.includes("needs-human") || wantsFix(v);
-  const next: HfReview = { phase: human ? "needs-human" : "clean", round: v.round ?? (prev?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes };
+  const next: HfReview = { phase: human ? "needs-human" : "clean", round: v.round ?? (prev?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes, must: v.must };
   writeHfReview(deps, run, next, review.id);
   deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "review_verdict", detail: { number: pr.number, review: review.id, ...next } });
   if (human) {
@@ -2713,6 +2731,57 @@ function observeReviewVerdict(
     deps.log("info", body);
   }
   return null;
+}
+
+/** `true` / `false` when ancestry is known. `null` only when a fetch of the run's branch failed, so
+ *  the caller leaves the review unseen. A missing object after a successful fetch is not an ancestor
+ *  (the commit is gone from the branch — a force-push). */
+async function reviewHeadIsAncestor(deps: Deps, run: Run, ancestor: string | null, head: string | undefined): Promise<boolean | null> {
+  const wt = run.worktreePath;
+  if (!wt || !ancestor || !head) return false;
+  let known = await deps.git.isAncestor(wt, ancestor, head);
+  if (known != null) return known;
+  if (!run.branch || !(await deps.git.fetchRef(wt, "origin", run.branch))) return null;
+  known = await deps.git.isAncestor(wt, ancestor, head);
+  return known === true;
+}
+
+/** Mark a verdict seen and say why it was not handed off. Keeps an in-progress phase; a first
+ *  refusal records `clean` so it does not block ready-to-merge. */
+function skipReview(deps: Deps, run: Run, pr: PrInfo, review: NonNullable<PrSnapshot["review"]>, v: NonNullable<ReturnType<typeof parseVerdict>>, reason: "not-ancestor" | "author"): void {
+  const prev = readHfReview(deps, run);
+  const next: HfReview = {
+    ...(prev ?? { phase: "clean", round: v.round ?? 0, reviewedHead: v.head, findings: 0, fixes: 0, must: 0 }),
+    skipped: { review: review.id, reason, head: v.head },
+  };
+  writeHfReview(deps, run, next, review.id);
+  deps.store.recordEvent({
+    runId: run.id,
+    repo: deps.config.repoName,
+    ticketKey: run.ticketKey,
+    type: "review_verdict_skipped",
+    detail: { number: pr.number, review: review.id, reason, head: v.head, author: review.author ?? null },
+  });
+  deps.log("info", `${run.ticketKey}: PR #${pr.number} review ${review.id} ignored (${reason})`);
+}
+
+/** The resolver stopped and the PR head is still the commit the verdict judged. A must-fix that
+ *  nobody pushed a fix for needs the operator; anything else is clean, so ready-to-merge can fire. */
+function settleIdleFix(deps: Deps, run: Run, pr: PrInfo): void {
+  const hf = readHfReview(deps, run);
+  if (!hf || hf.phase !== "fixing" || hf.idle) return;
+  if (!hf.reviewedHead || !pr.headOid?.startsWith(hf.reviewedHead)) return;
+  const noMust = hf.must === 0;
+  const next: HfReview = { ...hf, phase: noMust ? "clean" : "needs-human", idle: true };
+  writeHfReview(deps, run, next);
+  deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "review_verdict", detail: { number: pr.number, idle: true, ...next } });
+  if (noMust) {
+    deps.log("info", `${run.ticketKey}: PR #${pr.number} review round ${next.round} — the resolver pushed nothing and the verdict had no must-fix, so it is clean`);
+    return;
+  }
+  const body = `${run.ticketKey}: PR #${pr.number} review round ${next.round} — the resolver finished without pushing, and a must-fix remains. The operator decides now · ${pr.url}`;
+  void deps.herdr.notify(`herdr-factory: ${run.ticketKey} review needs a human`, body).catch(() => {});
+  deps.log("info", body);
 }
 
 /**

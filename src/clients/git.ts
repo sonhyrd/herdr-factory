@@ -126,6 +126,16 @@ export class GitClient {
     const r = await run("git", ["-C", repoCwd, "diff", "--name-only", from, to], { allowFail: true });
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : null;
   }
+
+  /** Whether `ancestor` is an ancestor of `head` (or the same commit). `true` / `false` when both
+   *  resolve; `null` when git cannot tell (a missing object — exit 128, not the "not an ancestor"
+   *  exit 1). The PR watch uses this for a review whose head the PR has moved past. */
+  async isAncestor(repoCwd: string, ancestor: string, head: string): Promise<boolean | null> {
+    const r = await run("git", ["-C", repoCwd, "merge-base", "--is-ancestor", ancestor, head], { allowFail: true });
+    if (r.code === 0) return true;
+    if (r.code === 1) return false;
+    return null;
+  }
 }
 
 /** owner/name from a git origin URL (ssh or https), or null. */

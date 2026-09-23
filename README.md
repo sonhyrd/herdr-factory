@@ -451,7 +451,9 @@ evidence stale since <sha> (head <sha>) — re-running`, and `explain <KEY>` pri
 against the PR head. **A factory review of a PR this run owns is handed to it.** When a review run
 (an `hf-review`-style belt on a PR-polling source) posts its verdict as a PR review — marker lines
 `<brand>-review-verdict:`, `<brand>-review-round:`, `<brand>-review-head:` and a numbered checklist
-(`- [ ] 1. **must-fix** …`, then should-fix and nits) — on the head the watched PR still has, the
+(`- [ ] 1. **must-fix** …`, then should-fix and nits) — posted by the factory's own GitHub login,
+on the head the watched PR still has or on a head that is still an ancestor of it (a merge of the
+base moved the PR; the brief names both commits and says which findings to keep), the
 watch wakes this run's resolver with the findings: on `changes-requested`, and on `clean` that lists
 a should-fix (never `unchanged`, nits-only `clean`, or `needs-human`). No inline thread, no relabel.
 The resolver fixes every must-fix and should-fix in one pass (nits when cheap), pushes, and posts
@@ -465,7 +467,10 @@ the self-check writes the configured [`source_comments.brand`](#comment-brand--s
 A PR no run watches — a human's, another bot's — is untouched: the review goes to its author as
 before. The board shows `↻ <KEY>  PR #<n>: fixing hf-review round 1 (5 findings)`, then
 `self-check round 2 running` / `clean` / `hf-review round 3 needs a human`, and so does `explain`;
-none of them is ready to merge until the verdict is clean. Merge → teardown (worktree removed,
+none of them is ready to merge until the verdict is clean. A review from anyone else, or one whose head
+is not an ancestor of the PR (a force-push), is ignored: `explain` says so and the resolver is not
+woken. If the resolver stops without pushing, the phase leaves `fixing` — clean when the verdict had
+no must-fix, otherwise it needs a human — so a green PR does not sit there forever. Merge → teardown (worktree removed,
 every local branch the run created deleted — the name it was claimed under and any name it was
 renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).

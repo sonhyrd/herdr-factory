@@ -56,7 +56,8 @@ scenario(
         review: { commit: false },
         pr: { commit: false },
         // The scenario plays the resolver's push (like watch-rework-evidence); the agent only takes the turn.
-        resolver: { commit: false, signal: "none" },
+        // Stay working long enough for that push to land before an idle-without-push settlement.
+        resolver: { commit: false, signal: "none", workMs: 8000 },
       },
       selfCheck: {
         "cap-me": { "2": { verdict: "changes-requested", findings: [MUST] }, "3": { verdict: "changes-requested", findings: [MUST] } },
@@ -74,7 +75,10 @@ scenario(
       };
     });
 
-    await Promise.all([capMe(w), cleanMe(w)]);
+    // Sequential: each run's fix has to land before the next tick sees the scripted resolver go
+    // idle, and a parallel git push on this thread can miss that window.
+    await capMe(w);
+    await cleanMe(w);
 
     // ── a PR no run watches is left to its author ─────────────────────────────────────────────
     expect(w.db.events().filter((e) => e.type === "review_handoff" && JSON.parse(e.detail ?? "{}").number === 99), "no hand-off for #99").toEqual([]);
@@ -89,26 +93,29 @@ async function capMe(w: World): Promise<void> {
   await w.waitForEvent(key, "pr_green", { label: `${key}: the first pass reaches a green PR`, timeoutMs: 300_000 });
   const { pr, wt, branch } = t.run();
   const h1 = w.gh.pr(pr)!.headRefOid!;
+  const parent = w.git(["rev-parse", "HEAD~1"], wt);
   expect(t.ready()).toBe(1);
 
-  // ── round 1: changes-requested wakes the resolver with the findings — no thread ──────────
-  w.gh.addReview(pr, verdict("changes-requested", 1, h1, [MUST, SHOULD]));
+  // ── round 1: the verdict judged the parent of the PR head (still an ancestor) — no thread ──
+  w.gh.addReview(pr, verdict("changes-requested", 1, parent, [MUST, SHOULD]));
   await w.waitFor(() => t.handoffs() === 1, { label: `${key}: round 1 handed to the resolver`, timeoutMs: 60_000 });
   expect(w.gh.pr(pr)!.threads, "no inline thread was needed").toEqual([]);
   const brief = readFileSync(join(wt, ".memory/herdr-factory/prompt-resolver.md"), "utf8");
   expect(brief).toContain("Review findings to fix — round 1");
   expect(brief).toContain(MUST);
   expect(brief, "…and it maps findings to commits").toContain("maps each finding number to its commit SHA");
-  expect(t.explain()).toContain(`PR #${pr}: fixing hf-review round 1 (2 findings)`);
-  expect(await t.boardLine()).toBe("fixing hf-review round 1 (2 findings)");
-
-  // ── the resolver pushes H2: the gates re-check H1..H2 and the review posts round 2 ──────
+  expect(brief, "the review judged an ancestor of the PR head").toContain(`The review judged \`${parent}\``);
+  expect(brief).toContain(`The PR is now at \`${h1}\``);
+  expect(brief).toContain("no longer apply");
+  expect(JSON.parse(w.db.events(key).find((e) => e.type === "review_handoff")!.detail ?? "{}")).toMatchObject({ phase: "fixing", round: 1, findings: 2 });
+  // Push before the next tick. The scripted resolver reports idle within a tick, and an idle pass
+  // with the head unmoved settles the phase — the harness plays the push itself.
   const h2 = t.push(wt, branch, pr, "src/fix1.ts");
   await w.waitFor(() => t.reworks() === 1, { label: `${key}: the fix sends the run through its gates`, timeoutMs: 120_000 });
   await t.noteFor(wt, h2);
-  expect(t.note(wt, "evidence"), "the self-check judges only the fix").toContain(`git diff ${h1}..${h2}`);
+  expect(t.note(wt, "evidence"), "the self-check judges only the fix").toContain(`git diff ${parent}..${h2}`);
   const review2 = t.note(wt, "review");
-  expect(review2).toContain(`git diff ${h1}..${h2}`);
+  expect(review2).toContain(`git diff ${parent}..${h2}`);
   expect(review2).toContain("herdr-factory-review-round: 2");
   expect(review2).toContain(`herdr-factory-review-head: ${h2}`);
   expect(review2).toContain("instead of bouncing");
@@ -120,9 +127,8 @@ async function capMe(w: World): Promise<void> {
   expect(round2, "the review step posted round 2 on the fixed head").toContain(`herdr-factory-review-head: ${h2}`);
   expect(round2).toContain("herdr-factory-review-verdict: changes-requested");
   expect(w.db.events(key).some((e) => e.type === "bounced"), "the self-check posts, it does not bounce").toBe(false);
-  expect(t.explain()).toContain(`PR #${pr}: fixing hf-review round 2 (1 finding) — fix pass 2 of 2.`);
-
-  // ── H3: the last self-check posts needs-human; no third pass, no "ready" ────────────────
+  expect(JSON.parse(w.db.events(key).filter((e) => e.type === "review_handoff").at(-1)!.detail ?? "{}")).toMatchObject({ phase: "fixing", round: 2, findings: 1, fixes: 2 });
+  // Same race as round 1: move the head before an idle tick settles a must-fix to needs-human.
   const h3 = t.push(wt, branch, pr, "src/fix2.ts");
   await w.waitFor(() => t.reworks() === 2, { label: `${key}: fix 2 re-runs the gates`, timeoutMs: 120_000 });
   await t.noteFor(wt, h3);
@@ -162,10 +168,10 @@ async function cleanMe(w: World): Promise<void> {
   // ── clean with a should-fix wakes it ────────────────────────────────────────────────────
   w.gh.addReview(pr, verdict("clean", 1, h1, [SHOULD, NIT]));
   await w.waitFor(() => t.handoffs() === 1, { label: `${key}: clean with a should-fix is handed off`, timeoutMs: 60_000 });
-  expect(t.explain()).toContain(`PR #${pr}: fixing hf-review round 1 (2 findings)`);
+  expect(JSON.parse(w.db.events(key).find((e) => e.type === "review_handoff")!.detail ?? "{}")).toMatchObject({ phase: "fixing", round: 1, findings: 2, must: 0 });
   const readyBefore = t.ready();
-
-  // ── a DOCS-only fix still self-checks; round 2 comes back clean → only then ready ─────────
+  // A should-fix has no must-fix, so an idle tick with the head unmoved would settle to clean and
+  // never self-check. Push in this turn, before that tick.
   const h2 = t.push(wt, branch, pr, "README.md");
   await w.waitFor(() => t.reworks() === 1, { label: `${key}: a docs-only fix still self-checks`, timeoutMs: 120_000 });
   await t.noteFor(wt, h2);

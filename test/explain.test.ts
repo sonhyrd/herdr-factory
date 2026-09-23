@@ -497,5 +497,9 @@ describe("explainRun — a review verdict handed to the run (issue #86)", () => 
     expect(at({ phase: "clean", round: 2, reviewedHead: "def5678", findings: 1, fixes: 1 })).toContain("PR #12: self-check round 2 clean");
     expect(at({ phase: "needs-human", round: 3, reviewedHead: "def5678", findings: 2, fixes: 2 })).toContain("PR #12: hf-review round 3 needs a human");
     expect(at({ phase: "clean", round: 1, reviewedHead: "abc1234", findings: 0, fixes: 0 }), "a first clean review is not news").not.toContain("clean");
+    expect(at({ phase: "needs-human", round: 1, reviewedHead: "abc1234", findings: 2, fixes: 1, must: 1, idle: true })).toContain("the resolver pushed nothing and a must-fix remains");
+    expect(at({ phase: "clean", round: 1, reviewedHead: "abc1234", findings: 1, fixes: 1, must: 0, idle: true })).toContain("the resolver pushed nothing and the verdict had no must-fix");
+    expect(at({ phase: "clean", round: 0, reviewedHead: null, findings: 0, fixes: 0, skipped: { review: "R9", reason: "author", head: "abc1234" } })).toContain("Ignored review R9 — it was not posted by the factory's GitHub login");
+    expect(at({ phase: "clean", round: 0, reviewedHead: "deadbee", findings: 0, fixes: 0, skipped: { review: "R8", reason: "not-ancestor", head: "deadbee" } })).toContain("its head deadbee is not an ancestor");
   });
 });

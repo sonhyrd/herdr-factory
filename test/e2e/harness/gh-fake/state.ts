@@ -24,10 +24,12 @@ export interface GhThread {
   isResolved: boolean;
 }
 
-/** One PR review BODY (`gh pr review`) — how a factory review posts its verdict (issue #86). */
+/** One PR review BODY (`gh pr review`) — how a factory review posts its verdict (issue #86).
+ *  `author` defaults to the fake's login when the batched snapshot is rendered. */
 export interface GhReview {
   id: string;
   body: string;
+  author?: string;
 }
 
 export interface GhPr {

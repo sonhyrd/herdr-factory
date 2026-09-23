@@ -453,7 +453,7 @@ since the evidence is being re-verified, `↻ <KEY>  PR #<n> evidence stale sinc
 re-running` (from `active[].evidenceStale`, the `evidence_head` watch state) — or, while a factory
 review verdict on the PR is being fixed or self-checked, `↻ <KEY>  PR #<n>: fixing hf-review round 1
 (5 findings)` / `self-check round 2 running` / `self-check round 2 clean` / `hf-review round 3 needs a
-human` (from `active[].hfReview`, the `hf_review` watch state), runs parked for
+human`, and the idle-without-push lines (`… clean — the resolver pushed nothing …` / `… needs a human — the resolver pushed nothing …`) (from `active[].hfReview`, the `hf_review` watch state), runs parked for
 attention (`⚠ <KEY>  parked — <reason>`), runs in `waiting_for_human` (`? <KEY>  waiting for a human
 reply`), and machines that have gone silent (`✗ <machine> unverifiable — <why>`). **Empty ⇒ it is not
 drawn at all.** Its run entries *are* the runs: `s`, `x`, `d` and `↵` act on them from there, so a

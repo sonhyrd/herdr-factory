@@ -551,7 +551,16 @@ const ObligationsResponse = z
     }),
     evidence: z.object({ evidenceHead: z.string(), prHead: z.string(), stale: z.boolean(), files: z.array(z.string()) }).nullable().optional(),
     hfReview: z
-      .object({ phase: z.enum(["fixing", "self-check", "clean", "needs-human"]), round: z.number(), reviewedHead: z.string().nullable(), findings: z.number(), fixes: z.number() })
+      .object({
+        phase: z.enum(["fixing", "self-check", "clean", "needs-human"]),
+        round: z.number(),
+        reviewedHead: z.string().nullable(),
+        findings: z.number(),
+        fixes: z.number(),
+        must: z.number().optional(),
+        idle: z.boolean().optional(),
+        skipped: z.object({ review: z.string(), reason: z.enum(["not-ancestor", "author"]), head: z.string().nullable() }).optional(),
+      })
       .nullable()
       .optional(),
   })

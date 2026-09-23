@@ -17,6 +17,7 @@ import type { Config, StepConfig } from "../src/config.ts";
 import { BUDGET_GUARD, HEARTBEAT_GUARD, LAYOUT_WAIT_GUARD, READ_ONLY_GUARD } from "../src/steps/guards.ts";
 import { applyWatchRebase, registerWatchEvaluator } from "../src/core/watches.ts";
 import { runObligations } from "../src/core/obligations.ts";
+import { explainRun } from "../src/core/explain.ts";
 import type { FocusedPane, HumanAskInput, HumanPollInput, HumanReply, JiraMatchItem, LayoutNode, LocalMarkdownMatchItem, Phase, PrInfo, PrSnapshot, ReviewSig, Ticket, WorkState } from "../src/types.ts";
 import { DEFAULT_AGENT_CONFIG, StaleItemError } from "../src/types.ts";
 
@@ -58,6 +59,8 @@ interface FakeState {
   dirtyStat: string | null;
   /** What `git diff --name-only <from> <to>` reports — null ⇒ git could not diff the two commits. */
   changedFiles: string[] | null;
+  /** What `git merge-base --is-ancestor` reports. null ⇒ git could not tell (missing object). */
+  ancestor: boolean | null;
   /** What `git rev-parse --abbrev-ref HEAD` reports for the run's WORKTREE — the branch tracking
    *  reads it every pass. `undefined` ⇒ the worktree is on whatever the run's branch already says
    *  (no rename); a string simulates an agent renaming the branch; null ⇒ detached HEAD. */
@@ -146,7 +149,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, changedFiles: [], mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, changedFiles: [], ancestor: false, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -325,6 +328,7 @@ function build(opts: { multi?: boolean } = {}) {
     headSha: async () => state.headSha,
     dirtyStat: async () => state.dirtyStat,
     changedFiles: async () => state.changedFiles,
+    isAncestor: async () => state.ancestor,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {
@@ -4659,7 +4663,9 @@ describe("an hf-review verdict on a watched PR is handed to its ship run (issue 
   const snap = (b: ReturnType<typeof watched>, review: PrSnapshot["review"], n = 40) => ({
     prSnapshots: new Map<number, PrSnapshot>([[n, { ...(b.state.pr as PrInfo), isDraft: false, number: n, sig: b.state.sig, review }]]),
   });
-  const tick = async (b: ReturnType<typeof watched>, review: PrSnapshot["review"], n = 40) => reconcileRun(b.deps, b.store.getRun(b.run.id)!, snap(b, review, n));
+  const tick = async (b: ReturnType<typeof watched>, review: PrSnapshot["review"], n = 40) =>
+    reconcileRun(b.deps, b.store.getRun(b.run.id)!, snap(b, review ? { author: "test-user", ...review } : review, n));
+  const explained = (b: ReturnType<typeof watched>) => explainRun({ ob: runObligations(b.deps, b.store.getRun(b.run.id)!), repoName: "demo", now: 1000 }).join("\n");
   const handoffs = (b: ReturnType<typeof watched>) => b.store.timeline("demo", b.store.getRun(b.run.id)!.ticketKey).filter((e) => e.type === "review_handoff").length;
   const resolverPrompt = (b: ReturnType<typeof watched>) => readFileSync(join(b.worktree, MEMORY_DIR, "prompt-resolver.md"), "utf8");
 
@@ -4689,15 +4695,66 @@ describe("an hf-review verdict on a watched PR is handed to its ship run (issue 
     }
   });
 
-  it("the verdict is handed off once, and only while it judged the PR's current head", async () => {
+  it("a verdict whose head is not an ancestor of the PR is marked seen, not handed off", async () => {
     const a = watched("K-86E");
+    a.state.ancestor = false;
     await tick(a, verdict("R1", ["changes-requested"], 1, "sha-old"));
-    expect(a.calls.agentSend.length, "a verdict the head has moved past was already acted on").toBe(0);
+    expect(a.calls.agentSend.length, "a force-push (head is not an ancestor) does not wake").toBe(0);
+    const skipped = () => a.store.timeline("demo", a.store.getRun(a.run.id)!.ticketKey).filter((e) => e.type === "review_verdict_skipped");
+    expect(skipped()).toHaveLength(1);
+    expect(JSON.parse(skipped()[0]!.detail ?? "{}")).toMatchObject({ reason: "not-ancestor", head: "sha-old" });
+    expect(explained(a)).toContain("not an ancestor of the PR head");
+    await tick(a, verdict("R1", ["changes-requested"], 1, "sha-old"));
+    expect(skipped(), "a seen verdict is not recorded again").toHaveLength(1);
+
     const b = watched("K-86F");
     await tick(b, verdict("R1", ["changes-requested"]));
     b.store.updateRun(b.run.id, { resolverActive: false });
     await tick(b, verdict("R1", ["changes-requested"]));
-    expect(b.calls.agentSend.length).toBe(1);
+    expect(b.calls.agentSend.length, "the same review is handed off once").toBe(1);
+  });
+
+  it("a verdict on an ancestor of the PR head is handed off, and the brief names both commits", async () => {
+    const a = watched("K-86Anc");
+    a.state.ancestor = true;
+    await tick(a, verdict("R1", ["changes-requested"], 1, "sha-old"));
+    expect(a.calls.agentSend.length).toBe(1);
+    const prompt = resolverPrompt(a);
+    expect(prompt).toContain("The review judged `sha-old`");
+    expect(prompt).toContain("The PR is now at `sha-ev`");
+    expect(prompt).toContain("no longer apply");
+    expect(runObligations(a.deps, a.store.getRun(a.run.id)!).hfReview).toMatchObject({ phase: "fixing", reviewedHead: "sha-old", must: 1 });
+  });
+
+  it("a verdict from anyone but the factory's GitHub login is ignored", async () => {
+    const a = watched("K-86Auth");
+    await tick(a, { ...verdict("R1", ["changes-requested"]), author: "stranger" });
+    expect(a.calls.agentSend.length).toBe(0);
+    const skipped = a.store.timeline("demo", a.store.getRun(a.run.id)!.ticketKey).filter((e) => e.type === "review_verdict_skipped");
+    expect(JSON.parse(skipped[0]!.detail ?? "{}")).toMatchObject({ reason: "author", author: "stranger" });
+    expect(explained(a)).toContain("not posted by the factory's GitHub login");
+    expect(runObligations(a.deps, a.store.getRun(a.run.id)!).hfReview?.phase, "an ignored review does not block ready-to-merge").toBe("clean");
+  });
+
+  it("a resolver that goes idle without pushing settles: needs-human when a must-fix remains, else clean", async () => {
+    const a = watched("K-86Idle");
+    await tick(a, verdict("R1", ["changes-requested"]));
+    expect(a.store.getRun(a.run.id)!.resolverActive).toBe(true);
+    await tick(a, verdict("R1", ["changes-requested"])); // pane is idle, head still the reviewed one
+    expect(runObligations(a.deps, a.store.getRun(a.run.id)!).hfReview).toMatchObject({ phase: "needs-human", idle: true, must: 1 });
+    expect(explained(a)).toContain("the resolver pushed nothing and a must-fix remains");
+    expect(a.calls.notified.some(([t]) => t.includes("review needs a human"))).toBe(true);
+    expect(a.calls.notified.some(([t]) => t.includes("ready to merge"))).toBe(false);
+    expect(a.store.getRun(a.run.id)!.resolverActive).toBe(false);
+
+    const b = watched("K-86IdleClean");
+    const shouldOnly = { id: "R1", body: "hf-review-verdict: clean\nhf-review-round: 1\nhf-review-head: sha-ev\n\n- [ ] 1. **should-fix** `b.ts:2` — y" };
+    await tick(b, shouldOnly);
+    await tick(b, shouldOnly);
+    expect(runObligations(b.deps, b.store.getRun(b.run.id)!).hfReview).toMatchObject({ phase: "clean", idle: true, must: 0 });
+    expect(explained(b)).toContain("the resolver pushed nothing and the verdict had no must-fix");
+    await tick(b, shouldOnly);
+    expect(b.calls.notified.some(([t]) => t.includes("ready to merge")), "clean, so the next tick may say ready").toBe(true);
   });
 
   it("a PR with no watching run is left to its author", async () => {

@@ -86,6 +86,7 @@ export type EventType =
   | "resolver_woken"
   | "review_handoff" // a factory review verdict on the watched PR was handed to its resolver (issue #86)
   | "review_verdict" // a review verdict the watch recorded without a fix pass (clean, or left to the operator)
+  | "review_verdict_skipped" // a verdict the watch refused: wrong author, or a head that is not an ancestor (issue #86)
   | "pr_green" // the watched PR went green + mergeable; the operator was notified once (nothing is ever merged)
   | "worker_done"
   | "review_spawned"
@@ -938,8 +939,9 @@ export interface ReviewSig {
  *  threads and check rollup for every watched PR in one request instead of 3 gh calls per run). */
 export interface PrSnapshot extends PrInfo {
   sig: ReviewSig;
-  /** The latest PR review whose body carries a `…-review-verdict:` marker (issue #86), if any. */
-  review?: { id: string; body: string };
+  /** The latest PR review whose body carries a `…-review-verdict:` marker (issue #86), if any.
+   *  `author` is that review's GitHub login; a missing one is not the factory's. */
+  review?: { id: string; body: string; author?: string | null };
 }
 
 // --- belt routing (the `match` predicate) -----------------------------------

@@ -234,7 +234,7 @@ function threadsGraphql(pr) {
   };
 }
 
-function prGraphql(pr) {
+function prGraphql(pr, login) {
   return {
     number: pr.number,
     state: pr.state,
@@ -243,8 +243,8 @@ function prGraphql(pr) {
     title: pr.title ?? "",
     headRefOid: pr.headRefOid ?? "",
     reviewThreads: threadsGraphql(pr),
-    // The batched query asks for `reviews(last: 20) { nodes { id body } }` (issue #86's verdicts).
-    reviews: { nodes: (pr.reviews ?? []).slice(-20).map((r) => ({ id: r.id, body: r.body })) },
+    // The batched query asks for `reviews(last: 20) { nodes { id body author { login } } }`.
+    reviews: { nodes: (pr.reviews ?? []).slice(-20).map((r) => ({ id: r.id, body: r.body, author: { login: r.author || login } })) },
     commits: { nodes: [{ commit: { statusCheckRollup: rollupGraphql(pr) } }] },
   };
 }
@@ -336,10 +336,11 @@ function graphql(fs, argv, statePath) {
     for (const m of aliases) {
       const alias = `pr${m[1]}`;
       const pr = s.prs[String(Number(m[2]))];
-      if (pr) repository[alias] = prGraphql(pr);
+      if (pr) repository[alias] = prGraphql(pr, s.login);
       else errors.push({ type: "NOT_FOUND", path: ["repository", alias], message: `Could not resolve to a PullRequest with the number of ${m[2]}.` });
     }
-    const body = errors.length ? { data: { repository }, errors } : { data: { repository } };
+    const data = { ...(query.includes("viewer") ? { viewer: { login: s.login } } : {}), repository };
+    const body = errors.length ? { data, errors } : { data };
     return { code: errors.length ? 1 : 0, out: JSON.stringify(body) + "\n", err: errors.length ? "gh: Could not resolve to a PullRequest (some aliases missing)\n" : "" };
   }
 
@@ -447,7 +448,7 @@ function prCommand(fs, argv, statePath) {
         const file = flag(argv, "--body-file", "-F");
         const body = file ? fsSync.readFileSync(file, "utf8") : (flag(argv, "--body", "-b") ?? "");
         p.reviews = p.reviews ?? [];
-        p.reviews.push({ id: `PRR_${n}_${p.reviews.length + 1}`, body });
+        p.reviews.push({ id: `PRR_${n}_${p.reviews.length + 1}`, body, author: st.login });
       }
       if (verb === "edit") {
         const title = flag(argv, "--title", "-t");

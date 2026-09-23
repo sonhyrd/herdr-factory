@@ -132,7 +132,7 @@ an unknown number: `{"data":{"repository":{"pullRequest":null}},"errors":[…]}`
 | `gh pr ready N` / `merge` / `close` / `reopen` | mutate the stored PR (`isDraft:false` / `MERGED` / `CLOSED` / `OPEN`) and print its url |
 | `gh pr edit N [--title/--body/--add-label/--add-reviewer/--add-assignee]` | mutates the stored PR |
 | `gh pr comment N …` | accepted (not stored); prints the PR url. Unknown N ⇒ exit 1 |
-| `gh pr review N --comment\|--request-changes --body B\|--body-file F` | appends `{id: PRR_<N>_<k>, body}` to the PR's `reviews` (the batched snapshot returns the last 20 as `reviews { nodes { id body } }`); `GhFake.addReview` does the same from a scenario |
+| `gh pr review N --comment\|--request-changes --body B\|--body-file F` | appends `{id: PRR_<N>_<k>, body, author: <login>}` to the PR's `reviews` (the batched snapshot returns the last 20 as `reviews { nodes { id body author { login } } }`, plus `viewer { login }`); `GhFake.addReview` does the same from a scenario (author defaults to the fake login) |
 | `gh pr diff`, `gh pr status` | accepted, empty output, exit 0 |
 | `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"T_a"}) … }'` | marks that thread resolved. Unknown thread id ⇒ exit 1; any other mutation ⇒ `{"data":{}}`, exit 0 |
 | `gh auth token` | `$HF_GH_TOKEN` or a fake `gho_…` (this is the call `src/clients/github-issues.ts` makes when `GITHUB_TOKEN` is unset) |

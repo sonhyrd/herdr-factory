@@ -944,7 +944,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
-pr_opened · resolver_woken · review_handoff · review_verdict · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
+pr_opened · resolver_woken · review_handoff · review_verdict · review_verdict_skipped · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
 match on (the e2e suite asserts exactly that).
@@ -1329,10 +1329,17 @@ verdict clears and the next green notifies.
 whose body carries `<brand>-review-verdict:` / `-review-round:` / `-review-head:` marker lines and a
 numbered checklist. The batched snapshot carries the PR's last 20 reviews (`PrSnapshot.review` = the
 latest one with a verdict marker; readers are brand-agnostic, plus the legacy `herdr-review:`), so the
-hand-off costs no extra call. `observeReviewVerdict` reads a review once (the `watch_state` row (run,
+hand-off costs no extra GitHub call: `viewer { login }` rides the same batch and fills the memo
+`currentLogin` keeps. `observeReviewVerdict` reads a review once (the `watch_state` row (run,
 `'pull_request'`, `'hf_review'`): `sig` = the handled review id, `meta` = `{phase, round, reviewedHead,
-findings, fixes}`) and only when its head marker is the PR's current head — a verdict the head has moved
-past was already acted on (by hand, or before this engine), so it is only marked seen. `changes-requested`,
+findings, fixes, must}`) and only when `author.login` is that login and its head marker is the PR's
+current head or an ancestor of it (`git merge-base --is-ancestor` in the run's worktree; one
+`fetchRef` of the run's branch if the objects are missing). The ancestor case still hands off: the
+brief names both SHAs and tells the resolver to apply each finding that still holds and say which no
+longer apply. A different author, or a head that is not an ancestor after that fetch (a force-push —
+a missing object counts, a failed fetch does not), is marked seen as `review_verdict_skipped` and
+`explain` prints the reason. A login that cannot be resolved leaves the review unseen for a later
+tick. `changes-requested`,
 or `clean` with a should-fix, while `fixes < MAX_SELF_CHECKS` (2), is a **hand-off**: it makes the round
 `fresh`, and `wakeResolver` appends the review body plus "fix every must-fix and should-fix in one pass,
 push, post one findings→commits comment, don't post a verdict" after the (user-overridable) resolver
@@ -1351,7 +1358,9 @@ pass if a must-fix remains. Phase `self-check`; the posted round is then read li
 engine's GitHub client stays read-only: every post is the agent's. A phase other than `clean` vetoes
 the ready-to-merge notification. The dashboard (`active[].hfReview`) and `explain`
 (`RunObligations.hfReview`) render one line from the row. A PR no run watches is never looked at.
-Known edge: a resolver that pushes nothing leaves the phase at `fixing` until the next verdict. The dashboard (`active[].evidenceStale`) and `explain`
+If the resolver goes idle with the head still at `reviewedHead`, the phase leaves `fixing` without a
+self-check: `clean` when `must` is 0, otherwise `needs-human` (the same notification). `explain` says
+the resolver pushed nothing. The dashboard (`active[].evidenceStale`) and `explain`
 (`RunObligations.evidence`) read the same row. Known edge: a rebase onto the base branch diffs as
 code, so it re-runs the gates. A **custom** belt runs the same
 machinery over user-defined steps with no PR watch — its last `step-done` tears the run down with

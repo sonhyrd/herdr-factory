@@ -75,14 +75,22 @@ export function writeHfReview(deps: Deps, run: Run, v: HfReview, handledReview?:
   });
 }
 
-/** The resolver's brief for a verdict: fix every finding in one pass and map them to commits. */
-export function fixBrief(prNumber: number, reviewId: string, v: ReviewVerdict, body: string): string {
+/** The resolver's brief for a verdict: fix every finding in one pass and map them to commits.
+ *  When the PR has moved on but the reviewed commit is still an ancestor, name both SHAs. */
+export function fixBrief(prNumber: number, reviewId: string, v: ReviewVerdict, body: string, prHead?: string): string {
+  const moved = !!(prHead && v.head && !prHead.startsWith(v.head));
   return [
     "",
     `## Review findings to fix — round ${v.round ?? "?"} (review ${reviewId})`,
     "",
     `A factory review posted this verdict on PR #${prNumber}. It overrides the thread-by-thread steps above:`,
     "",
+    ...(moved
+      ? [
+          `The review judged \`${v.head}\`. The PR is now at \`${prHead}\`. Apply each finding that still holds, and in the comment say which no longer apply.`,
+          "",
+        ]
+      : []),
     "1. Fix **every** must-fix and should-fix finding below in this one pass, plus the nits that are cheap.",
     "   One focused commit per finding (or per group of findings that share a fix), then push.",
     `2. Post ONE PR comment that maps each finding number to its commit SHA, with a stated reason for anything you skipped (\`gh pr comment ${prNumber} --body-file <file>\`).`,

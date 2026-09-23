@@ -361,9 +361,12 @@ export function hfReviewLine(v: HfReview): string | null {
     case "self-check":
       return `self-check round ${v.round} running`;
     case "clean":
+      if (v.idle) return `hf-review round ${v.round} clean — the resolver pushed nothing and the verdict had no must-fix`;
       return v.fixes > 0 ? `self-check round ${v.round} clean` : null;
     case "needs-human":
-      return `hf-review round ${v.round} needs a human`;
+      return v.idle
+        ? `hf-review round ${v.round} needs a human — the resolver pushed nothing and a must-fix remains`
+        : `hf-review round ${v.round} needs a human`;
   }
 }
 
@@ -391,7 +394,17 @@ export function explainRun(input: ExplainInput): string[] {
   }
 
   const hf = ob.hfReview && ob.run.phase !== "done" ? hfReviewLine(ob.hfReview) : null;
-  if (hf) lines.push(`${ob.run.prNumber != null ? `PR #${ob.run.prNumber}: ` : ""}${hf}${ob.hfReview!.fixes ? ` — fix pass ${ob.hfReview!.fixes} of 2` : ""}.`);
+  if (hf) {
+    const pass = ob.hfReview!.idle || !ob.hfReview!.fixes ? "" : ` — fix pass ${ob.hfReview!.fixes} of 2`;
+    lines.push(`${ob.run.prNumber != null ? `PR #${ob.run.prNumber}: ` : ""}${hf}${pass}.`);
+  }
+  const skipped = ob.hfReview?.skipped;
+  if (skipped && ob.run.phase !== "done") {
+    const why = skipped.reason === "author"
+      ? "it was not posted by the factory's GitHub login"
+      : `its head ${skipped.head ? skipped.head.slice(0, 7) : "?"} is not an ancestor of the PR head`;
+    lines.push(`Ignored review ${skipped.review} — ${why}.`);
+  }
 
   const owed = owedLines(ob, now);
   if (owed.length) {

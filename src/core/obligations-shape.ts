@@ -70,4 +70,10 @@ export interface HfReview {
   findings: number;
   /** Fix passes handed to the resolver so far (capped at MAX_SELF_CHECKS). */
   fixes: number;
+  /** Must-fix count on the verdict that entered `fixing`. Absent on a row written before it was stored. */
+  must?: number;
+  /** The resolver went idle without pushing, so this phase was settled without a self-check. */
+  idle?: boolean;
+  /** The latest verdict this run refused to hand off, and why. Cleared by the next real phase write. */
+  skipped?: { review: string; reason: "not-ancestor" | "author"; head: string | null };
 }
