@@ -2536,11 +2536,12 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
   it("reviewing + actionable new signature + idle → wakes resolver (claims a slot)", async () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-10", "reviewing", null, { lastThreadSig: "old" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:p1" }); // the work step's pane — the resolver runs there
     state.pr = { number: 10, state: "OPEN", url: "u" };
     state.sig = { unresolved: 2, failing: 0, pending: 0, sig: "newsig" };
     state.paneState = "idle";
     await reconcileRun(deps, store.getRun(run.id)!);
-    expect(calls.agentSend.length).toBe(1); // re-prompted the live pr-agent pane
+    expect(calls.agentSend.length).toBe(1); // re-prompted the live work-step pane
     // The resolver prompt is now a rendered library file (prompts/resolver.md), dispatched via a
     // one-line "read it" pointer — not a hardcoded inline string.
     expect(calls.agentSend[0]![1]).toContain(".memory/herdr-factory/prompt-resolver.md");
