@@ -13,6 +13,7 @@ function ob(overrides: {
   intents?: Partial<RunObligations["intents"]>;
   watches?: Partial<RunObligations["watches"]>;
   evidence?: RunObligations["evidence"];
+  hfReview?: RunObligations["hfReview"];
 }): RunObligations {
   return {
     run: {
@@ -38,6 +39,7 @@ function ob(overrides: {
     },
     watches: { step: "work", guards: [], engine: [], bounceCaps: [], idleNudge: null, ...overrides.watches },
     evidence: overrides.evidence ?? null,
+    hfReview: overrides.hfReview ?? null,
   };
 }
 
@@ -484,5 +486,16 @@ describe("explainRun — evidence vs PR head (issue #84)", () => {
   it("docs-only drift: still holds", () => {
     const text = joined(explainRun({ ob: ob({ run: reviewing, evidence: { evidenceHead: "aaaaaaa111", prHead: "ddddddd444", stale: false, files: ["README.md"] } }), repoName: REPO, now: NOW }));
     expect(text).toContain("differs only in docs/translations");
+  });
+});
+
+describe("explainRun — a review verdict handed to the run (issue #86)", () => {
+  const at = (hfReview: RunObligations["hfReview"]) =>
+    joined(explainRun({ ob: ob({ run: { phase: "reviewing", step: null, prNumber: 12 }, hfReview }), repoName: REPO, now: NOW }));
+  it("names the round being fixed, then the self-check's result", () => {
+    expect(at({ phase: "fixing", round: 1, reviewedHead: "abc1234", findings: 5, fixes: 1 })).toContain("PR #12: fixing hf-review round 1 (5 findings) — fix pass 1 of 2.");
+    expect(at({ phase: "clean", round: 2, reviewedHead: "def5678", findings: 1, fixes: 1 })).toContain("PR #12: self-check round 2 clean");
+    expect(at({ phase: "needs-human", round: 3, reviewedHead: "def5678", findings: 2, fixes: 2 })).toContain("PR #12: hf-review round 3 needs a human");
+    expect(at({ phase: "clean", round: 1, reviewedHead: "abc1234", findings: 0, fixes: 0 }), "a first clean review is not news").not.toContain("clean");
   });
 });

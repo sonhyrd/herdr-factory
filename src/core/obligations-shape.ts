@@ -54,4 +54,20 @@ export interface RunObligations {
    *  the PR head it was compared with, and whether code changed between them. Null until the run has
    *  watched a PR with a gate-pinned head. */
   evidence: { evidenceHead: string; prHead: string; stale: boolean; files: string[] } | null;
+  /** The PR watch's hand-off of a factory review verdict (issue #86); null until one was seen. */
+  hfReview: HfReview | null;
+}
+
+/** A factory review verdict's hand-off to the run watching its PR (core/review-verdict.ts). */
+export interface HfReview {
+  /** fixing: the resolver has the findings · self-check: the gates re-run on the fix ·
+   *  clean: the last verdict needs no fix · needs-human: the operator decides now. */
+  phase: "fixing" | "self-check" | "clean" | "needs-human";
+  /** The round of the verdict being acted on (self-check: the round the gates will post). */
+  round: number;
+  /** The head the acted-on verdict judged — the self-check diffs from here. */
+  reviewedHead: string | null;
+  findings: number;
+  /** Fix passes handed to the resolver so far (capped at MAX_SELF_CHECKS). */
+  fixes: number;
 }

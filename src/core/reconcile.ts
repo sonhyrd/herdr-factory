@@ -28,6 +28,7 @@ import { consumeIntentHandoffs, ledgerFlow, notifySuspended } from "./ledger.ts"
 import { INTENT_KINDS } from "../intents/registry.ts";
 import { wakeResolver } from "./watch.ts";
 import { observeEvidenceHead, verificationSteps } from "./evidence-head.ts";
+import { fixBrief, HF_REVIEW_WATCH, MAX_SELF_CHECKS, parseVerdict, readHfReview, selfCheckNote, wantsFix, writeHfReview, type HfReview } from "./review-verdict.ts";
 import { recordSourceAuthEvent, recordTick, recordTickDuration, recordTickLockSkipped, telemetryEvent, telemetrySpan } from "../telemetry/index.ts";
 import { isSourceUnauthenticated, type SourceUnauthenticatedError } from "../auth/errors.ts";
 import { getAuthFailure, markAuthNotified, recordAuthFailure, recordAuthOk } from "../auth/gate.ts";
@@ -2592,23 +2593,40 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
   const ev = await observeEvidenceHead(deps, run, gates, pr.headOid);
   const prStep = belt?.steps.find((s) => s.opensPr);
   const prStepRunning = prStep != null && deps.store.getRunStep(run.id, prStep.name)?.done === false;
-  if (ev?.stale && belt && !run.resolverActive && !prStepRunning) {
-    const files = ev.files.length ? ev.files.map((f) => `- \`${f}\``).join("\n") : "- (git could not list them — treat everything as changed)";
-    const reason =
-      `PR #${pr.number}'s head moved from \`${ev.evidenceHead}\` (what the evidence and review covered) to \`${ev.prHead}\` ` +
+  // Self-check (issue #86): once the resolver has pushed its fix for a review verdict, the gates re-run
+  // over reviewed-head..new-head — even for a docs-only fix, so the next round is always posted.
+  const hf = readHfReview(deps, run);
+  const selfCheck = hf?.phase === "fixing" && gates.length > 0 && !!pr.headOid && !pr.headOid.startsWith(hf.reviewedHead ?? "\0");
+  if ((ev?.stale || selfCheck) && belt && !run.resolverActive && !prStepRunning) {
+    const files = !ev ? "" : ev.files.length ? ev.files.map((f) => `- \`${f}\``).join("\n") : "- (git could not list them — treat everything as changed)";
+    const reason = !ev?.stale
+      ? ""
+      : `PR #${pr.number}'s head moved from \`${ev.evidenceHead}\` (what the evidence and review covered) to \`${ev.prHead}\` ` +
       `with code changes — pushed while the run was watching the PR (a review-thread fix or a CI fix). ` +
       `Judge the NEW head: re-verify every criterion these files could affect.\n\n` +
       `Before anything else, if PR #${pr.number}'s description embeds evidence, mark it stale in place — add ` +
       `\`> ⚠ Evidence filmed at ${ev.evidenceHead.slice(0, 7)}, superseded by ${ev.prHead.slice(0, 7)} — re-filming.\` ` +
       `at the top of the evidence block (\`gh pr view ${pr.number} --json body\`, then \`gh pr edit ${pr.number} --body-file <file>\`; change nothing else). ` +
       `The pr step replaces the block with this pass's evidence.\n\nChanged since the evidence:\n${files}`;
-    const res = await bounceStep(deps, run, belt, src, gates[0]!.name, reason, { watch: true });
+    const next: HfReview | null = selfCheck ? { ...hf!, phase: "self-check", round: hf!.round + 1 } : null;
+    const note = (last: boolean) => selfCheckNote({ prNumber: pr.number, brand: deps.config.sourceComments.brand, hf: next!, newHead: pr.headOid!, last });
+    const lead = next ? note(gates.length === 1) + (reason ? "\n\n" + reason : "") : reason;
+    const res = await bounceStep(deps, run, belt, src, gates[0]!.name, lead, { watch: true });
+    if (res.ok && next && !res.escalated) {
+      // The later gates enter on the forward pass; each reads its own self-check note there.
+      gates.slice(1).forEach((g, i) => writeBounceNote(run, "PR watch", g.name, note(i === gates.length - 2)));
+      writeHfReview(deps, run, next);
+    }
     if (res.ok) return;
     deps.log("warn", `${run.ticketKey}: PR #${pr.number} evidence is stale but the rework did not start — ${res.message}`);
   }
-  await noteGreenPr(deps, run, pr, sig, ev?.stale === true);
+  const handoff = observeReviewVerdict(deps, run, pr, snap?.review);
+  const hfNow = readHfReview(deps, run);
+  // A verdict still being fixed (or left to the operator) is not ready to merge, whatever CI says.
+  const hfBusy = handoff != null || (hfNow != null && hfNow.phase !== "clean");
+  await noteGreenPr(deps, run, pr, sig, ev?.stale === true || hfBusy);
   // A review state we haven't handled yet — the trigger to (re)wake the resolver.
-  const fresh = actionable && sig.sig !== run.lastThreadSig;
+  const fresh = (actionable && sig.sig !== run.lastThreadSig) || handoff != null;
 
   // Dynamic occupancy: a reviewing run holds a max_active_workspaces slot ONLY while its resolver
   // is actively working. We need the resolver's live pane state only when there's fresh work to
@@ -2645,13 +2663,56 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
 
   // Only record the signature as handled (and claim a slot) if the resolver actually launched —
   // otherwise a failed spawn would mark it done and never retry, silently dropping the review round.
-  const woke = await wakeResolver(deps, run, pr.number);
+  const woke = await wakeResolver(deps, run, pr.number, handoff ? fixBrief(pr.number, handoff.id, handoff.verdict, handoff.body) : "");
   if (!woke) {
     deps.log("warn", `${run.ticketKey}: resolver spawn failed; retrying next tick`);
     return;
   }
   deps.store.updateRun(run.id, { lastThreadSig: sig.sig, resolverActive: true });
+  if (handoff) {
+    const v = handoff.verdict;
+    const fixing: HfReview = { phase: "fixing", round: v.round ?? (hfNow?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes: (hfNow?.fixes ?? 0) + 1 };
+    writeHfReview(deps, run, fixing, handoff.id);
+    deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "review_handoff", detail: { number: pr.number, review: handoff.id, ...fixing } });
+    deps.log("info", `${run.ticketKey}: PR #${pr.number} review round ${fixing.round} handed to the resolver (${fixing.findings} findings, fix ${fixing.fixes}/${MAX_SELF_CHECKS})`);
+  }
   deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "resolver_woken", detail: { unresolved: sig.unresolved, failing: sig.failing } });
+}
+
+/**
+ * Read the PR's latest review verdict (issue #86) and decide what the watching run does with it.
+ * Returns the verdict to hand to the resolver — the caller marks it handled only once the resolver
+ * actually woke — or null. Everything else is settled here: a verdict on a head the PR has since
+ * moved past was already acted on (or predates this run's watch), so it is only marked seen; a
+ * `clean` / `unchanged` / `needs-human` verdict is recorded; and past MAX_SELF_CHECKS fix passes a
+ * verdict that still wants a fix goes to the operator instead of another round.
+ */
+function observeReviewVerdict(
+  deps: Deps,
+  run: Run,
+  pr: PrInfo,
+  review: PrSnapshot["review"],
+): { id: string; body: string; verdict: NonNullable<ReturnType<typeof parseVerdict>> } | null {
+  if (!review || review.id === deps.store.getWatchState(run.id, HF_REVIEW_WATCH.step, HF_REVIEW_WATCH.watch)?.sig) return null;
+  const v = parseVerdict(review.body);
+  const onHead = !!v?.head && !!pr.headOid?.startsWith(v.head);
+  const prev = readHfReview(deps, run);
+  if (!v || !onHead) {
+    deps.store.upsertWatchState(run.id, HF_REVIEW_WATCH.step, HF_REVIEW_WATCH.watch, { sig: review.id });
+    return null;
+  }
+  const fixes = prev?.fixes ?? 0;
+  if (wantsFix(v) && fixes < MAX_SELF_CHECKS) return { ...review, verdict: v };
+  const human = v.verdicts.includes("needs-human") || wantsFix(v);
+  const next: HfReview = { phase: human ? "needs-human" : "clean", round: v.round ?? (prev?.round ?? 0) + 1, reviewedHead: v.head, findings: v.must + v.should + v.nit, fixes };
+  writeHfReview(deps, run, next, review.id);
+  deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "review_verdict", detail: { number: pr.number, review: review.id, ...next } });
+  if (human) {
+    const body = `${run.ticketKey}: PR #${pr.number} review round ${next.round} still has must-fix findings after ${fixes} fix pass${fixes === 1 ? "" : "es"} — the operator decides now · ${pr.url}`;
+    void deps.herdr.notify(`herdr-factory: ${run.ticketKey} review needs a human`, body).catch(() => {});
+    deps.log("info", body);
+  }
+  return null;
 }
 
 /**

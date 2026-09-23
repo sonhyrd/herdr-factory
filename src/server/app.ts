@@ -56,6 +56,8 @@ import {
 import type { BeltChanges, BeltChangesResult } from "../core/belt-admin.ts";
 import { runHandler } from "./effect.ts";
 import { EVIDENCE_WATCH, readEvidenceHead } from "../core/evidence-head.ts";
+import { readHfReview } from "../core/review-verdict.ts";
+import { hfReviewLine } from "../core/explain.ts";
 
 /** A repo the resident server is currently serving: its injected Deps + tick-loop bookkeeping. */
 export interface RepoRuntime {
@@ -272,6 +274,8 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
               : "evidence upload retrying",
         };
     const ev = readEvidenceHead(rt.deps.store.getWatchState(r.id, EVIDENCE_WATCH.step, EVIDENCE_WATCH.watch));
+    const hf = readHfReview(rt.deps, r);
+    const hfLine = hf ? hfReviewLine(hf) : null;
     return {
       id: r.id,
       ticketKey: r.ticketKey,
@@ -298,6 +302,8 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
       prGreen: rt.deps.store.getWatchState(r.id, "pull_request", "pr_green")?.sig != null,
       // The PR head moved past what evidence + review judged, with code changes (issue #84).
       ...(ev?.stale ? { evidenceStale: { evidenceHead: ev.evidenceHead, prHead: ev.prHead } } : {}),
+      // A factory review verdict being fixed / self-checked on this run's PR (issue #86).
+      ...(hf && hfLine ? { hfReview: { phase: hf.phase, text: hfLine } } : {}),
       prUrl: r.prNumber != null && ghRepo ? `https://github.com/${ghRepo}/pull/${r.prNumber}` : null,
       itemUrl: itemUrlFor(r.workSource, r.ticketKey),
     };

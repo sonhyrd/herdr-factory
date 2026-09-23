@@ -4636,3 +4636,142 @@ describe("watch-phase rework — evidence belongs to a head (issue #84)", () => 
     expect(store.getRun(run.id)!.phase).toBe("attention");
   });
 });
+
+describe("an hf-review verdict on a watched PR is handed to its ship run (issue #86)", () => {
+  // A reviewing run on fix → evidence → review → pr whose gates judged `sha-ev` — the PR head.
+  function watched(key: string) {
+    const b = build();
+    const { store, state, worktree, shipBelt } = b;
+    shipBelt.steps = [stepCfg("fix"), stepCfg("evidence", { readOnly: true }), stepCfg("review", { readOnly: true }), stepCfg("pr")];
+    const run = seed(store, worktree, key, "reviewing", null, { prNumber: 40, lastThreadSig: "s0" });
+    for (const s of ["fix", "evidence", "review", "pr"]) store.upsertRunStep(run.id, s, { paneId: `w1:p-${s}`, done: true, dispatchedAt: 1 });
+    store.upsertWatchState(run.id, "evidence", "read_only", { sig: "sha-ev", basedAt: 5 });
+    store.upsertWatchState(run.id, "review", "read_only", { sig: "sha-ev", basedAt: 6 });
+    state.pr = { number: 40, state: "OPEN", url: "https://gh/pr/40", headOid: "sha-ev" };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    state.headSha = "sha-ev";
+    return { ...b, run };
+  }
+  const verdict = (id: string, lines: string[], round = 1, head = "sha-ev") => ({
+    id,
+    body: [`<!-- hf:review K -->`, ...lines.map((l) => `hf-review-verdict: ${l}`), `hf-review-round: ${round}`, `hf-review-head: ${head}`, "", "Findings:", "- [ ] 1. **must-fix** `a.ts:1` — x", "- [ ] 2. **should-fix** `b.ts:2` — y", "- [ ] 3. **nit** `c.ts:3` — z"].join("\n"),
+  });
+  const snap = (b: ReturnType<typeof watched>, review: PrSnapshot["review"], n = 40) => ({
+    prSnapshots: new Map<number, PrSnapshot>([[n, { ...(b.state.pr as PrInfo), isDraft: false, number: n, sig: b.state.sig, review }]]),
+  });
+  const tick = async (b: ReturnType<typeof watched>, review: PrSnapshot["review"], n = 40) => reconcileRun(b.deps, b.store.getRun(b.run.id)!, snap(b, review, n));
+  const handoffs = (b: ReturnType<typeof watched>) => b.store.timeline("demo", b.store.getRun(b.run.id)!.ticketKey).filter((e) => e.type === "review_handoff").length;
+  const resolverPrompt = (b: ReturnType<typeof watched>) => readFileSync(join(b.worktree, MEMORY_DIR, "prompt-resolver.md"), "utf8");
+
+  it("wakes the run for changes-requested and for clean with should-fixes — not for unchanged or nits-only clean", async () => {
+    const a = watched("K-86A");
+    await tick(a, verdict("R1", ["changes-requested"]));
+    expect(a.calls.agentSend.length, "changes-requested wakes the resolver").toBe(1);
+    expect(resolverPrompt(a)).toContain("Review findings to fix — round 1");
+    expect(resolverPrompt(a)).toContain("**must-fix** `a.ts:1`");
+    expect(a.store.getRun(a.run.id)!.resolverActive).toBe(true);
+    expect(runObligations(a.deps, a.store.getRun(a.run.id)!).hfReview).toMatchObject({ phase: "fixing", round: 1, findings: 3, fixes: 1 });
+    expect(a.calls.notify, "a verdict being fixed is not ready to merge").toBe(0);
+
+    const c = watched("K-86B");
+    const shouldOnly = { id: "R1", body: "hf-review-verdict: clean\nhf-review-round: 1\nhf-review-head: sha-ev\n\n- [ ] 1. **should-fix** `b.ts:2` — y" };
+    await tick(c, shouldOnly);
+    expect(c.calls.agentSend.length, "clean with a should-fix wakes the resolver").toBe(1);
+
+    for (const [key, review] of [
+      ["K-86C", { id: "R1", body: "hf-review-verdict: unchanged\nhf-review-head: sha-ev" }],
+      ["K-86D", { id: "R1", body: "hf-review-verdict: clean\nhf-review-round: 1\nhf-review-head: sha-ev\n\n- [ ] 1. **nit** `c.ts:3` — z" }],
+    ] as const) {
+      const n = watched(key);
+      await tick(n, review);
+      expect(n.calls.agentSend.length, `${key} must not wake`).toBe(0);
+      expect(n.calls.notify, `${key}: nothing to fix, so the green PR is ready`).toBe(1);
+    }
+  });
+
+  it("the verdict is handed off once, and only while it judged the PR's current head", async () => {
+    const a = watched("K-86E");
+    await tick(a, verdict("R1", ["changes-requested"], 1, "sha-old"));
+    expect(a.calls.agentSend.length, "a verdict the head has moved past was already acted on").toBe(0);
+    const b = watched("K-86F");
+    await tick(b, verdict("R1", ["changes-requested"]));
+    b.store.updateRun(b.run.id, { resolverActive: false });
+    await tick(b, verdict("R1", ["changes-requested"]));
+    expect(b.calls.agentSend.length).toBe(1);
+  });
+
+  it("a PR with no watching run is left to its author", async () => {
+    const a = watched("K-86G");
+    await tick(a, verdict("R1", ["changes-requested"]), 41); // the verdict is on PR 41; this run watches PR 40
+    expect(a.calls.agentSend.length).toBe(0);
+    expect(runObligations(a.deps, a.store.getRun(a.run.id)!).hfReview).toBeNull();
+  });
+
+  it("the self-check reviews only reviewed-head..new-head, and stops with needs-human after 2 rounds with a must-fix", async () => {
+    const b = watched("K-86H");
+    const { store, state, calls, run, worktree } = b;
+    await tick(b, verdict("R1", ["changes-requested"]));
+
+    // The resolver pushed a DOCS-ONLY fix and went idle: the self-check still runs.
+    state.pr = { ...state.pr!, headOid: "sha-fix1" };
+    state.headSha = "sha-fix1"; // the worktree the resolver pushed from — the gates pin it on re-entry
+    state.changedFiles = ["README.md"];
+    store.updateRun(run.id, { resolverActive: false });
+    await tick(b, verdict("R1", ["changes-requested"]));
+    expect(store.getRun(run.id)!.step).toBe("evidence");
+    const ev1 = readFileSync(join(worktree, MEMORY_DIR, "feedback-evidence.md"), "utf8");
+    expect(ev1).toContain("git diff sha-ev..sha-fix1");
+    const rv1 = readFileSync(join(worktree, MEMORY_DIR, "feedback-review.md"), "utf8");
+    expect(rv1).toContain("herdr-factory-review-round: 2");
+    expect(rv1).toContain("herdr-factory-review-head: sha-fix1");
+    expect(rv1).toContain("instead of bouncing");
+    expect(rv1).not.toContain("needs-human");
+    expect(runObligations(b.deps, store.getRun(run.id)!).hfReview).toMatchObject({ phase: "self-check", round: 2, fixes: 1 });
+
+    // The gates ran and the review posted round 2 — still a must-fix: fix pass 2 of 2.
+    const backToWatch = () => {
+      for (const s of ["evidence", "review", "pr"]) store.markStepDone(run.id, s);
+      store.updateRun(run.id, { phase: "reviewing", step: null });
+    };
+    backToWatch();
+    await tick(b, verdict("R2", ["changes-requested"], 2, "sha-fix1"));
+    expect(handoffs(b)).toBe(2);
+    expect(runObligations(b.deps, store.getRun(run.id)!).hfReview).toMatchObject({ phase: "fixing", round: 2, fixes: 2 });
+
+    state.pr = { ...state.pr!, headOid: "sha-fix2" };
+    state.headSha = "sha-fix2"; // the worktree the resolver pushed from — the gates pin it on re-entry
+    state.changedFiles = ["src/a.ts"];
+    store.updateRun(run.id, { resolverActive: false });
+    await tick(b, verdict("R2", ["changes-requested"], 2, "sha-fix1"));
+    expect(store.getRun(run.id)!.step).toBe("evidence");
+    expect(readFileSync(join(worktree, MEMORY_DIR, "feedback-evidence.md"), "utf8")).toContain("git diff sha-fix1..sha-fix2");
+    expect(readFileSync(join(worktree, MEMORY_DIR, "feedback-review.md"), "utf8")).toContain("herdr-factory-review-verdict: needs-human");
+
+    // Round 3 still has a must-fix: no third fix pass — the operator decides.
+    backToWatch();
+    
+    await tick(b, verdict("R3", ["changes-requested", "needs-human"], 3, "sha-fix2"));
+    expect(handoffs(b)).toBe(2);
+    expect(runObligations(b.deps, store.getRun(run.id)!).hfReview).toMatchObject({ phase: "needs-human", round: 3, fixes: 2 });
+    expect(calls.notified.some(([t]) => t.includes("review needs a human"))).toBe(true);
+    expect(calls.notified.some(([t]) => t.includes("ready to merge"))).toBe(false);
+    // Even a verdict that forgot the needs-human line gets no third pass.
+    await tick(b, verdict("R4", ["changes-requested"], 4, "sha-fix2"));
+    expect(handoffs(b)).toBe(2);
+  });
+
+  it("a clean self-check round is recorded and the PR is ready to merge", async () => {
+    const b = watched("K-86I");
+    await tick(b, verdict("R1", ["changes-requested"]));
+    b.state.pr = { ...b.state.pr!, headOid: "sha-fix1" };
+    b.state.headSha = "sha-fix1";
+    b.state.changedFiles = ["src/a.ts"];
+    b.store.updateRun(b.run.id, { resolverActive: false });
+    await tick(b, verdict("R1", ["changes-requested"]));
+    for (const s of ["evidence", "review", "pr"]) b.store.markStepDone(b.run.id, s);
+    b.store.updateRun(b.run.id, { phase: "reviewing", step: null });
+    await tick(b, { id: "R2", body: "hf-review-verdict: clean\nhf-review-round: 2\nhf-review-head: sha-fix1\n\n- [ ] 1. **nit** `c.ts:3` — z" });
+    expect(runObligations(b.deps, b.store.getRun(b.run.id)!).hfReview).toMatchObject({ phase: "clean", round: 2, fixes: 1 });
+    expect(b.calls.notified.some(([t]) => t.includes("ready to merge"))).toBe(true);
+  });
+});

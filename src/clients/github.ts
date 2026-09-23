@@ -21,6 +21,10 @@ const FAILING = /FAIL|ERROR|TIMED_OUT|CANCELLED|FAILURE/;
  *  reports state PENDING/EXPECTED — both land here, and both mean "not green YET". */
 const PENDING = /^(|PENDING|EXPECTED|QUEUED|IN_PROGRESS|WAITING|REQUESTED|ACTION_REQUIRED)$/;
 
+/** A factory review verdict marker (`<brand>-review-verdict:`, or the legacy `herdr-review:`) —
+ *  core/review-verdict.ts parses the rest. */
+const REVIEW_VERDICT = /^[ \t>]*(?:[A-Za-z0-9._-]+-review-verdict|herdr-review):/im;
+
 type RollupContext = { name?: string; context?: string; conclusion?: string | null; state?: string | null };
 
 /** Split a status-check rollup into the failing check NAMES (they feed the signature hash, so the
@@ -124,6 +128,7 @@ export class GitHubClient {
           (n) =>
             `pr${n}: pullRequest(number: ${n}) { number state url isDraft title headRefOid ` +
             `reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { id } } } } ` +
+            `reviews(last: 20) { nodes { id body } } ` +
             `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ` +
             `__typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } } }`,
         )
@@ -137,6 +142,7 @@ export class GitHubClient {
         title?: string;
         headRefOid?: string;
         reviewThreads?: { nodes?: { isResolved: boolean; comments?: { nodes?: { id: string }[] } }[] };
+        reviews?: { nodes?: { id: string; body?: string }[] };
         commits?: {
           nodes?: {
             commit?: {
@@ -158,6 +164,7 @@ export class GitHubClient {
           .map((t) => t.comments?.nodes?.[0]?.id ?? "x");
         const { failing, pending } = rollupCounts(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
         const sig = createHash("sha1").update(JSON.stringify({ t: unresolvedIds, c: failing })).digest("hex");
+        const review = (pr.reviews?.nodes ?? []).findLast((r) => REVIEW_VERDICT.test(r.body ?? ""));
         out.set(pr.number, {
           number: pr.number,
           state: pr.state as PrState,
@@ -166,6 +173,7 @@ export class GitHubClient {
           title: pr.title,
           headOid: pr.headRefOid,
           sig: { unresolved: unresolvedIds.length, failing: failing.length, pending, sig },
+          ...(review ? { review: { id: review.id, body: review.body ?? "" } } : {}),
         });
       }
     }

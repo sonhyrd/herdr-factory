@@ -162,6 +162,8 @@ const StatusResponse = z
         prGreen: z.boolean().optional(),
         // Set while the PR head carries code changes that evidence + review have not judged yet.
         evidenceStale: z.object({ evidenceHead: z.string(), prHead: z.string() }).optional(),
+        // A factory review verdict on the run's PR being fixed / self-checked (issue #86).
+        hfReview: z.object({ phase: z.string(), text: z.string() }).optional(),
         // Where this run lives on the web, resolved from config (no network): the PR, and the work
         // item. The dashboard's o/O open them and the #NN refs link to them.
         prUrl: z.string().nullable().optional(),
@@ -548,6 +550,10 @@ const ObligationsResponse = z
       bounceCaps: z.array(z.object({ step: z.string(), count: z.number(), max: z.number() })),
     }),
     evidence: z.object({ evidenceHead: z.string(), prHead: z.string(), stale: z.boolean(), files: z.array(z.string()) }).nullable().optional(),
+    hfReview: z
+      .object({ phase: z.enum(["fixing", "self-check", "clean", "needs-human"]), round: z.number(), reviewedHead: z.string().nullable(), findings: z.number(), fixes: z.number() })
+      .nullable()
+      .optional(),
   })
   .openapi("Obligations");
 

@@ -38,6 +38,9 @@ export interface ActiveRun {
   /** Set while the PR head carries code changes pushed after evidence + review judged `evidenceHead`
    *  — the run is re-running them, and the PR is not ready to merge until they pass. */
   evidenceStale?: { evidenceHead: string; prHead: string };
+  /** A factory review verdict on the run's PR being fixed / self-checked (issue #86): the phase and
+   *  the board's line, e.g. `fixing hf-review round 1 (5 findings)`. */
+  hfReview?: { phase: string; text: string };
   /** The run's PR on the web, once it has one. Built server-side from the resolved PR repo, so a
    *  remote machine's run carries a URL the dashboard can open LOCALLY (the TUI's `o`). */
   prUrl?: string | null;

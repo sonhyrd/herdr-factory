@@ -25,8 +25,9 @@ function renderResolverPrompt(dirs: string[], slug: string, sourceType: SourceTy
  * is a first-class library prompt (`prompts/resolver.md`) rather than a hardcoded string — dispatched
  * via a one-line "read it" pointer exactly like a belt step. Returns true if a resolver was
  * dispatched, false if the spawn failed (so the caller retries rather than marking the round handled).
+ * `brief` is appended to the rendered prompt — a review verdict's findings (core/review-verdict.ts).
  */
-export async function wakeResolver(deps: Deps, run: Run, prNumber: number): Promise<boolean> {
+export async function wakeResolver(deps: Deps, run: Run, prNumber: number, brief = ""): Promise<boolean> {
   const worktree = run.worktreePath;
   if (!run.workspaceId || !worktree) throw new Error(`${run.ticketKey}: cannot spawn resolver (no workspace)`);
 
@@ -36,7 +37,7 @@ export async function wakeResolver(deps: Deps, run: Run, prNumber: number): Prom
   const body = renderResolverPrompt(dirs, wakePrompt.slug, sourceType, wakePrompt.tokens, {
     "@@KEY@@": run.ticketKey,
     "@@PR_NUMBER@@": String(prNumber),
-  });
+  }) + brief; // a review verdict's findings (issue #86) ride after the user-overridable prompt
   const mem = join(worktree, MEMORY_DIR);
   mkdirSync(mem, { recursive: true });
   writeFileSync(join(mem, `prompt-${wakePrompt.slug}.md`), body);

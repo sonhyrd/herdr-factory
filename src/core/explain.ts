@@ -9,7 +9,7 @@
 // exactly what makes a healthy-but-retrying factory look wedged, so every clock and counter here
 // renders WITH its next firing time and its rescue: what the engine will do on its own, and what
 // only a human can do.
-import type { RunObligations } from "./obligations-shape.ts";
+import type { HfReview, RunObligations } from "./obligations-shape.ts";
 
 export interface ExplainInput {
   ob: RunObligations;
@@ -352,6 +352,21 @@ function owedLines(ob: RunObligations, now: number): string[] {
 
 /** Render the whole narrative. Line 1 identifies the run; then the phase (or park) story, the
  *  deliver-lane debts, the bounce counters, and the ready-made next actions. */
+/** One line for the board and `explain`, e.g. `fixing hf-review round 1 (5 findings)`; null for a
+ *  first-round clean verdict (nothing happened worth a line). */
+export function hfReviewLine(v: HfReview): string | null {
+  switch (v.phase) {
+    case "fixing":
+      return `fixing hf-review round ${v.round} (${v.findings} finding${v.findings === 1 ? "" : "s"})`;
+    case "self-check":
+      return `self-check round ${v.round} running`;
+    case "clean":
+      return v.fixes > 0 ? `self-check round ${v.round} clean` : null;
+    case "needs-human":
+      return `hf-review round ${v.round} needs a human`;
+  }
+}
+
 export function explainRun(input: ExplainInput): string[] {
   const { ob, repoName, now } = input;
   const resumeCmd = `herdr-factory --repo ${repoName} resume ${ob.run.key}`;
@@ -374,6 +389,9 @@ export function explainRun(input: ExplainInput): string[] {
           : `Evidence + review judged ${e7}; the PR head ${h7} differs only in docs/translations, so the verdict still holds.`,
     );
   }
+
+  const hf = ob.hfReview && ob.run.phase !== "done" ? hfReviewLine(ob.hfReview) : null;
+  if (hf) lines.push(`${ob.run.prNumber != null ? `PR #${ob.run.prNumber}: ` : ""}${hf}${ob.hfReview!.fixes ? ` — fix pass ${ob.hfReview!.fixes} of 2` : ""}.`);
 
   const owed = owedLines(ob, now);
   if (owed.length) {
