@@ -437,7 +437,18 @@ ticket, the PR, the repo and the URL, so you can merge from your phone instead o
 hour later. It is a notification only: **the factory never merges** — you are the merge gate. Once
 per green **head commit**, not once per tick: a PR that goes red and green again is a new green, and
 so is a PR that gains a new commit — even on a repo with no CI at all, where nothing else about the
-PR would change. Merge → teardown (worktree removed,
+PR would change. **Green needs evidence at the head, too.** The PR watch compares the commit the
+belt's read-only gates (evidence, review, and any read-only step between them) judged with the PR's
+head. When a push — a resolver fixing a review thread, the `pr` step fixing CI — changes **code**
+since then, the run goes back through those gates and the `pr` step against the new head (once the
+pushing agent is done; the first gate's rework note tells it to mark the PR body's old evidence
+`superseded … re-filming`, and the `pr` step relinks the fresh evidence with the SHA it was filmed
+at), then returns to the watch. A push that touches only docs, Markdown or translations
+(`*.md`/`*.mdx`/`*.rst`/`*.txt`/`*.adoc`, or anything under `docs/`, `locales/`, `i18n/`,
+`translations/`) keeps today's behaviour. Each such rework counts toward `max_bounces`. Until the
+gates pass at the new head there is no "ready to merge": the dashboard shows `↻ <KEY>  PR #<n>
+evidence stale since <sha> (head <sha>) — re-running`, and `explain <KEY>` prints the evidence SHA
+against the PR head. Merge → teardown (worktree removed,
 every local branch the run created deleted — the name it was claimed under and any name it was
 renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh PR). Closed
 without merge → parked for [attention](#highlights).

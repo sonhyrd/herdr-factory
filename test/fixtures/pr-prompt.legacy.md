@@ -21,13 +21,16 @@ run.
 
 ## Do
 1. `git push -u origin @@BRANCH@@` and **open the PR** following the repo's PR conventions (a clear
-   summary + testing notes).@@WHEN:pull_request@@@@PR_TEMPLATE@@@@END@@@@WHEN:evidence@@
+   summary + testing notes). If a PR for this branch is **already open** (the PR watch sent a pushed
+   fix back through the belt), don't open another: push, and update its description in place.@@WHEN:pull_request@@@@PR_TEMPLATE@@@@END@@@@WHEN:evidence@@
    - **Evidence.** Read the prior handoff notes (start with `@@HANDOFF_IN@@`) — an earlier step
      recorded the public URLs of the screenshots/video it published; you do **not** need to
      re-capture or re-upload. Embed them in the **PR description**: screenshots inline with
      `![screenshot](<url>)`, and any video as a labelled link (GitHub renders an image URL inline but
-     shows a video URL as a link). Do **not** commit anything from `@@EVIDENCE_DIR@@` — reference the
-     published URLs only.@@END@@
+     shows a video URL as a link). State the commit it was filmed at (`filmed at <sha>` — the
+     evidence handoff's `sha:` line). On an existing PR, **replace** the old evidence block with this
+     pass's, including any `superseded … re-filming` line. Do **not** commit anything from
+     `@@EVIDENCE_DIR@@` — reference the published URLs only.@@END@@
    - **Assumptions, and what no check proves.** The worktree is deleted at teardown, so this PR body
      is the only durable record of what the earlier steps guessed. Read the prior handoff notes
      (start with `@@HANDOFF_IN@@`) and **append** to the description:

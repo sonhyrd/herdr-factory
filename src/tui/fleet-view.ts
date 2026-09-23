@@ -252,6 +252,9 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
         const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, stale: m.stale };
         if (run.prGreen && run.prNumber != null) {
           green.push({ ...base, text: `✓ ${run.ticketKey}  PR #${run.prNumber} is green — ready to merge  (${at})`, tone: "good" });
+        } else if (run.evidenceStale && run.prNumber != null) {
+          const { evidenceHead, prHead } = run.evidenceStale;
+          green.push({ ...base, text: `↻ ${run.ticketKey}  PR #${run.prNumber} evidence stale since ${evidenceHead.slice(0, 7)} (head ${prHead.slice(0, 7)}) — re-running  (${at})`, tone: "warn" });
         }
         if (run.phase === "attention") {
           parked.push({ ...base, text: `⚠ ${run.ticketKey}  parked — ${run.attentionReason ?? "needs attention"}  (${at})`, tone: "bad" });

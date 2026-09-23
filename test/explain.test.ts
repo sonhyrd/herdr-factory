@@ -12,6 +12,7 @@ function ob(overrides: {
   run?: Partial<RunObligations["run"]>;
   intents?: Partial<RunObligations["intents"]>;
   watches?: Partial<RunObligations["watches"]>;
+  evidence?: RunObligations["evidence"];
 }): RunObligations {
   return {
     run: {
@@ -36,6 +37,7 @@ function ob(overrides: {
       ...overrides.intents,
     },
     watches: { step: "work", guards: [], engine: [], bounceCaps: [], idleNudge: null, ...overrides.watches },
+    evidence: overrides.evidence ?? null,
   };
 }
 
@@ -464,5 +466,23 @@ describe("explainRun — shape", () => {
       });
       expect(joined(lines)).toContain("Next:");
     }
+  });
+});
+
+describe("explainRun — evidence vs PR head (issue #84)", () => {
+  const reviewing = { phase: "reviewing", step: null, prNumber: 9 };
+  it("stale: names both SHAs and the changed code, and says it is not ready to merge", () => {
+    const text = joined(explainRun({ ob: ob({ run: reviewing, evidence: { evidenceHead: "aaaaaaa111", prHead: "bbbbbbb222", stale: true, files: ["src/a.ts"] } }), repoName: REPO, now: NOW }));
+    expect(text).toContain("judged aaaaaaa; the PR head is bbbbbbb");
+    expect(text).toContain("src/a.ts");
+    expect(text).toContain("Not ready to merge");
+  });
+  it("matching heads: the verdict covers the head", () => {
+    const text = joined(explainRun({ ob: ob({ run: reviewing, evidence: { evidenceHead: "ccccccc333", prHead: "ccccccc333", stale: false, files: [] } }), repoName: REPO, now: NOW }));
+    expect(text).toContain("judged the PR head ccccccc");
+  });
+  it("docs-only drift: still holds", () => {
+    const text = joined(explainRun({ ob: ob({ run: reviewing, evidence: { evidenceHead: "aaaaaaa111", prHead: "ddddddd444", stale: false, files: ["README.md"] } }), repoName: REPO, now: NOW }));
+    expect(text).toContain("differs only in docs/translations");
   });
 });

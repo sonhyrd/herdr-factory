@@ -55,6 +55,7 @@ import {
 } from "./schemas.ts";
 import type { BeltChanges, BeltChangesResult } from "../core/belt-admin.ts";
 import { runHandler } from "./effect.ts";
+import { EVIDENCE_WATCH, readEvidenceHead } from "../core/evidence-head.ts";
 
 /** A repo the resident server is currently serving: its injected Deps + tick-loop bookkeeping. */
 export interface RepoRuntime {
@@ -270,6 +271,7 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
               ? "evidence not uploaded — AWS creds"
               : "evidence upload retrying",
         };
+    const ev = readEvidenceHead(rt.deps.store.getWatchState(r.id, EVIDENCE_WATCH.step, EVIDENCE_WATCH.watch));
     return {
       id: r.id,
       ticketKey: r.ticketKey,
@@ -294,6 +296,8 @@ async function statusPayload(rt: RepoRuntime, quick = false, refreshDiagnostics 
       // moment it stops being green. That is exactly "waiting on a human to merge", and it is a DB
       // read — no GitHub call on the dashboard's 3 s poll.
       prGreen: rt.deps.store.getWatchState(r.id, "pull_request", "pr_green")?.sig != null,
+      // The PR head moved past what evidence + review judged, with code changes (issue #84).
+      ...(ev?.stale ? { evidenceStale: { evidenceHead: ev.evidenceHead, prHead: ev.prHead } } : {}),
       prUrl: r.prNumber != null && ghRepo ? `https://github.com/${ghRepo}/pull/${r.prNumber}` : null,
       itemUrl: itemUrlFor(r.workSource, r.ticketKey),
     };

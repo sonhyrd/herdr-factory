@@ -327,6 +327,15 @@ describe("what the board leads with", () => {
     expect(items.map((i) => [i.machine, i.repo])).toEqual([["local", "app"], ["local", "app"], ["local", "app"]]);
   });
 
+  it("a PR whose head moved past its evidence with code says stale, never ready to merge (issue #84)", () => {
+    const m = machineView({
+      repos: [withRuns("app", [activeRun({ ticketKey: "HF-5", prNumber: 13, phase: "running", evidenceStale: { evidenceHead: "aaaaaaa111", prHead: "bbbbbbb222" } })])],
+    });
+    const [item] = needsYou([m]);
+    expect(item!.text).toContain("PR #13 evidence stale since aaaaaaa (head bbbbbbb) — re-running");
+    expect(item!.text).not.toContain("ready to merge");
+  });
+
   it("names an unverifiable machine, and is empty — so not drawn — when nothing is blocked", () => {
     expect(needsYou([machineView({ repos: [withRuns("app", [activeRun()])] })])).toEqual([]);
     const blind = needsYou([machineView(), machineView({ name: "build-box", local: false, state: "unverifiable", detail: "no answer within 2000ms", stale: true })]);

@@ -448,7 +448,9 @@ every key work identically on both.
 machine headers, reading the whole fleet and **never** narrowed by the `m` filter (a PR waiting on
 another box is still waiting). In order: PRs that are green and waiting on a merge
 (`✓ <KEY>  PR #<n> is green — ready to merge  (<repo> @<machine>)`, from `active[].prGreen`, which the
-server reads off the `pr_green` watch state — no GitHub call on the 3 s poll), runs parked for
+server reads off the `pr_green` watch state — no GitHub call on the 3 s poll) — or, when a code push
+since the evidence is being re-verified, `↻ <KEY>  PR #<n> evidence stale since <sha> (head <sha>) —
+re-running` (from `active[].evidenceStale`, the `evidence_head` watch state), runs parked for
 attention (`⚠ <KEY>  parked — <reason>`), runs in `waiting_for_human` (`? <KEY>  waiting for a human
 reply`), and machines that have gone silent (`✗ <machine> unverifiable — <why>`). **Empty ⇒ it is not
 drawn at all.** Its run entries *are* the runs: `s`, `x`, `d` and `↵` act on them from there, so a

@@ -1301,7 +1301,30 @@ that was already being made). **Accepted edge:** on a repo that *does* run CI, G
 pushed commit for a few seconds before its check runs exist — an empty rollup reads as green, so a
 tick landing in that window pings early. Waiting a tick to confirm would break the "within a tick of
 the rollup going green" requirement for every normal case; the mis-timed ping self-corrects when the
-next tick sees the checks pending. A **custom** belt runs the same
+next tick sees the checks pending.
+
+**Evidence belongs to a head (`core/evidence-head.ts`, issue #84).** CI green alone is not "ready":
+the belt's evidence and review judged one commit, and anything pushed during the watch (a resolver's
+review-thread fix, the `pr` step's CI fix) is unjudged. Every `reviewing` pass compares the PR head
+(`headOid`, already on the snapshot) with the **evidence head** — the pinned `read_only` baseline of
+the first of the belt's *verification steps* (the contiguous read-only steps right before the
+PR-opening step, e.g. `evidence → review`). The verdict is one `watch_state` row (run,
+`'pull_request'`, `'evidence_head'`): `sig` = the PR head, `meta` = `{evidenceHead, stale, files}`,
+recomputed only when either SHA moves. `stale` means `git diff --name-only evidenceHead prHead` (in
+the run's worktree — one `fetchRef` retry if the head was pushed from elsewhere; an un-diffable pair
+counts as code) names a file that is not docs/Markdown/translations (`isNonCode`: `*.md`, `*.mdx`,
+`*.rst`, `*.txt`, `*.adoc`, `docs/`, `locales/`, `i18n/`, `translations/`). A stale verdict (a) vetoes
+`noteGreenPr`, and (b) once the pushing agent is done — `resolverActive` false and the PR-opening
+step's row `done` — sends the run back through `bounceStep(..., { watch: true })`: the rewind starts
+from the PR-opening step (so it re-runs too and relinks the fresh evidence), targets the first
+verification step, ends the `pr_green` episode, drops `resolverActive`, writes a `feedback-<step>.md`
+naming both SHAs and the changed files (and telling the step to mark the PR body's old evidence
+`superseded … re-filming` — the engine's GitHub client stays read-only), counts toward
+`max_bounces`, and records a `rework` event with `by: "pr_watch"`. The forward pass re-enters
+`reviewing` through the normal PR adoption; the re-spawned gate's baseline is the new head, so the
+verdict clears and the next green notifies. The dashboard (`active[].evidenceStale`) and `explain`
+(`RunObligations.evidence`) read the same row. Known edge: a rebase onto the base branch diffs as
+code, so it re-runs the gates. A **custom** belt runs the same
 machinery over user-defined steps with no PR watch — its last `step-done` tears the run down with
 outcome `completed`.
 
@@ -1366,7 +1389,8 @@ and the evidence step filmed a tree that was about to change.
   park (not only the terminal-rescuable ones), ignores the issuing step's `canBounceTo`, and allows
   `idxTo === idxFrom` (re-run the running step) — and records a **`rework`** event
   (`{by: "operator", fromStep, toStep, pass, bounces}`) instead of `bounced`. It is refused once the
-  belt is over (`reviewing`/teardown): there is no step to rewind, only a PR. Unlike the agent
+  belt is over (`reviewing`/teardown): there is no step to rewind, only a PR. (The engine's own
+  watch-phase rework — `by: "pr_watch"`, below — is the one path back from `reviewing`.) Unlike the agent
   signals it enqueues **no durable intent** — a person retries; an agent that has already stopped
   cannot.
 - **The tree guard** (`core/tree-guard.ts`) holds every step whose resolved `StepConfig.readOnly` is

@@ -402,6 +402,8 @@ export interface GitApi {
   /** The worktree's uncommitted work as a diff stat (+ the porcelain listing, which is the only
    *  one that shows untracked files), or null when the tree is clean — the tree guard's input. */
   dirtyStat(repoCwd: string): Promise<string | null>;
+  /** Paths that differ between two commits; null ⇒ git couldn't diff them. */
+  changedFiles(repoCwd: string, from: string, to: string): Promise<string[] | null>;
 }
 
 export type Logger = (level: "info" | "warn" | "error", msg: string) => void;

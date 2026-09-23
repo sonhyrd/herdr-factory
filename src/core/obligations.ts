@@ -12,6 +12,7 @@ import type { GuardSpec, Run } from "../types.ts";
 import type { RunObligations } from "./obligations-shape.ts";
 import { firstStep, stepByName } from "./step.ts";
 import { effectiveWatchClock } from "./watches.ts";
+import { EVIDENCE_WATCH, readEvidenceHead } from "./evidence-head.ts";
 import { BOUNCE_CAP } from "../steps/registry.ts";
 import { ENGINE_WATCHES } from "../steps/engine-watches.ts";
 
@@ -179,5 +180,6 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
       ledger,
     },
     watches: { step: watched?.name ?? null, guards, engine, bounceCaps, idleNudge },
+    evidence: readEvidenceHead(deps.store.getWatchState(run.id, EVIDENCE_WATCH.step, EVIDENCE_WATCH.watch)),
   };
 }

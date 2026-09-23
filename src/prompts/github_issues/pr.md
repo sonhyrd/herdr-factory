@@ -21,7 +21,9 @@ policy wins** — it is explicit configuration for this run.
 
 ## Do
 1. `git push -u origin @@BRANCH@@` and **open the PR** following the repo's PR conventions (a clear
-   summary + testing notes), with these GitHub-issue specifics:
+   summary + testing notes). If a PR for this branch is **already open** (the PR watch sent a pushed
+   fix back through the belt), don't open another: push, and update its description in place. These
+   GitHub-issue specifics apply:
    - **Link the issue for auto-close:** the work doc (`@@WORK_DOC@@`) has a
      `Closing reference:` line — copy it into the PR description **verbatim, on its own line**
      (e.g. `Fixes #@@KEY@@`). This is what links the PR to the issue and closes it on merge.
@@ -30,8 +32,10 @@ policy wins** — it is explicit configuration for this run.
    - **Evidence.** The prior handoff notes (start with `@@HANDOFF_IN@@`) carry the public URLs of the
      screenshots/video an earlier step published; you do **not** need to re-capture or re-upload.
      Embed them in the **PR description**: screenshots inline with `![screenshot](<url>)`, and any
-     video as a labelled link. Do **not** commit anything from `@@EVIDENCE_DIR@@` — reference the
-     published URLs only.@@END@@
+     video as a labelled link. State the commit it was filmed at (`filmed at <sha>` — the evidence
+     handoff's `sha:` line). On an existing PR, **replace** the old evidence block with this pass's,
+     including any `superseded … re-filming` line. Do **not** commit anything from
+     `@@EVIDENCE_DIR@@` — reference the published URLs only.@@END@@
    - **Assumptions, and what no check proves.** The worktree is deleted at teardown, so this PR body
      is the only durable record of what the earlier steps guessed. Read the prior handoff notes
      (start with `@@HANDOFF_IN@@`) and **append** to the description:
