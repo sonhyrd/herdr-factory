@@ -51,8 +51,8 @@ scenario(
           source: "briefs",
           workspace_name: "e/{{work_id}}",
           default_layout: "with-evidence",
-          // The `pr` step keeps the run ALIVE while the bytes retry — exactly what it does in
-          // production, and what stops teardown from dropping a publish that never landed.
+          // The `pr` step is gated on the bytes landing (the evidence gate), which also keeps the run
+          // ALIVE while they retry — so teardown can't drop a publish that never landed.
           steps: [
             { type: "work", tab: "work", pane: "agent" },
             { type: "evidence", tab: "evidence", pane: "agent" },
@@ -67,7 +67,7 @@ scenario(
   async (w) => {
     const key = "flaky-backend";
 
-    // The publish fails, but the STEP is not blocked by it — the run walks on while the bytes retry.
+    // The publish fails, but the evidence STEP is not blocked by it — the run walks on while the bytes retry.
     await w.waitFor(() => w.db.intents({ kind: "evidence_publish" }).some((i) => i.attempts > 0 && i.status !== "delivered"), {
       label: "the failing publish is recorded as a retrying intent",
       timeoutMs: 120_000,
@@ -99,8 +99,8 @@ scenario(
       timeoutMs: 60_000,
     });
 
-    // The PR the evidence belongs to is still open and mergeable — the stuck upload never blocked it,
-    // and the belt walked on to the pr step while the bytes were retrying.
+    // The belt walked on through review while the bytes were retrying, but the pr step waited for
+    // them (the evidence gate, issue #90) — it opens the PR only now that the upload has landed.
     await w.waitFor(() => (w.db.run(key)?.pr_number ?? 0) > 0, { label: "the pr step opens the PR", timeoutMs: 120_000 });
     w.gh.merge(w.db.run(key)!.pr_number!);
     await w.waitForEnd(key, "merged", { label: "the run merges once its evidence is delivered", timeoutMs: 120_000 });
