@@ -147,7 +147,7 @@ See §4 for semantics and messages.
 
 `capture-lock` loads **no config at all** — it opens `<stateRoot>/herdr-factory.db` directly, so it works on a machine with zero repo configs. `owner` defaults to `worker`. `acquire` polls every 5s with a 1200s lock TTL and gives up after 1 hour (`timed out waiting for the <resource> lock`, exit 1); success prints `<resource> lock acquired by <owner>`. `release` is owner-scoped and silently no-ops when the lock isn't held: `<resource> lock released by <owner>`. Any other action → exit 1 `capture-lock: acquire|release <resource> [owner]`.
 
-`evidence-upload` enqueues a durable ledger intent **first**, prints the predicted public URLs, then attempts an inline publish. It exits **0** on every failure path — the ledger owns retry:
+`evidence-upload` enqueues a durable ledger intent **first**, prints the predicted public URLs, then attempts an inline publish. It exits **0** on every failure path — the ledger owns retry. **Background mode** — a `command` publisher with `evidence.public_base_url`: after the URLs it spawns a detached `evidence-deliver <intentId>` (a hidden internal command; the child owns the intent's lease and records `evidence_uploaded` or hands a failure to the retry clock) and returns at once with `evidence-upload: uploading <N> evidence file(s) via command in the background — the pr step waits for it; carry on`. Inline mode prints:
 
 ```
 public URLs (use these in your handoff even if delivery is deferred — they resolve once the bytes land):
