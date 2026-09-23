@@ -112,7 +112,7 @@ Triage by symptom — each row has a full playbook in
 | run parked for attention | route by `attention_reason_code` — the table in troubleshooting.md says which are auto-rescuable and how to clear each |
 | step never starts | herdr never created the worktree · no herdr plugin link so no layout was ever built · the belt's FIRST step had no `tab`/`pane`, so its own pane pre-empted the build (only possible on a `layout_matching`-only belt — `default_layout` rejects that shape at load) · its `tab`/`pane` names no pane the layout defines · the target pane's agent never came up (look for `could not start <kind> in <pane>` / a "agent did not start" notification) · (for a step with no `tab`/`pane`) the agent binary is missing from the **service** PATH |
 | agent says it's done, run didn't advance | the `step-done` signal never landed — check the timeline, then fire it by hand |
-| stuck in `reviewing` | that's normal — the PR watch has no time limit and holds no slot while idle. It notifies you once when the PR is green and mergeable; **it never merges** — you are the merge gate |
+| stuck in `reviewing` | that's normal — the PR watch has no time limit and holds no slot while idle. It notifies you once when the PR is green and mergeable (and its evidence covers the head); **it never merges** — you are the merge gate |
 | the PR is open but the run never adopts it | its head is a branch the run doesn't know, or the PR predates the run — the run's identity is its **worktree**, and adoption tries `runs.branch` then `runs.worktree_name`. A branch renamed to the repo's convention is supported (`set-branch`); check the timeline for `branch_changed` |
 | config edits do nothing | `herdr-factory reload` (or the server never picked the repo up at boot) |
 | server up but nothing ticks | wedged tick loop — `doctor` does **not** catch this; check `/health`'s per-repo `lastTickAt` |
@@ -171,6 +171,10 @@ Use these words precisely; the config and the CLI both key off them.
   a parked or waiting run), counts toward `max_bounces`, and is the supported way to say "not like
   that" to a live run instead of typing into a pane the belt has moved past. A problem outside this
   ticket's scope is a new ticket, not a rework.
+- **evidence at the head** — "ready to merge" needs CI green *and* evidence + review at the PR's
+  current head. A code push during the PR watch (a resolver fix, a pr-step CI fix) sends the run
+  back through its read-only gates and the `pr` step on the new head automatically (a `rework` event
+  `by: "pr_watch"`, counted toward `max_bounces`); a docs/Markdown/translations-only push does not.
 - **the tree guard** — a step that never commits (`evidence`, `review`, a `read_only` custom step)
   must find the worktree clean: its `step-done` is refused (with the diff stat) while the tree is
   dirty, and it is never started on a dirty tree (the run parks as `dirty_tree`). A *commit* from

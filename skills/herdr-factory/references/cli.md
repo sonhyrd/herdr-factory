@@ -402,7 +402,7 @@ Presence-only: a **wrong** token still shows `✓`. Use `doctor --repo <r> --dee
 
 ### `explain`
 
-The plain-language rendering of the obligations view (`src/core/explain.ts` over `runObligations`) — identity line, then the phase story (or the park's reason-code narrative with its rescue class), then the deliver-lane debts, bounce counters, and ready-made next commands:
+The plain-language rendering of the obligations view (`src/core/explain.ts` over `runObligations`) — identity line, then the phase story (or the park's reason-code narrative with its rescue class) plus, once the run has watched a PR, the evidence SHA against the PR head (`Evidence + review judged <sha>; the PR head is <sha> with code changes since (…)` when stale), then the deliver-lane debts, bounce counters, and ready-made next commands:
 
 ```
 RWR-18147 — run #58 on belt tickets-to-prs (attention)
