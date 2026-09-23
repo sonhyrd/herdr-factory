@@ -24,6 +24,12 @@ export interface GhThread {
   isResolved: boolean;
 }
 
+/** One PR review BODY (`gh pr review`) — how a factory review posts its verdict (issue #86). */
+export interface GhReview {
+  id: string;
+  body: string;
+}
+
 export interface GhPr {
   number: number;
   /** UPPERCASE, exactly as `gh` reports it — the engine compares against "OPEN"/"MERGED"/"CLOSED". */
@@ -47,6 +53,8 @@ export interface GhPr {
   assignees: string[];
   threads: GhThread[];
   checks: GhCheck[];
+  /** Review bodies, oldest first. Absent ⇒ none. */
+  reviews?: GhReview[];
 }
 
 /** Runtime failure/latency injection. The shim re-reads this on every invocation, so unlike the
@@ -143,6 +151,18 @@ export class GhFake {
     const threadId = id ?? `T_${n}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     this.patch((s) => void this.must(s, n).threads.push({ id: threadId, isResolved: false }));
     return threadId;
+  }
+
+  /** Post a review body on the PR (what `gh pr review --body-file` does). Returns its id. */
+  addReview(n: number, body: string): string {
+    let id = "";
+    this.patch((s) => {
+      const pr = this.must(s, n);
+      pr.reviews = pr.reviews ?? [];
+      id = `PRR_${n}_${pr.reviews.length + 1}`;
+      pr.reviews.push({ id, body });
+    });
+    return id;
   }
 
   resolveAllThreads(n: number): void {

@@ -243,6 +243,8 @@ function prGraphql(pr) {
     title: pr.title ?? "",
     headRefOid: pr.headRefOid ?? "",
     reviewThreads: threadsGraphql(pr),
+    // The batched query asks for `reviews(last: 20) { nodes { id body } }` (issue #86's verdicts).
+    reviews: { nodes: (pr.reviews ?? []).slice(-20).map((r) => ({ id: r.id, body: r.body })) },
     commits: { nodes: [{ commit: { statusCheckRollup: rollupGraphql(pr) } }] },
   };
 }
@@ -426,7 +428,7 @@ function prCommand(fs, argv, statePath) {
 
   if (verb === "create") return prCreate(fs, argv, statePath);
 
-  if (verb === "ready" || verb === "merge" || verb === "close" || verb === "reopen" || verb === "edit" || verb === "comment") {
+  if (verb === "ready" || verb === "merge" || verb === "close" || verb === "reopen" || verb === "edit" || verb === "comment" || verb === "review") {
     const { pr, label } = resolve(2);
     if (!pr) return notFound(label || "#0");
     const n = pr.number;
@@ -439,6 +441,14 @@ function prCommand(fs, argv, statePath) {
       }
       if (verb === "close") p.state = "CLOSED";
       if (verb === "reopen") p.state = "OPEN";
+      // `gh pr review <n> --comment|--request-changes --body[-file]` — a review BODY (no threads), what
+      // a factory review verdict is (issue #86). Stored oldest first; the batched query returns them.
+      if (verb === "review") {
+        const file = flag(argv, "--body-file", "-F");
+        const body = file ? fsSync.readFileSync(file, "utf8") : (flag(argv, "--body", "-b") ?? "");
+        p.reviews = p.reviews ?? [];
+        p.reviews.push({ id: `PRR_${n}_${p.reviews.length + 1}`, body });
+      }
       if (verb === "edit") {
         const title = flag(argv, "--title", "-t");
         if (title != null) p.title = title;

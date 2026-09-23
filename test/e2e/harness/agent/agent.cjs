@@ -294,6 +294,25 @@ function handle(text) {
     log(`  marked the PR evidence stale: ${staleLine}`);
   }
 
+  // A self-check note (issue #86) makes the LAST gate post the next review round itself, with the
+  // markers the note spells out. The verdict per round comes from the script's
+  // `selfCheck[<ticket>][<round>]` ({ verdict, findings }), default clean; the `needs-human` line is
+  // added only when the note says this is the last round — the agent follows the note, as a model would.
+  const note = fs.existsSync(feedback) ? fs.readFileSync(feedback, "utf8") : "";
+  const markers = /```\n(<!--[^\n]*:review[^\n]*-->\n[\s\S]*?)```/.exec(note)?.[1];
+  const post = /`(gh pr review \d+ --comment --body-file) <file>`/.exec(note)?.[1];
+  if (markers && post) {
+    const round = /-review-round: (\d+)/.exec(markers)?.[1] || "?";
+    const want = ((loadScript().selfCheck || {})[TICKET] || {})[round] || { verdict: "clean" };
+    let body = markers.replace(/<changes-requested[^>\n]*>/, want.verdict);
+    const needsHuman = /add the line `([^`]*-review-verdict: needs-human)`/.exec(note)?.[1];
+    if (needsHuman && want.verdict === "changes-requested") body += `${needsHuman}\n`;
+    body += `\n${(want.findings || []).map((f, i) => `- [ ] ${i + 1}. ${f}`).join("\n")}\n`;
+    const file = path.join(cwd, ".memory", "herdr-factory", `self-check-round-${round}.md`);
+    fs.writeFileSync(file, body);
+    sh(`${post} ${file}`, cwd);
+  }
+
   let evidenceBlock = "";
   if (b.evidence) {
     const dir = path.join(cwd, ".memory", "herdr-factory", "evidence");

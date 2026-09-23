@@ -71,6 +71,8 @@ export interface AgentScript {
   default?: AgentBehaviour;
   steps?: Record<string, AgentBehaviour>;
   passes?: Record<string, AgentBehaviour>;
+  /** Issue #86: the verdict the last gate posts on a self-check pass, per work item and round. */
+  selfCheck?: Record<string, Record<string, { verdict: "changes-requested" | "clean"; findings?: string[] }>>;
 }
 
 /** The world's on-disk geography, handed to a scenario's `config` builder so it can reference real
