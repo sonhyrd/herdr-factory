@@ -160,6 +160,8 @@ const StatusResponse = z
         // The pr_green watch's mark for this run's current head: the PR is green and waiting on a
         // human to merge. The dashboard's "needs you" section leads with these.
         prGreen: z.boolean().optional(),
+        // Set while the PR head carries code changes that evidence + review have not judged yet.
+        evidenceStale: z.object({ evidenceHead: z.string(), prHead: z.string() }).optional(),
         // Where this run lives on the web, resolved from config (no network): the PR, and the work
         // item. The dashboard's o/O open them and the #NN refs link to them.
         prUrl: z.string().nullable().optional(),
@@ -545,6 +547,7 @@ const ObligationsResponse = z
       engine: z.array(z.object({ kind: z.string(), watches: z.string(), rescue: z.string(), facts: GuardFacts })),
       bounceCaps: z.array(z.object({ step: z.string(), count: z.number(), max: z.number() })),
     }),
+    evidence: z.object({ evidenceHead: z.string(), prHead: z.string(), stale: z.boolean(), files: z.array(z.string()) }).nullable().optional(),
   })
   .openapi("Obligations");
 

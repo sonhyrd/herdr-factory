@@ -119,6 +119,13 @@ export class GitClient {
     const sha = r.stdout.trim();
     return r.code === 0 && sha ? sha : null;
   }
+
+  /** Paths that differ between two commits, or null when git can't diff them (a commit it doesn't
+   *  have). The PR watch classifies a pushed fix by these (core/evidence-head.ts). */
+  async changedFiles(repoCwd: string, from: string, to: string): Promise<string[] | null> {
+    const r = await run("git", ["-C", repoCwd, "diff", "--name-only", from, to], { allowFail: true });
+    return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : null;
+  }
 }
 
 /** owner/name from a git origin URL (ssh or https), or null. */

@@ -56,6 +56,8 @@ interface FakeState {
   /** What `git status --porcelain` + `git diff --stat` report for the run's worktree — null ⇒ the
    *  tree is CLEAN (the tree guard's input; see core/tree-guard.ts). */
   dirtyStat: string | null;
+  /** What `git diff --name-only <from> <to>` reports — null ⇒ git could not diff the two commits. */
+  changedFiles: string[] | null;
   /** What `git rev-parse --abbrev-ref HEAD` reports for the run's WORKTREE — the branch tracking
    *  reads it every pass. `undefined` ⇒ the worktree is on whatever the run's branch already says
    *  (no rename); a string simulates an agent renaming the branch; null ⇒ detached HEAD. */
@@ -144,7 +146,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, changedFiles: [], mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -322,6 +324,7 @@ function build(opts: { multi?: boolean } = {}) {
     originUrl: async () => "git@github.com:o/n.git",
     headSha: async () => state.headSha,
     dirtyStat: async () => state.dirtyStat,
+    changedFiles: async () => state.changedFiles,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {
@@ -4540,5 +4543,96 @@ describe("tree guard — a step that never commits must find the worktree clean"
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(store.getRun(run.id)!.attentionReasonCode).toBe("dirty_tree");
+  });
+});
+
+describe("watch-phase rework — evidence belongs to a head (issue #84)", () => {
+  // A reviewing run on fix → evidence → review → pr whose gates judged `sha-ev`, then something (the
+  // resolver) pushed `sha-new` to the PR. The PR is green on CI throughout.
+  function reviewingRun(key: string, files: string[] | null, extra: Record<string, unknown> = {}) {
+    const b = build();
+    const { store, state, worktree, shipBelt } = b;
+    shipBelt.steps = [stepCfg("fix"), stepCfg("evidence", { readOnly: true }), stepCfg("review", { readOnly: true }), stepCfg("pr")];
+    const run = seed(store, worktree, key, "reviewing", null, { prNumber: 40, lastThreadSig: "s0", ...extra });
+    for (const s of ["fix", "evidence", "review", "pr"]) store.upsertRunStep(run.id, s, { paneId: `w1:p-${s}`, done: true, dispatchedAt: 1 });
+    store.upsertWatchState(run.id, "evidence", "read_only", { sig: "sha-ev", basedAt: 5 });
+    store.upsertWatchState(run.id, "review", "read_only", { sig: "sha-ev", basedAt: 6 });
+    state.pr = { number: 40, state: "OPEN", url: "https://gh/pr/40", headOid: "sha-new" };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    state.changedFiles = files;
+    state.headSha = "sha-new"; // the worktree the resolver pushed from
+    return { ...b, run };
+  }
+
+  it("a push touching src/** sends the run back through evidence → review → pr on the new head, and never says ready", async () => {
+    const { deps, store, calls, run, worktree } = reviewingRun("K-84A", ["src/feature.ts", "README.md"]);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    const got = store.getRun(run.id)!;
+    expect(got.phase).toBe("running");
+    expect(got.step).toBe("evidence");
+    expect(calls.notify, "CI green is not ready to merge while the evidence is stale").toBe(0);
+    expect(store.getWatchState(run.id, "pull_request", "pr_green")?.sig ?? null).toBeNull();
+    for (const s of ["evidence", "review"]) expect(store.getRunStep(run.id, s)!.done).toBe(false);
+    expect(store.getRunStep(run.id, "evidence")!.pass).toBe(2);
+    const note = readFileSync(join(worktree, MEMORY_DIR, "feedback-evidence.md"), "utf8");
+    expect(note).toContain("sha-ev");
+    expect(note).toContain("sha-new");
+    expect(note).toContain("src/feature.ts");
+    expect(note).toContain("superseded by sha-new");
+    const ev = store.timeline("demo", "K-84A").find((e) => e.type === "rework");
+    expect(JSON.parse(String(ev?.detail))).toMatchObject({ by: "pr_watch", fromStep: "pr", toStep: "evidence" });
+    expect(runObligations(deps, got).evidence).toMatchObject({ evidenceHead: "sha-ev", prHead: "sha-new", stale: true });
+
+    // The gates re-run at the new head (the spawn pinned evidence to sha-new), pr relinks and signals:
+    // back in the watch, the same green head is ready to merge — once.
+    expect(store.getWatchState(run.id, "evidence", "read_only")!.sig).toBe("sha-new");
+    for (const s of ["evidence", "review", "pr"]) store.markStepDone(run.id, s);
+    store.updateRun(run.id, { phase: "reviewing", step: null });
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("reviewing");
+    expect(calls.notify).toBe(1);
+    expect(runObligations(deps, store.getRun(run.id)!).evidence).toMatchObject({ evidenceHead: "sha-new", prHead: "sha-new", stale: false });
+  });
+
+  it("a push touching only *.md or locales/** stays in the watch and is ready to merge", async () => {
+    const { deps, store, calls, run } = reviewingRun("K-84B", ["README.md", "docs/x.md", "locales/en.json", "app/locales/vi.json"]);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("reviewing");
+    expect(calls.notify).toBe(1);
+    expect(store.timeline("demo", "K-84B").some((e) => e.type === "rework")).toBe(false);
+    expect(runObligations(deps, store.getRun(run.id)!).evidence).toMatchObject({ evidenceHead: "sha-ev", prHead: "sha-new", stale: false });
+  });
+
+  it("a diff git cannot compute counts as code", async () => {
+    const { deps, store, run } = reviewingRun("K-84C", null);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.step).toBe("evidence");
+  });
+
+  it("waits for the pushing agent: an active resolver or an unfinished pr step defers the rework (and the green)", async () => {
+    const { deps, store, state, calls, run } = reviewingRun("K-84D", ["src/a.ts"], { resolverActive: true });
+    state.paneState = "working";
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("reviewing");
+    expect(calls.notify).toBe(0);
+    state.paneState = "idle"; // the resolver finished → the flag drops this pass, the rework runs next pass
+    await reconcileRun(deps, store.getRun(run.id)!);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.step).toBe("evidence");
+
+    const d = reviewingRun("K-84E", ["src/a.ts"]);
+    d.store.upsertRunStep(d.run.id, "pr", { done: false });
+    await reconcileRun(d.deps, d.store.getRun(d.run.id)!);
+    expect(d.store.getRun(d.run.id)!.phase).toBe("reviewing");
+    expect(d.calls.notify).toBe(0);
+  });
+
+  it("the watch rework counts toward max_bounces", async () => {
+    const { deps, store, run } = reviewingRun("K-84F", ["src/a.ts"]);
+    store.bumpGuardCounter(run.id, "evidence", "bounce_cap");
+    store.bumpGuardCounter(run.id, "evidence", "bounce_cap");
+    store.bumpGuardCounter(run.id, "evidence", "bounce_cap"); // limits.maxBounces is 3
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("attention");
   });
 });

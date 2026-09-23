@@ -362,6 +362,18 @@ export function explainRun(input: ExplainInput): string[] {
   const lines: string[] = input.heading === false ? [] : [`${ob.run.key} — run #${ob.run.id} on belt ${ob.run.belt ?? "?"} (${where})`, ""];
   lines.push(story.headline);
   lines.push(...story.body);
+  const ev = ob.evidence;
+  if (ev && ob.run.phase !== "done") {
+    const e7 = ev.evidenceHead.slice(0, 7);
+    const h7 = ev.prHead.slice(0, 7);
+    lines.push(
+      ev.stale
+        ? `⚠ Evidence + review judged ${e7}; the PR head is ${h7} with code changes since (${ev.files.length ? ev.files.slice(0, 5).join(", ") + (ev.files.length > 5 ? ", …" : "") : "files unknown"}). Not ready to merge until they pass at the new head.`
+        : ev.evidenceHead === ev.prHead
+          ? `Evidence + review judged the PR head ${h7}.`
+          : `Evidence + review judged ${e7}; the PR head ${h7} differs only in docs/translations, so the verdict still holds.`,
+    );
+  }
 
   const owed = owedLines(ob, now);
   if (owed.length) {

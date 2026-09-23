@@ -50,4 +50,8 @@ export interface RunObligations {
      *  the window hasn't elapsed yet). Null when nothing is idle, or the nudge is disabled. */
     idleNudge: { idleSince: number | null; nudgedAt: number | null } | null;
   };
+  /** The PR watch's last evidence-vs-head verdict (issue #84): the commit evidence + review judged,
+   *  the PR head it was compared with, and whether code changed between them. Null until the run has
+   *  watched a PR with a gate-pinned head. */
+  evidence: { evidenceHead: string; prHead: string; stale: boolean; files: string[] } | null;
 }

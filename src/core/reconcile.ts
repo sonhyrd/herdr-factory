@@ -27,6 +27,7 @@ import { flushOutbox, type OutboxFlow } from "./outbox.ts";
 import { consumeIntentHandoffs, ledgerFlow, notifySuspended } from "./ledger.ts";
 import { INTENT_KINDS } from "../intents/registry.ts";
 import { wakeResolver } from "./watch.ts";
+import { observeEvidenceHead, verificationSteps } from "./evidence-head.ts";
 import { recordSourceAuthEvent, recordTick, recordTickDuration, recordTickLockSkipped, telemetryEvent, telemetrySpan } from "../telemetry/index.ts";
 import { isSourceUnauthenticated, type SourceUnauthenticatedError } from "../auth/errors.ts";
 import { getAuthFailure, markAuthNotified, recordAuthFailure, recordAuthOk } from "../auth/gate.ts";
@@ -1471,10 +1472,14 @@ export async function bounceStep(
   src: SourceRuntime,
   toStep: string,
   reason: string,
-  opts: { operator?: boolean } = {},
+  opts: { operator?: boolean; watch?: boolean } = {},
 ): Promise<{ ok: boolean; escalated?: boolean; message?: string }> {
-  const fromStep = run.step;
-  const operator = opts.operator === true;
+  // `watch`: the PR watch sending a `reviewing` run back through its gates because the PR head moved
+  // past the evidence (issue #84). It "bounces" from the belt's PR-opening step, which is re-run too
+  // so it can relink the fresh evidence in the PR body.
+  const watch = opts.watch === true;
+  const fromStep = watch ? (belt.steps.find((s) => s.opensPr)?.name ?? null) : run.step;
+  const operator = opts.operator === true || watch;
   // A bounce is one of the step's three legal terminals, so it lands from a RESCUABLE park exactly
   // as a step-done does (rescuablePark): the agent finished its assessment and concluded the work
   // has to go back — whether a watchdog had parked the run as a stuck-agent backstop, or the agent
@@ -1484,8 +1489,8 @@ export async function bounceStep(
   // An OPERATOR rework lands from ANY park, not just the terminal-rescuable ones: a person is
   // making the judgement the park was waiting for. It is still refused once the belt is over —
   // `reviewing` watches a PR that already exists, and teardown is irreversible.
-  const parked = operator ? (run.phase === "waiting_for_human" ? "human" : run.phase === "attention" ? "watchdog" : null) : rescuablePark(deps, run);
-  if ((run.phase !== "running" && !parked) || !fromStep) {
+  const parked = watch ? null : operator ? (run.phase === "waiting_for_human" ? "human" : run.phase === "attention" ? "watchdog" : null) : rescuablePark(deps, run);
+  if ((run.phase !== (watch ? "reviewing" : "running") && !parked) || !fromStep) {
     return {
       ok: false,
       message: operator
@@ -1573,18 +1578,20 @@ export async function bounceStep(
     startedAt: deps.now(),
     absentAt: null,
   });
-  const notePath = writeBounceNote(run, operator ? "operator" : `${fromStep} step`, toStep, reason);
-  // (5) Rewind the active-step pointer.
-  deps.store.updateRun(run.id, { phase: "running", step: toStep, attentionReason: null, focusPending: true });
+  const notePath = writeBounceNote(run, watch ? "PR watch" : operator ? "operator" : `${fromStep} step`, toStep, reason);
+  // (5) Rewind the active-step pointer. Leaving the watch also ends its green episode: the PR is not
+  //     ready to merge until the gates have judged the new head.
+  if (watch) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null });
+  deps.store.updateRun(run.id, { phase: "running", step: toStep, attentionReason: null, focusPending: true, ...(watch ? { resolverActive: false } : {}) });
   const pass = deps.store.getRunStep(run.id, toStep)?.pass ?? 1;
   deps.store.recordEvent({
     runId: run.id,
     repo,
     ticketKey: run.ticketKey,
     type: operator ? "rework" : "bounced",
-    detail: operator ? { by: "operator", fromStep, toStep, pass, bounces, notePath } : { fromStep, toStep, bounces, notePath },
+    detail: operator ? { by: watch ? "pr_watch" : "operator", fromStep, toStep, pass, bounces, notePath } : { fromStep, toStep, bounces, notePath },
   });
-  deps.log("info", `${run.ticketKey}: ${operator ? "operator reworked" : `${fromStep} bounced work back`} to ${toStep} (pass ${pass}, #${bounces})`);
+  deps.log("info", `${run.ticketKey}: ${watch ? "PR watch reworked" : operator ? "operator reworked" : `${fromStep} bounced work back`} to ${toStep} (pass ${pass}, #${bounces})`);
 
   // (6) Re-dispatch the TARGET step through spawnStep — the single dispatch path. It re-renders the
   //     step's prompt (the rework banner surfacing the feedback note first, plus the fresh pass
@@ -2532,7 +2539,7 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
 // lands, and the episode rule already makes repeats impossible.
 const GREEN_WATCH = { step: "pull_request", watch: "pr_green" } as const;
 
-async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig): Promise<void> {
+async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig, evidenceStale: boolean): Promise<void> {
   const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
   // The PR-opening step may still be RUNNING: enterReviewing hands off the moment a review-ready PR
   // is adopted, WITHOUT waiting for step-done (see prReadyForReview). Its agent is still polling CI
@@ -2543,8 +2550,9 @@ async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig): Pr
   const prStep = deps.resolveBelt(run.belt)?.steps.find((s) => s.opensPr);
   const prStepState = prStep ? deps.store.getRunStep(run.id, prStep.name) : undefined;
   const stepRunning = prStepState != null && !prStepState.done;
+  // Green also needs the gates' verdict to cover this head (issue #84): CI alone is not "ready".
   const green =
-    !stepRunning && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
+    !stepRunning && !evidenceStale && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
   if (!green) {
     if (st?.sig != null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null });
     return;
@@ -2577,7 +2585,28 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
   // The watch has NO time limit (there is no watch_hours) — it rides until the PR merges or closes.
   const sig = snap?.sig ?? (await deps.github.reviewSignature(deps.ghRepo, pr.number));
   const actionable = sig.unresolved > 0 || sig.failing > 0;
-  await noteGreenPr(deps, run, pr, sig);
+  // Evidence belongs to a head: a code change pushed since the gates judged the PR sends the run back
+  // through them — once the pushing agent is done (the pr step signalled, the resolver went idle).
+  const belt = deps.resolveBelt(run.belt);
+  const gates = belt ? verificationSteps(belt.steps) : [];
+  const ev = await observeEvidenceHead(deps, run, gates, pr.headOid);
+  const prStep = belt?.steps.find((s) => s.opensPr);
+  const prStepRunning = prStep != null && deps.store.getRunStep(run.id, prStep.name)?.done === false;
+  if (ev?.stale && belt && !run.resolverActive && !prStepRunning) {
+    const files = ev.files.length ? ev.files.map((f) => `- \`${f}\``).join("\n") : "- (git could not list them — treat everything as changed)";
+    const reason =
+      `PR #${pr.number}'s head moved from \`${ev.evidenceHead}\` (what the evidence and review covered) to \`${ev.prHead}\` ` +
+      `with code changes — pushed while the run was watching the PR (a review-thread fix or a CI fix). ` +
+      `Judge the NEW head: re-verify every criterion these files could affect.\n\n` +
+      `Before anything else, if PR #${pr.number}'s description embeds evidence, mark it stale in place — add ` +
+      `\`> ⚠ Evidence filmed at ${ev.evidenceHead.slice(0, 7)}, superseded by ${ev.prHead.slice(0, 7)} — re-filming.\` ` +
+      `at the top of the evidence block (\`gh pr view ${pr.number} --json body\`, then \`gh pr edit ${pr.number} --body-file <file>\`; change nothing else). ` +
+      `The pr step replaces the block with this pass's evidence.\n\nChanged since the evidence:\n${files}`;
+    const res = await bounceStep(deps, run, belt, src, gates[0]!.name, reason, { watch: true });
+    if (res.ok) return;
+    deps.log("warn", `${run.ticketKey}: PR #${pr.number} evidence is stale but the rework did not start — ${res.message}`);
+  }
+  await noteGreenPr(deps, run, pr, sig, ev?.stale === true);
   // A review state we haven't handled yet — the trigger to (re)wake the resolver.
   const fresh = actionable && sig.sig !== run.lastThreadSig;
 
