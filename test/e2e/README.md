@@ -55,7 +55,11 @@ scenario({ name: "...", briefs: {...}, config: (p) => ({...}), agent: {...} }, a
   `ask-human`/`none`), `captureAttempts`, `evidence`, `replayStalePass`, `openPr`, `setBranch`
   (rename onto the repo's branch convention via the prompt's `set-branch` command), `run`. Resolution
   is `passes["<step>:<pass>"]` ▸ `steps[step]` ▸ `default` ▸ built-in. `w.setAgentScript()` swaps it
-  mid-scenario (the agent re-reads it every turn).
+  mid-scenario (the agent re-reads it every turn). Two prompt behaviours are built in, as a real
+  agent would follow them: an `evidence` step records `filmed at <HEAD>` + the published URLs in its
+  handoff, and the `pr` step puts that block in the PR body (on an already-open PR it `gh pr edit`s
+  the body instead); a step whose `feedback-<step>.md` carries a PR-watch `> ⚠ Evidence filmed at …
+  re-filming.` line prepends it to the PR body first.
 - **`fleetMachines`** declares extra `serve` processes in the same world — each another MACHINE of the
   fleet, with its own config dir, state root, port, DB and briefs folder over the same target
   checkout, and its repo named after the machine. The world writes the fleet's transport override
@@ -106,6 +110,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `evidence-publish-retry` | a failing publisher retries in the background, flags the run's `problem`, and delivers once `intents/recover` is called |
 | `capture-cap` | a flaky capture loop parks at the cap — and the station's own verdict still wins |
 | `pr-review-watch` | a draft PR keeps the step-done gate, a ready one hands off without it, a new review thread wakes a resolver that holds a slot only while working, and a green PR notifies the operator once per green — while the factory never merges it |
+| `watch-rework-evidence` | issue #84: a `src/**` push to a green, reviewed PR sends the run back through evidence → review → pr on the new head (a `rework` event `by: pr_watch`). Meanwhile `/status` carries `evidenceStale`, `explain` names both SHAs, the evidence agent marks the PR body's old evidence `superseded … re-filming`, and nothing says ready to merge. The re-film publishes a new evidence folder, the pr step relinks it `filmed at` the new head, and ready-to-merge fires only after the review verdict. A `*.md`/`locales/**` push stays in the watch and is a new green |
 | `pr-closed-park` | a PR closed without merging parks for a human and keeps its worktree |
 | `teardown-dev-server` | issue #48: a real listener in its own process group, with its cwd in the worktree and its port in `<git dir>/hf-port`, is dead and its port free once the run tears down — and a run with **no** `hf-port` still ends `merged` with its worktree and branch reaped |
 | `machine-claim-lock` | issue #72: four repos on ONE resident `serve`, ticking in lockstep under a `machine.yml` cap — every one of them reaches `claimNewWork` in a single fan-out (5.1s for four, inside one repo's wait) instead of the try-lock's same-loser-every-tick skip, and a lock held by somebody else past the wait makes the repo defer, count it durably, and report `claims deferred N ticks (machine claim lock)` through `status` and `explain` from a SEPARATE process — then clear the moment it claims again |

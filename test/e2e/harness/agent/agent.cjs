@@ -277,12 +277,34 @@ function handle(text) {
     }
   }
 
+  // A PR-watch rework note (issue #84) asks the first gate to mark the PR's old evidence stale before
+  // anything else — done here the way the note says: read the body, prepend the line, edit it back.
+  const feedback = path.join(cwd, ".memory", "herdr-factory", `feedback-${step}.md`);
+  const staleLine = fs.existsSync(feedback) ? /`(> ⚠ Evidence filmed at [^`]+)`/.exec(fs.readFileSync(feedback, "utf8"))?.[1] : null;
+  if (staleLine) {
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    const view = spawnSync("gh", ["pr", "view", branch, "--json", "body"], { cwd, encoding: "utf8" });
+    let body = "";
+    try {
+      body = JSON.parse(view.stdout).body || "";
+    } catch {
+      /* no PR to mark */
+    }
+    spawnSync("gh", ["pr", "edit", branch, "--body", `${staleLine}\n\n${body}`], { cwd, encoding: "utf8" });
+    log(`  marked the PR evidence stale: ${staleLine}`);
+  }
+
+  let evidenceBlock = "";
   if (b.evidence) {
     const dir = path.join(cwd, ".memory", "herdr-factory", "evidence");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${step}-before.png`), "PNG-ish bytes (harness)");
     fs.writeFileSync(path.join(dir, `${step}-after.png`), "PNG-ish bytes (harness)");
-    if (cmds["evidence-upload"]) sh(cmds["evidence-upload"], cwd);
+    if (cmds["evidence-upload"]) {
+      // Keep what a real evidence agent hands forward: the URLs, and the commit they were filmed at.
+      const urls = (sh(cmds["evidence-upload"], cwd).stdout || "").split("\n").filter((l) => /^https?:\/\//.test(l.trim()));
+      evidenceBlock = `\n## Evidence\n\nfilmed at ${git(["rev-parse", "HEAD"], cwd)}\n${urls.join("\n")}\n`;
+    }
   }
 
   // A step that produces a pull request is recognised from the prompt itself: only the `pr`
@@ -298,11 +320,18 @@ function handle(text) {
     // keeps the step-done gate instead of handing straight off to the review watch).
     const draft = /--draft/.test(prompt) ? " --draft" : "";
     sh(`git push -u origin ${branch}`, cwd);
-    sh(
-      `gh pr create --repo ${ghRepo} --head ${branch} --base main${draft} ` +
-        `--title ${JSON.stringify(`[harness] ${branch}`)} --body ${JSON.stringify(`Opened by the scripted agent for step ${step}.`)}`,
-      cwd,
-    );
+    // The evidence the prior handoff carries goes in the body, as the pr prompt asks.
+    const evHandoff = path.join(cwd, ".memory", "herdr-factory", "handoff-evidence.md");
+    const ev = fs.existsSync(evHandoff) ? /## Evidence[\s\S]*/.exec(fs.readFileSync(evHandoff, "utf8"))?.[0] ?? "" : "";
+    const body = `Opened by the scripted agent for step ${step}.${ev ? `\n\n${ev}` : ""}`;
+    const created = spawnSync("gh", ["pr", "create", "--repo", ghRepo, "--head", branch, "--base", "main", ...(draft ? ["--draft"] : []), "--title", `[harness] ${branch}`, "--body", body], { cwd, encoding: "utf8" });
+    log(`  gh pr create rc=${created.status} ${(created.stdout || "").trim()}${created.stderr ? " ERR:" + created.stderr.trim() : ""}`);
+    // Already open (a PR-watch rework pass): update the description in place — the old evidence
+    // block, and any "superseded … re-filming" line, are replaced by this pass's.
+    if (created.status !== 0 && /already exists/.test(created.stderr || "")) {
+      const edited = spawnSync("gh", ["pr", "edit", branch, "--body", body], { cwd, encoding: "utf8" });
+      log(`  gh pr edit rc=${edited.status}`);
+    }
   }
 
   if (!b.noHandoff) {
@@ -319,7 +348,7 @@ function handle(text) {
       // the engine's own post-dispatch bookkeeping by tens of milliseconds — the sha read was enough
       // to lose that race. What the ENGINE requires is asserted on the rendered prompt instead
       // (operator-rework), which is the artifact that actually ships.
-      fs.writeFileSync(p, `# handoff from ${step} (pass ${pass})\n\nDid: scripted work.\nVerify next: nothing.\n`);
+      fs.writeFileSync(p, `# handoff from ${step} (pass ${pass})\n\nDid: scripted work.\nVerify next: nothing.\n${evidenceBlock}`);
       log(`  wrote ${outRel}`);
     }
   }

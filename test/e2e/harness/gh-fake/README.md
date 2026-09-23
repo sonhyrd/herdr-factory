@@ -125,7 +125,7 @@ an unknown number: `{"data":{"repository":{"pullRequest":null}},"errors":[…]}`
 
 | argv | behaviour |
 |---|---|
-| `gh pr create --repo O/N --head B --title T --body B\|--body-file F [--draft] [--base B] [--label L]… [--reviewer R]… [--assignee A]…` | allocates `nextNumber`, stores the PR, prints the PR **url** on stdout (what real `gh` does). `--label a,b` and repeats both work. No `--head` ⇒ `$HF_GH_HEAD`, else cwd's checked-out branch (worktree-aware). An OPEN PR already on that head ⇒ exit 1, `a pull request for branch "B" into branch "main" already exists:` |
+| `gh pr create --repo O/N --head B --title T --body B\|--body-file F [--draft] [--base B] [--label L]… [--reviewer R]… [--assignee A]…` | allocates `nextNumber`, stores the PR (its `headRefOid` is `refs/heads/B` in cwd's repository when that resolves — the real commit, as on GitHub — else `sha<n>0`), prints the PR **url** on stdout (what real `gh` does). `--label a,b` and repeats both work. No `--head` ⇒ `$HF_GH_HEAD`, else cwd's checked-out branch (worktree-aware). An OPEN PR already on that head ⇒ exit 1, `a pull request for branch "B" into branch "main" already exists:` |
 | `gh pr checks N [--json name,state,bucket,link,…]` | rows `name<TAB>bucket<TAB>0s<TAB>url`; gh's exit codes: **0** all pass, **8** any pending, **1** any failure. No checks ⇒ exit 0 + `no checks reported on the 'B' branch` on stderr |
 | `gh pr view N` (no `--json`) | a human-ish summary + the url |
 | `gh pr ready N` / `merge` / `close` / `reopen` | mutate the stored PR (`isDraft:false` / `MERGED` / `CLOSED` / `OPEN`) and print its url |

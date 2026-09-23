@@ -500,7 +500,9 @@ function prCreate(fs, argv, statePath) {
       createdAt: new Date().toISOString(),
       isDraft: draft,
       headRefName: head,
-      headRefOid: `sha${number}0`,
+      // The branch's REAL tip when the caller's checkout has it (an agent runs this in its worktree),
+      // as on GitHub — the PR watch diffs it against the commit the belt's evidence judged.
+      headRefOid: localHeadOid(head) || `sha${number}0`,
       title,
       body,
       base,
@@ -515,8 +517,19 @@ function prCreate(fs, argv, statePath) {
   return { code: 0, out: url + "\n", err: "" };
 }
 
-/** The `node:fs` namespace, set once in main() (see the header: no `require`, no top-level await). */
+/** The `node:fs` / `node:child_process` namespaces, set once in main() (see the header: no
+ *  `require`, no top-level await). */
 let fsSync;
+let childProcess;
+
+/** `refs/heads/<branch>` in cwd's repository, or "" when cwd has no such branch. */
+function localHeadOid(branch) {
+  try {
+    return childProcess.execFileSync("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
 
 /** cwd's checked-out branch, for a `gh pr create` with no `--head` (what a model agent tends to run).
  *  Worktrees keep `.git` as a FILE pointing at the real gitdir, so follow it. */
@@ -536,6 +549,7 @@ function currentBranch() {
 async function main() {
   const fs = await import("node:fs");
   fsSync = fs;
+  childProcess = await import("node:child_process");
   const argv = process.argv.slice(2);
   const subcommand = classify(argv);
   const statePath = process.env.HF_GH_STATE;
