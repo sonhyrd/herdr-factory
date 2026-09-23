@@ -1295,8 +1295,9 @@ creates the pane and asks herdr to **start the agent in it**, which waits until 
 input — so the first prompt can't be dropped into a shell that isn't listening yet. That needs herdr to
 recognize the harness: a bare, known name (`claude`) is recognized automatically, while a wrapper
 script or an absolute path needs `kind:` to name the herdr agent it really is (without it, the argv is
-simply typed into the pane and the readiness wait is skipped). The PR-watch resolver reuses the `pr`
-step's harness (else the repo's).
+simply typed into the pane and the readiness wait is skipped). The PR-watch resolver runs on the `work`
+step's agent — it re-prompts the work pane if alive, else spawns with the work step's harness (else the
+repo's) — never the `pr` step's, so a cheap pr-step model never ends up doing review fixes.
 
 Resolution is **whole-block, most-specific-wins** — step over belt over repo — **not** field-merged:
 because flags are command-specific, a belt that switches `command` to `opencode` must not inherit the

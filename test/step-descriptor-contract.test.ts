@@ -171,7 +171,6 @@ describe("ProductCapability contract", () => {
     expect(c.adoption?.perAttemptBranchUid).toBe(true);
     expect(c.watch?.subPhase).toBe("reviewing");
     expect(c.watch?.idleHoldsSlot).toBe(false); // idle PR-watch holds no max_active_workspaces slot
-    expect(c.watch?.resolver.reusesPaneOf).toBe("pull_request");
     expect(c.effectOnProduce?.to).toBe("in_review");
   });
 

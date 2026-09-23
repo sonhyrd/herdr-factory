@@ -19,8 +19,9 @@ function renderResolverPrompt(dirs: string[], slug: string, sourceType: SourceTy
 
 /**
  * Wake the PR-review resolver: render its (tokenized, source-overridable) library prompt into the
- * worktree, then point the agent at it — reusing the run's latest agent pane (the pr step) if alive,
- * else spawning a fresh one. The slug, its overridability, and the token set all come from the
+ * worktree, then point the agent at it — on the WORK step's agent, never the pr step's: the belt's
+ * first `type: work` step's pane is re-prompted if alive (it already holds the implementation
+ * context), else a fresh pane is spawned with that step's harness (else the repo-level default). The slug, its overridability, and the token set all come from the
  * pull_request watch capability's `WatchResolverSpec` (`src/products/registry.ts`), so the resolver
  * is a first-class library prompt (`prompts/resolver.md`) rather than a hardcoded string — dispatched
  * via a one-line "read it" pointer exactly like a belt step. Returns true if a resolver was
@@ -42,22 +43,29 @@ export async function wakeResolver(deps: Deps, run: Run, prNumber: number): Prom
   writeFileSync(join(mem, `prompt-${wakePrompt.slug}.md`), body);
   const instruction = `Read ${MEMORY_DIR}/prompt-${wakePrompt.slug}.md in this worktree and follow it exactly. This is an autonomous task — do not pause to ask for confirmation.`;
 
-  if (run.paneId && (await deps.herdr.paneAlive(run.paneId))) {
+  // Review fixes are implementation work, so they go to the work step, not the pr step (often a cheap
+  // fast model that only opens the PR). A spawned resolver is recorded as the work step's pane, so
+  // the next round re-prompts it instead of piling up fresh panes.
+  const workStep = deps.resolveBelt(run.belt)?.steps.find((s) => s.type === "work");
+  const workPane = workStep ? deps.store.getRunStep(run.id, workStep.name)?.paneId : null;
+
+  if (workPane && (await deps.herdr.paneAlive(workPane))) {
     // Confirmed submission: an unconfirmed re-prompt means the resolver never woke, and the caller's
     // contract ("false ⇒ retry rather than marking the round handled") is exactly the right response.
-    if (!(await deps.herdr.agentSend(run.paneId, instruction, { confirm: true }))) {
-      deps.log("warn", `${run.ticketKey}: resolver prompt to ${run.paneId} was not confirmed for PR #${prNumber}`);
+    if (!(await deps.herdr.agentSend(workPane, instruction, { confirm: true }))) {
+      deps.log("warn", `${run.ticketKey}: resolver prompt to ${workPane} was not confirmed for PR #${prNumber}`);
       return false;
     }
-    await showRunPane(deps, run.paneId, { key: run.ticketKey, step: run.step, state: "watching" });
-    deps.log("info", `${run.ticketKey}: re-prompted agent (${run.paneId}) to resolve PR #${prNumber}`);
+    await showRunPane(deps, workPane, { key: run.ticketKey, step: run.step, state: "watching" });
+    // run.paneId tracks the pane actually resolving, so the watch's idle detection reads this one.
+    if (run.paneId !== workPane) deps.store.updateRun(run.id, { paneId: workPane });
+    deps.log("info", `${run.ticketKey}: re-prompted agent (${workPane}) to resolve PR #${prNumber}`);
     return true;
   }
 
-  // The resolver runs in the SAME worktree as the pr step; give it the pr step's configured harness
-  // (else the repo-level default) so a factory that spawns opencode/codex workers resolves review
-  // rounds with the same agent. Byte-identical to before when no `agent:` block is set.
-  const agent = deps.resolveBelt(run.belt)?.steps.find((s) => s.opensPr)?.agent ?? deps.config.agent;
+  // The work step's configured harness (resolved step over belt over repo at load), else the
+  // repo-level default. Byte-identical to before when no `agent:` block is set.
+  const agent = workStep?.agent ?? deps.config.agent;
   const pane = await deps.herdr.agentStart({
     workspaceId: run.workspaceId,
     cwd: worktree,
@@ -75,6 +83,8 @@ export async function wakeResolver(deps: Deps, run: Run, prNumber: number): Prom
   }
   await showRunPane(deps, pane, { key: run.ticketKey, step: wakePrompt.slug, state: "watching" });
   deps.store.updateRun(run.id, { paneId: pane });
+  // sessionId null: the old one belonged to the dead pane; step.ts re-reads it lazily from this one.
+  if (workStep) deps.store.upsertRunStep(run.id, workStep.name, { paneId: pane, sessionId: null });
   deps.log("info", `${run.ticketKey}: spawned fresh resolver for PR #${prNumber}`);
   return true;
 }
