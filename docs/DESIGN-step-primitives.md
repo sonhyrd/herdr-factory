@@ -24,7 +24,7 @@ dropping are all live. This table is the delta between the proposal below and th
 **Shipped as designed**
 
 - **§1/§3 — three registries.** `STEP_DESCRIPTORS` (`src/steps/registry.ts`: `work`/`evidence`/`review`/`pr`/`custom`), `PRODUCT_CAPABILITIES` (`src/products/registry.ts`), `SIGNAL_DESCRIPTORS` (`src/signals/registry.ts`). The reconciler branches on declarations (`consumes`/`produces`/`controls`/`guards`/posture), never a step name.
-- **§4 — the resolver prompt is a first-class library entry.** `src/prompts/resolver.md`, rendered by `core/watch.ts` (`wakeResolver`): tokenized (`@@KEY@@`/`@@PR_NUMBER@@`) and source-overridable, with the slug + token set + overridability all read from the `pull_request` watch capability's `WatchResolverSpec.wakePrompt`. It's written into the worktree and dispatched via a one-line read-pointer, exactly like a belt step, reusing the pr step's pane (`reusesPaneOf: pull_request`).
+- **§4 — the resolver prompt is a first-class library entry.** `src/prompts/resolver.md`, rendered by `core/watch.ts` (`wakeResolver`): tokenized (`@@KEY@@`/`@@PR_NUMBER@@`) and source-overridable, with the slug + token set + overridability all read from the `pull_request` watch capability's `WatchResolverSpec.wakePrompt`. It's written into the worktree and dispatched via a one-line read-pointer, exactly like a belt step, on the work step's pane/agent (issue #88; it originally reused the pr step's pane).
 - **§6 — effects.** `belt_start → in_development` is the engine default at claim; `produce(pull_request) → in_review` rides the `pull_request` capability's `effectOnProduce`; both fire forward-only/monotonic through the transition outbox. **Exposed to config (w2-02):** an optional per-belt `effects` block maps the same three trigger families (step enter / product produce / teardown outcome) to a status — a canonical `WorkState` or a **source-native custom status** (widened jira `status.<key>` / github_issues `state_labels.<key>`) delivered via the outbox's new `to_status` column while `to_state` stays the canonical anchor. Monotonicity is now explicit — `fireEffect` refuses an effect ranking below the run's highest enqueued rank (custom statuses rank at `anchor − ½`). Internal-ledger sources keep the canonical states only (custom rejected at load); the charter gains INV-13 (custom statuses map at the source layer).
 - **§7 — `read_only` declared *and* enforced.** HEAD movement during a read-only step (`evidence`/`review`) parks the run (`core/reconcile.ts`; baseline HEAD captured at spawn in `core/step.ts`).
 - **§8 — typed dataflow, both halves.** Load-time: a required consume with no upstream producer rejects the belt, and a bounce emitter needs an earlier `bounce_feedback` consumer (`config.ts` `superRefine`). Render-time: an unsatisfied *optional* consume drops its `@@TOKEN@@`s and its `@@WHEN:<product>@@…@@END@@` clause (`productActiveFor` / `stripInactiveProductBlocks` in `core/step.ts`), so a work→review→pr belt never references evidence it didn't capture.
@@ -249,7 +249,7 @@ The critical structural fix: **the resolver is not a step.** It is an agent owne
     idleHoldsSlot: false,                       // dynamic occupancy
     resolver: {
       wakePrompt: { slug: "resolver", perSourceOverride: true, tokens: ["@@KEY@@","@@PR_NUMBER@@"] },
-      reusesPaneOf: "pull_request",             // the PR PRODUCER's pane, not run.paneId ("latest")
+      // (runs on the work step's pane/agent since #88 — see watch.ts)
       spawn: "agent-agnostic" } },              // mirror dispatchToLayout, not hardcoded "claude"
   signals: [] }
 
@@ -471,7 +471,7 @@ assumes the registries are static.
 | `src/core/step.ts` | uniform base-prompt assembly (drop `enginePrompt===undefined`); token map = universal ∪ capability tokens; scaffold sections gated on declarations; namespaced per-source overrides; base prompts stop naming neighbor steps |
 | `src/prompts/` | rename `fix.md`→`work.md` (+ `jira/fix.md`, `github_issues/fix.md` → `…/work.md`); add `resolver.md` (the PR-watch wake prompt, now a tokenized library entry); namespace override paths per §11 |
 | `src/core/reconcile.ts` | funnel 3 PR-terminal sites through the product table; effects fire from declarations (forward-only); `STEP_WATCHDOG_ATTENTION` = autoRescue union; guard counters `(run,step,guard)`; abort-vs-park keys on belt_start-effect + any-durable-product; `read_only` enforcement; resume via guard reset rules |
-| `src/core/watch.ts` | resolver prompt → product watch capability (tokenized, source-overridable, agent-agnostic, reuses PR-producer pane) |
+| `src/core/watch.ts` | resolver prompt → product watch capability (tokenized, source-overridable, agent-agnostic, runs on the work step's pane/agent) |
 | `src/db/{store,migrate}.ts` | migration vNN: `run_products` (move PR state), generalize `countOccupying`, guard-counter table |
 | `src/server/{schemas,app}.ts` + `src/cli/index.ts` | iterate `SIGNAL_DESCRIPTORS` to auto-mount routes/commands/OpenAPI/tokens; `capture-attempt` gains `step`; `evidence-upload` → serialized signal |
 | `src/tui/{config-fields,config-editor}.ts` | render step rows from `STEP_DESCRIPTORS` (mirror the source half already data-driven); drop `belt_type`/`agents` hand-coding |

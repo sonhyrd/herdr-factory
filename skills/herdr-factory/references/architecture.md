@@ -280,7 +280,7 @@ Then, in order:
 5. Read the pane state (herdr unreachable ⇒ return, retry next tick).
 6. Believed-active resolver whose pane isn't `working` ⇒ `resolverActive = false`, log `resolver idle — PR #n watch no longer holds a slot`.
 7. `fresh` + pane `working` ⇒ don't pile on; just keep `resolverActive = true`.
-8. `fresh` + idle/gone ⇒ wake a resolver by rendering `prompts/resolver.md` into `.memory/herdr-factory/prompt-resolver.md` and re-prompting or spawning. **Only if the wake succeeds** is `{lastThreadSig, resolverActive:true}` recorded — a failed spawn must not mark the round handled.
+8. `fresh` + idle/gone ⇒ wake a resolver by rendering `prompts/resolver.md` into `.memory/herdr-factory/prompt-resolver.md` and pointing the **work step's** agent at it: the belt's first `type: work` step's pane is re-prompted if alive (`run.paneId` follows it), else a pane is spawned with that step's `agent:` (else the repo's) and recorded as the work step's pane — never the pr step's agent. **Only if the wake succeeds** is `{lastThreadSig, resolverActive:true}` recorded — a failed spawn must not mark the round handled.
 
 A merge is also caught while the run is parked in `attention` or `waiting_for_human`; both poll the adopted PR and tear down on `MERGED`. A merge seen at the terminal `pr` step goes `running → reviewing → (next pass) teardown`, so a merge costs one extra tick.
 

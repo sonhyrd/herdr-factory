@@ -6,11 +6,10 @@
 import type { Phase, PrState, ProductType, WorkState } from "../types.ts";
 
 /** The resolver agent a watch capability owns. It is not a StepDescriptor: it lives outside
- *  belt.steps, reuses the PR producer's pane, and is spawned agent-agnostically (mirroring
+ *  belt.steps, runs on the belt's `work` step's pane/agent (watch.ts), and is spawned agent-agnostically (mirroring
  *  dispatchToLayout). Its wake prompt is a tokenized, source-overridable library entry. */
 export interface WatchResolverSpec {
   readonly wakePrompt: { readonly slug: string; readonly perSourceOverride: boolean; readonly tokens: readonly string[] };
-  readonly reusesPaneOf: ProductType;
   readonly spawn: "agent-agnostic";
 }
 
@@ -80,7 +79,6 @@ export const PRODUCT_CAPABILITIES: readonly ProductCapability[] = [
       idleHoldsSlot: false,
       resolver: {
         wakePrompt: { slug: "resolver", perSourceOverride: true, tokens: ["@@KEY@@", "@@PR_NUMBER@@"] },
-        reusesPaneOf: "pull_request",
         spawn: "agent-agnostic",
       },
     },

@@ -1547,7 +1547,10 @@ by what they actually need:
 
 - **State (§6):** a run tracks a *sequence* of panes (earlier ones stay alive for
   querying) in `run_steps`, not a single `pane_id`. `run.pane_id` is kept pointed at the
-  *latest* step's pane (the `reviewing` resolver reuses it). Teardown (herdr `worktree
+  *latest* step's pane, and in `reviewing` to the pane actually resolving (idle detection reads it). The
+  resolver runs on the belt's first `type: work` step: its pane is re-prompted if alive, else a fresh
+  pane is spawned with that step's `agent:` (else the repo's) and recorded as the work step's pane —
+  never the pr step's agent (`core/watch.ts`). Teardown (herdr `worktree
   remove`) reaps all of a run's panes at once.
 - **Liveness:** the commit-HEAD heartbeat applies to `work` / `pr` (they commit) but not
   `evidence` / `review` (derived from the primitive's guards; a `custom` step opts in); each step

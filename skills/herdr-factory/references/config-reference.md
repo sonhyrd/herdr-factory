@@ -423,6 +423,9 @@ own process detection only).
 This resolution drives the panes the factory **spawns**. A LAYOUT pane names its own agent (`agent:`
 kind + `agent_args`), so the layout owns the harness for the panes it builds.
 
+The PR-watch resolver uses the belt's first `type: work` step's harness (else the repo's), never the
+`pr` step's — and re-prompts the live work pane before spawning anything.
+
 ---
 
 ### 3.14 `machine.yml` (host-local, optional — `src/machine.ts`)

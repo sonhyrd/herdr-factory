@@ -1281,7 +1281,7 @@ export interface Config {
   sourceComments: { brand: string };
   /** The repo-level agent harness (command + flags a SPAWNED pane launches), resolved repo over
    *  DEFAULT_AGENT_CONFIG. Per-belt/per-step overrides live on each StepConfig.agent; this is the
-   *  fallback the PR-watch resolver uses when it can't resolve a belt's pr step (watch.ts). Always
+   *  fallback the PR-watch resolver uses when it can't resolve a belt's work step (watch.ts). Always
    *  set by loadConfig (DEFAULT_AGENT_CONFIG when no `agent:` block). */
   agent: AgentConfig;
   paths: {
@@ -1724,7 +1724,7 @@ export function loadConfig(repoName: string): Loaded {
     conventions: parsed.conventions,
     sourceComments: { brand: parsed.source_comments.brand },
     // Repo-level resolved harness (repo over the default). Per-belt/per-step overrides live on each
-    // StepConfig.agent; this is the resolver's fallback (watch.ts) when no belt pr step resolves.
+    // StepConfig.agent; this is the resolver's fallback (watch.ts) when no belt work step resolves.
     agent: resolveAgent(parsed.agent, undefined, undefined),
     paths: {
       configDir: cfgDir,
