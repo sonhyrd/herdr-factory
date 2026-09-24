@@ -267,14 +267,14 @@ class S3Publisher implements EvidencePublisher {
   probeLiveness(): Promise<{ auth: boolean; reason: string }> {
     return probeEvidenceCreds(this.ev);
   }
-  /** PUT a 0-byte probe object at the REAL upload base `herdr-factory/<user>/<key_prefix>/.herdr-doctor`
+  /** PUT a 0-byte probe object at the REAL upload base `<key_root>/<user>/<key_prefix>/.herdr-doctor`
    *  (a fixed key, overwritten each run) via the SAME ambient credential chain uploads use — this
    *  exercises the exact s3:PutObject permission at the exact prefix. Writes one tiny object by design. */
   async deepProbe(): Promise<string> {
     const ev = this.ev;
     const username = ev.githubUsername ?? (this.ctx.currentLogin ? await this.ctx.currentLogin().catch(() => null) : null) ?? undefined;
     const s3 = evidenceClient(ev);
-    const key = ["herdr-factory", username, ev.keyPrefix, ".herdr-doctor"].filter(Boolean).join("/");
+    const key = [ev.keyRoot, username, ev.keyPrefix, ".herdr-doctor"].filter(Boolean).join("/");
     try {
       await s3.send(new PutObjectCommand({ Bucket: ev.bucket, Key: key, Body: "herdr-factory doctor probe\n", ContentType: "text/plain" }), {
         abortSignal: AbortSignal.timeout(8000),

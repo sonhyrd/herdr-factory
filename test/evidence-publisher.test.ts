@@ -41,7 +41,7 @@ function captureDir(): string {
 }
 
 describe("s3 publisher", () => {
-  const ev = { publisher: "s3" as const, bucket: "b", region: "us-east-1", cloudfrontDomain: "d.cf.net", keyPrefix: "" };
+  const ev = { publisher: "s3" as const, bucket: "b", region: "us-east-1", cloudfrontDomain: "d.cf.net", keyRoot: "herdr-factory", keyPrefix: "" };
   it("predicts the CloudFront URLs up-front (prefix + filename, nested paths encoded segment-wise)", () => {
     const p = createEvidencePublisher(ev);
     expect(p.kind).toBe("s3");
@@ -57,17 +57,17 @@ describe("s3 publisher", () => {
 
 describe("local publisher", () => {
   it("predicts server URLs — loopback by default, the configured origin when set", () => {
-    const dflt = createEvidencePublisher({ publisher: "local", keyPrefix: "" });
+    const dflt = createEvidencePublisher({ publisher: "local", keyRoot: "herdr-factory", keyPrefix: "" });
     expect(dflt.kind).toBe("local");
     expect(dflt.probeLiveness).toBeUndefined(); // no auth → no SSO light
     expect(dflt.predictUrls("pre/fix", ["shot.png"])).toEqual(["http://127.0.0.1:8765/evidence/pre/fix/shot.png"]);
 
-    const custom = createEvidencePublisher({ publisher: "local", publicBaseUrl: "https://box.tailnet.ts.net", keyPrefix: "" });
+    const custom = createEvidencePublisher({ publisher: "local", publicBaseUrl: "https://box.tailnet.ts.net", keyRoot: "herdr-factory", keyPrefix: "" });
     expect(custom.predictUrls("pre/fix", ["sub/clip.mp4"])).toEqual(["https://box.tailnet.ts.net/evidence/pre/fix/sub/clip.mp4"]);
   });
 
   it("publishes by copying the capture tree into the server's serve dir under the prefix", async () => {
-    const p = createEvidencePublisher({ publisher: "local", keyPrefix: "" });
+    const p = createEvidencePublisher({ publisher: "local", keyRoot: "herdr-factory", keyPrefix: "" });
     const { files, urls } = await p.publish({ dir: captureDir(), prefix: "herdr-factory/HF-1/5-t" });
     expect(files).toEqual(["shot.png", "sub/clip.mp4"]);
     expect(urls).toEqual([
@@ -81,7 +81,7 @@ describe("local publisher", () => {
 });
 
 describe("command publisher", () => {
-  const cfg = (command: string[], timeoutSeconds = 30) => ({ publisher: "command" as const, command, timeoutSeconds, keyPrefix: "" });
+  const cfg = (command: string[], timeoutSeconds = 30) => ({ publisher: "command" as const, command, timeoutSeconds, keyRoot: "herdr-factory", keyPrefix: "" });
   // A backend stub: receives (captureDir, keyPrefix), prints one URL per file to stdout.
   const okStub = () => stub("ok.sh", 'cd "$1" || exit 2\nfind . -type f | sed "s|^\\./||" | sort | while read f; do echo "https://cdn.example/$2/$f"; done');
 
@@ -132,7 +132,7 @@ describe("evidence publish with a real command publisher", () => {
     const store = new Store(openDb(":memory:"), () => now);
     const notify = vi.fn(async () => {});
     const deps = {
-      config: { repoName: "r", evidence: { publisher: "command", command, timeoutSeconds: 30, keyPrefix: "" }, limits: { attentionRenotifySeconds: 3600 } },
+      config: { repoName: "r", evidence: { publisher: "command", command, timeoutSeconds: 30, keyRoot: "herdr-factory", keyPrefix: "" }, limits: { attentionRenotifySeconds: 3600 } },
       store,
       herdr: { notify },
       github: { currentLogin: async () => null },

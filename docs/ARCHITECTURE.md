@@ -2092,8 +2092,10 @@ about to revert. It's driven two ways:
       executable run with `(captureDir, keyPrefix)` that uploads + prints one URL per file; optional
       `public_base_url` declares the URL layout `<base>/<prefix>/<file>` — `predictUrls` then answers
       and `evidence-upload` goes BACKGROUND, see §7). All three
-      share optional `key_prefix` / `github_username` (default: the `gh` login at publish time) and the
-      key layout `herdr-factory/<github_username>/<key_prefix>/<key>/<runId>-<timestamp>/`, so the
+      share optional `key_root` (default `herdr-factory`, one path segment) / `key_prefix` /
+      `github_username` (default: the `gh` login at publish time) and the key layout
+      `<key_root>/<github_username>/<key_prefix>/<key>/<runId>-<timestamp>/` — one prefix feeds both
+      `predictUrls` and the upload, so predicted and real links cannot disagree — so the
       "prefix + filename" URL shape is backend-independent. Omit the block and evidence still
       captures/assesses/bounces — it just publishes nothing (`doctor --deep` runs a per-publisher
       round-trip: an S3 write probe, a `local` static-serve fetch, or a `command` dry-run).

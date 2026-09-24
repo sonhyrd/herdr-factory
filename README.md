@@ -1146,10 +1146,13 @@ error. `evidence` and `review` are **read-only** (enforced: if one commits, the 
 Where the evidence station publishes captures — omit the block and it still captures, assesses,
 and can bounce; it just publishes nothing. The backend is a **seam**, selected by `publisher`
 (default `s3`; a block with no `publisher:` key is `s3`, unchanged). Every publisher lays evidence
-under the same key layout `herdr-factory/<github_username>/<key_prefix>/<key>/<run>-<timestamp>/`
-and produces "prefix + filename" URLs, so prompts and PR embedding never change. `key_prefix`
+under the same key layout `<key_root>/<github_username>/<key_prefix>/<key>/<run>-<timestamp>/`
+and produces "prefix + filename" URLs, so prompts and PR embedding never change. `key_root`
+(optional; default `herdr-factory` — one path segment, no `/`, `..` or whitespace), `key_prefix`
 (optional) and `github_username` (optional; default = the `gh` login at publish time) are shared by
-all three. Delivery is durable — the URLs are published up-front and the bytes retry in the
+all three. The predicted URLs and the uploaded keys use the same prefix, so a backend that serves
+evidence under another root (say `hf/`) sets `key_root: hf` rather than renaming keys itself.
+Changing `key_root` does not move existing evidence — old links keep their old root. Delivery is durable — the URLs are published up-front and the bytes retry in the
 background until the backend accepts them.
 
 **`s3`** — S3 + CloudFront (the original). Non-secret pointers only; AWS credentials come from the
@@ -1195,6 +1198,7 @@ evidence:
   command: ./publish-evidence.sh # a bare path, or an argv array [tool, --flag, …]
   timeout_seconds: 300 # optional; default 300
   public_base_url: https://evidence.example.com # optional; set ⇒ predicted URLs + background upload
+  key_root: hf # optional; default herdr-factory ⇒ links are <public_base_url>/hf/…
 ```
 
 **The evidence gate.** Whatever the publisher, a PR-opening step (`pr`) never starts until the run's

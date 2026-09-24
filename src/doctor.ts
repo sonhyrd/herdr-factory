@@ -568,7 +568,7 @@ export async function repoGroup(repo: string, deep = false): Promise<DoctorGroup
     const ev = d.config.evidence;
     // Default: report it's configured (local, no network). Deep: a per-publisher active round-trip
     // (S3 PutObject write-probe · local static-serve round-trip · command dry-run) — see each
-    // publisher's deepProbe. Uploads land under herdr-factory/<github_username>/<key_prefix>/… .
+    // publisher's deepProbe. Uploads land under <key_root>/<github_username>/<key_prefix>/… .
     if (!ev) {
       checks.push({ name: "evidence", ok: true, detail: "not configured (optional)" });
     } else if (deep) {
@@ -599,7 +599,7 @@ export async function repoGroup(repo: string, deep = false): Promise<DoctorGroup
 /** Shallow (no-network) one-line summary of where evidence publishes, per publisher. Shows the
  *  gh-login placeholder rather than resolving it (that would be a network call). */
 function describeEvidence(ev: NonNullable<Deps["config"]["evidence"]>): string {
-  const folder = ["herdr-factory", ev.githubUsername ?? "<gh-login>", ev.keyPrefix].filter(Boolean).join("/");
+  const folder = [ev.keyRoot, ev.githubUsername ?? "<gh-login>", ev.keyPrefix].filter(Boolean).join("/");
   switch (ev.publisher) {
     case "s3":
       return `configured: s3 → s3://${ev.bucket}/${folder}/ (${ev.region})`;

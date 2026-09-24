@@ -116,7 +116,7 @@ layouts[]=[]              { id! , tabs![] , setup , env={} }
     panes[]               { title , command , persist=true , agent , agent_name , agent_args=[] ,
                             prompt , agent_timeout_ms , prompt_timeout_ms , env={} , setup=false ,
                             split , ratio , size }
-evidence                  { publisher="s3" , key_prefix="" , github_username , …per-publisher }
+evidence                  { publisher="s3" , key_root="herdr-factory" , key_prefix="" , github_username , …per-publisher }
 conventions               { commits }
 branch                    { prefixes , slug_max=20 , full_slug_max=50 }
 agent                     { command="claude" , flags=[] , kind }
@@ -351,6 +351,7 @@ Shared by all publishers:
 
 | key | type | req | default | coercion |
 |---|---|---|---|---|
+| `key_root` | string | no | `"herdr-factory"` | trimmed; must be one path segment — a `/`, `..` or whitespace is a load error naming `evidence.key_root` |
 | `key_prefix` | string | no | `""` | trimmed, then leading **and** trailing `/`s stripped |
 | `github_username` | string trimmed min1 | no | the `gh` login at upload time | — |
 
@@ -361,8 +362,8 @@ Shared by all publishers:
 | `command` | `command`**!** (`string` or non-empty `array(string)`; a bare string becomes a 1-element argv, run with **no shell**, capture dir + key prefix appended as the last two args), `timeout_seconds` (int positive, default **300**), `public_base_url` (optional, trailing `/`s stripped) — set, the URLs are predicted as `<public_base_url>/<prefix>/<relative path>` and `evidence-upload` uploads in the **background** (returns at once); unset, the URLs come from the command's stdout and the publish is inline |
 
 Object key layout is publisher-independent:
-`herdr-factory/<github_username>/<key_prefix>/<work_key>/<runId>-<stamp>/<file>`, empty segments
-dropped. AWS credentials come from the ambient chain — never from config.
+`<key_root>/<github_username>/<key_prefix>/<work_key>/<runId>-<stamp>/<file>`, empty segments
+dropped. Predicted URLs (`s3`, and `command` with `public_base_url`) use the same prefix as the upload. AWS credentials come from the ambient chain — never from config.
 
 ### 3.11 `conventions`
 

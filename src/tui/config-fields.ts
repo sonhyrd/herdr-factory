@@ -71,12 +71,13 @@ const sourceNode = (type: SourceType, name?: unknown, pollInterval?: unknown, ma
   [type]: descriptorFor(type).tui.defaultBlock(),
 });
 // Evidence publisher choices (mirrors the EvidenceBlockSchema union in config.ts). A switch preserves
-// the shared key_prefix/github_username and resets the type-specific fields to their empty defaults.
+// the shared key_root/key_prefix/github_username and resets the type-specific fields to their empty defaults.
 const EVIDENCE_PUBLISHER_CHOICES = ["s3", "local", "command"];
-const evidenceNode = (publisher: string, keyPrefix?: unknown, githubUsername?: unknown) => ({
+const evidenceNode = (publisher: string, keyRoot?: unknown, keyPrefix?: unknown, githubUsername?: unknown) => ({
   publisher,
   ...(publisher === "s3" ? { bucket: "", region: "", cloudfront_domain: "" } : {}),
   ...(publisher === "command" ? { command: "" } : {}),
+  ...(keyRoot != null ? { key_root: keyRoot } : {}),
   ...(keyPrefix != null ? { key_prefix: keyPrefix } : {}),
   ...(githubUsername != null ? { github_username: githubUsername } : {}),
 });
@@ -189,7 +190,7 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
     // `s3`. Non-secret pointers only; S3 creds come from the ambient AWS credential chain (no secret
     // rows). Modelled as an add/remove optional block (like a work source): when absent, an "add"
     // action per publisher creates it; when present, the publisher enum + its fields + the shared
-    // key_prefix/github_username + a "remove" action are shown (flushInputs never deletes keys, so an
+    // key_root/key_prefix/github_username + a "remove" action are shown (flushInputs never deletes keys, so an
     // optional block needs the explicit remove to be clearable).
     d.push({ kind: "header", label: "evidence (optional — publish captures: s3 | local | command)", level: 1 });
     if (cfg.evidence == null) {
@@ -207,9 +208,10 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
         apply: (next) => {
           if (next === publisher) return;
           // Preserve the shared fields across a publisher switch; reset the type-specific ones.
+          const keyRoot = draft.getIn(["evidence", "key_root"]);
           const keyPrefix = draft.getIn(["evidence", "key_prefix"]);
           const githubUsername = draft.getIn(["evidence", "github_username"]);
-          draft.setIn(["evidence"], draft.createNode(evidenceNode(next, keyPrefix, githubUsername)));
+          draft.setIn(["evidence"], draft.createNode(evidenceNode(next, keyRoot, keyPrefix, githubUsername)));
           rebuild();
         },
       });
@@ -246,7 +248,8 @@ export function buildDescriptors(draft: Document, rebuild: () => void, ctx: Fiel
       }
       // Shared across every publisher (uniform key layout).
       d.push({ kind: "text", label: "github_username", path: ["evidence", "github_username"], placeholder: "(optional; default = gh login)", indent: 1 });
-      d.push({ kind: "text", label: "key_prefix", path: ["evidence", "key_prefix"], placeholder: "(optional; after herdr-factory/<user>/)", indent: 1 });
+      d.push({ kind: "text", label: "key_root", path: ["evidence", "key_root"], placeholder: "(optional; default herdr-factory — first key segment)", indent: 1 });
+      d.push({ kind: "text", label: "key_prefix", path: ["evidence", "key_prefix"], placeholder: "(optional; after <key_root>/<user>/)", indent: 1 });
       d.push({ kind: "action", label: "‹ remove evidence config ›", indent: 1, run: () => { void ctx.confirm("Remove the evidence publish config?").then((ok) => { if (ok) { draft.deleteIn(["evidence"]); rebuild(); } }); } });
     }
 

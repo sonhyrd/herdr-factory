@@ -48,10 +48,19 @@ export { listConfiguredRepos, repoConfigDir, serverInfoPath } from "./config-pat
 //                 (`/evidence/<prefix>/<file>`). Zero cloud setup — same-machine/tailnet reviewers + the dashboard.
 //   - `command` — a user executable receives the capture dir + key prefix and prints public URLs to stdout
 //                 (bring-your-own backend: GCS, Azure, an internal artifact store).
-// `key_prefix` (optional, slashes trimmed) and `github_username` (optional per-user folder; else the gh
-// login at upload time) are shared: every publisher lays evidence under the SAME key layout
-// `herdr-factory/<github_username>/<key_prefix>/<work_key>/<run>-<timestamp>/<file>`, so the URL stays
+// `key_root` (optional first key segment, default `herdr-factory`), `key_prefix` (optional, slashes
+// trimmed) and `github_username` (optional per-user folder; else the gh login at upload time) are
+// shared: every publisher lays evidence under the SAME key layout
+// `<key_root>/<github_username>/<key_prefix>/<work_key>/<run>-<timestamp>/<file>`, so the URL stays
 // "prefix + filename" regardless of backend.
+const evidenceKeyRootField = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((s) => !s.includes("/") && !s.includes("..") && !/\s/.test(s), {
+    message: "key_root must be one path segment (no `/`, no `..`, no whitespace)",
+  })
+  .default("herdr-factory");
 const evidenceKeyPrefixField = z
   .string()
   .trim()
@@ -70,6 +79,7 @@ const S3EvidenceSchema = z
       .trim()
       .min(1)
       .transform((s) => s.replace(/^https?:\/\//, "").replace(/\/+$/, "")),
+    key_root: evidenceKeyRootField,
     key_prefix: evidenceKeyPrefixField,
     // Optional AWS CLI named profile (else the default credential chain).
     profile: z.string().trim().min(1).optional(),
@@ -89,6 +99,7 @@ const LocalEvidenceSchema = z
       .min(1)
       .transform((s) => s.replace(/\/+$/, ""))
       .optional(),
+    key_root: evidenceKeyRootField,
     key_prefix: evidenceKeyPrefixField,
     github_username: evidenceGithubUsernameField,
   })
@@ -114,6 +125,7 @@ const CommandEvidenceSchema = z
       .min(1)
       .transform((s) => s.replace(/\/+$/, ""))
       .optional(),
+    key_root: evidenceKeyRootField,
     key_prefix: evidenceKeyPrefixField,
     github_username: evidenceGithubUsernameField,
   })
@@ -125,17 +137,18 @@ const EvidenceBlockSchema = z.preprocess(
   z.discriminatedUnion("publisher", [S3EvidenceSchema, LocalEvidenceSchema, CommandEvidenceSchema]),
 );
 
-/** The S3 key prefix for one evidence capture:
- *  `herdr-factory / <github_username> / <key_prefix> / <ticketKey> / <runId>-<timestamp>`.
- *  Empty segments (unset username or key_prefix) are dropped, so the base is always `herdr-factory/`. */
+/** The key prefix for one evidence capture:
+ *  `<key_root> / <github_username> / <key_prefix> / <ticketKey> / <runId>-<timestamp>`.
+ *  Empty segments (unset username or key_prefix) are dropped, so the base is always `<key_root>/`. */
 export function evidenceKeyPrefix(opts: {
+  keyRoot: string;
   githubUsername?: string;
   keyPrefix?: string;
   ticketKey: string;
   runId: number | string;
   stamp: string;
 }): string {
-  return ["herdr-factory", opts.githubUsername, opts.keyPrefix, opts.ticketKey, `${opts.runId}-${opts.stamp}`]
+  return [opts.keyRoot, opts.githubUsername, opts.keyPrefix, opts.ticketKey, `${opts.runId}-${opts.stamp}`]
     .filter(Boolean)
     .join("/");
 }
@@ -153,18 +166,20 @@ function resolveEvidence(ev: ParsedEvidence | undefined): Config["evidence"] {
         bucket: ev.bucket,
         region: ev.region,
         cloudfrontDomain: ev.cloudfront_domain,
+        keyRoot: ev.key_root,
         keyPrefix: ev.key_prefix,
         githubUsername: ev.github_username,
         profile: ev.profile,
       };
     case "local":
-      return { publisher: "local", publicBaseUrl: ev.public_base_url, keyPrefix: ev.key_prefix, githubUsername: ev.github_username };
+      return { publisher: "local", publicBaseUrl: ev.public_base_url, keyRoot: ev.key_root, keyPrefix: ev.key_prefix, githubUsername: ev.github_username };
     case "command":
       return {
         publisher: "command",
         command: ev.command,
         timeoutSeconds: ev.timeout_seconds,
         publicBaseUrl: ev.public_base_url,
+        keyRoot: ev.key_root,
         keyPrefix: ev.key_prefix,
         githubUsername: ev.github_username,
       };
@@ -1283,12 +1298,12 @@ export interface Config {
   layouts: LayoutConfig[];
   /** Where the evidence step publishes captured media, discriminated by `publisher` (default `s3`).
    *  Undefined ⇒ no upload (the step still captures + can bounce). The delivery logic lives behind the
-   *  publisher interface in `clients/evidence.ts`; every variant shares `keyPrefix` + `githubUsername`
+   *  publisher interface in `clients/evidence.ts`; every variant shares `keyRoot` + `keyPrefix` + `githubUsername`
    *  so the key layout — and the "prefix + filename" URL shape — is backend-independent. */
   evidence?:
-    | { publisher: "s3"; bucket: string; region: string; cloudfrontDomain: string; keyPrefix: string; githubUsername?: string; profile?: string }
-    | { publisher: "local"; publicBaseUrl?: string; keyPrefix: string; githubUsername?: string }
-    | { publisher: "command"; command: string[]; timeoutSeconds: number; publicBaseUrl?: string; keyPrefix: string; githubUsername?: string };
+    | { publisher: "s3"; bucket: string; region: string; cloudfrontDomain: string; keyRoot: string; keyPrefix: string; githubUsername?: string; profile?: string }
+    | { publisher: "local"; publicBaseUrl?: string; keyRoot: string; keyPrefix: string; githubUsername?: string }
+    | { publisher: "command"; command: string[]; timeoutSeconds: number; publicBaseUrl?: string; keyRoot: string; keyPrefix: string; githubUsername?: string };
   guidance?: string;
   /** Repo-wide conventions injected into agent prompts. `commits` is free text or a file pointer
    *  (resolved at render time in step.ts); surfaced as @@COMMIT_CONVENTIONS@@. */
