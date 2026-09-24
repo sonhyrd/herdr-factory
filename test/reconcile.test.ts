@@ -329,6 +329,7 @@ function build(opts: { multi?: boolean } = {}) {
     originUrl: async () => "git@github.com:o/n.git",
     headSha: async () => state.headSha,
     dirtyStat: async () => state.dirtyStat,
+    excludeMemoryDir: async () => {},
     changedFiles: async () => state.changedFiles,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };

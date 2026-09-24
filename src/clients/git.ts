@@ -1,3 +1,5 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { run } from "./exec.ts";
 
 /** A fetch talks to the network, so it gets a tighter budget than the default exec timeout — a slow
@@ -100,6 +102,24 @@ export class GitClient {
   async branchRename(repoCwd: string, to: string): Promise<boolean> {
     const r = await run("git", ["-C", repoCwd, "branch", "-m", to], { allowFail: true });
     return r.code === 0;
+  }
+
+  /** Make git ignore `.memory/` (the factory's own per-run dir) in this checkout, via its
+   *  `info/exclude` — no tenant `.gitignore` edit, and it covers every branch, old PRs included. A
+   *  linked worktree shares the main checkout's `info/exclude`, so the append is idempotent: a line
+   *  already there is never repeated. Never throws — a missed exclude only risks a dirty-tree park. */
+  async excludeMemoryDir(repoCwd: string): Promise<void> {
+    const r = await run("git", ["-C", repoCwd, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], { allowFail: true });
+    const path = r.stdout.trim();
+    if (r.code !== 0 || !path) return;
+    try {
+      const cur = existsSync(path) ? readFileSync(path, "utf8") : "";
+      if (cur.split("\n").some((l) => l.trim() === ".memory/")) return;
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(path, `${cur && !cur.endsWith("\n") ? "\n" : ""}.memory/\n`);
+    } catch {
+      /* best-effort */
+    }
   }
 
   /** The worktree's uncommitted work as a diff stat, or null when the tree is CLEAN. The porcelain
