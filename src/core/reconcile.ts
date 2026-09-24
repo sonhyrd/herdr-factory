@@ -1470,6 +1470,9 @@ async function resumeAfterHumanReply(deps: Deps, run: Run, belt: BeltRuntime, sr
  *  TARGET step (feedback-<toStep>.md, overwritten on each bounce) so the target's prompt can surface
  *  it deterministically (see renderStepPromptImpl's rework banner). Returns the worktree-relative
  *  path (for the event + re-dispatch prompt), or null if the run has no worktree. */
+/** Cap on the bounce reason kept in a bounced/rework event's detail (the full text lives in the note). */
+export const BOUNCE_REASON_MAX = 500;
+
 function writeBounceNote(run: Run, sender: string, toStep: string, reason: string): string | null {
   if (!run.worktreePath) return null;
   const dir = join(run.worktreePath, MEMORY_DIR);
@@ -1637,7 +1640,10 @@ export async function bounceStep(
     repo,
     ticketKey: run.ticketKey,
     type: operator ? "rework" : "bounced",
-    detail: operator ? { by: watch ? "pr_watch" : "operator", fromStep, toStep, pass, bounces, notePath } : { fromStep, toStep, bounces, notePath },
+    // The note is deleted at teardown — keep the reason's head in the event so a retro can group bounces.
+    detail: operator
+      ? { by: watch ? "pr_watch" : "operator", fromStep, toStep, pass, bounces, notePath, reason: reason.slice(0, BOUNCE_REASON_MAX) }
+      : { fromStep, toStep, bounces, notePath, reason: reason.slice(0, BOUNCE_REASON_MAX) },
   });
   deps.log("info", `${run.ticketKey}: ${watch ? "PR watch reworked" : operator ? "operator reworked" : `${fromStep} bounced work back`} to ${toStep} (pass ${pass}, #${bounces})`);
 

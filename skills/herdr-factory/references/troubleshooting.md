@@ -201,7 +201,7 @@ whose step is already done advances it on the following pass.
 **Means**: a later step keeps rejecting the work and rewinding to an earlier one.
 
 ```sh
-herdr-factory --repo <r> timeline <KEY> | grep bounced        # detail: fromStep, toStep, bounces, notePath
+herdr-factory --repo <r> timeline <KEY> | grep bounced        # detail: fromStep, toStep, bounces, notePath, reason (first 500 chars)
 # and read the feedback the bouncer wrote:
 cat <worktree>/.memory/herdr-factory/feedback-<toStep>.md
 ls  <worktree>/.memory/herdr-factory/feedback-*-addressed-pass*.md

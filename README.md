@@ -454,7 +454,9 @@ renamed to; re-claiming the same ticket later gets a fresh worktree and a fresh 
 without merge → parked for [attention](#highlights).
 
 Bounces are per-target-step counted; past `max_bounces` (default 6, per-belt override, `0`
-disables bouncing) the run parks for attention instead of oscillating. Each station's engine
+disables bouncing) the run parks for attention instead of oscillating. Every `bounced` / `rework`
+event keeps the first 500 characters of its reason, so `timeline <KEY>` (and the `run` feed's first
+line) still says *why* after teardown deletes the feedback note. Each station's engine
 prompt can be augmented with your own `prompt_file` — see [Prompts](#prompts).
 
 **Sending a live run back yourself — `rework`.** A bounce is an *agent's* control: it is stamped

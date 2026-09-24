@@ -1433,7 +1433,9 @@ and the evidence step filmed a tree that was about to change.
   the three guards that exist to keep *agents* inside the belt's control flow — it lands from any
   park (not only the terminal-rescuable ones), ignores the issuing step's `canBounceTo`, and allows
   `idxTo === idxFrom` (re-run the running step) — and records a **`rework`** event
-  (`{by: "operator", fromStep, toStep, pass, bounces}`) instead of `bounced`. It is refused once the
+  (`{by: "operator", fromStep, toStep, pass, bounces, notePath, reason}`) instead of `bounced`
+  (`{fromStep, toStep, bounces, notePath, reason}`). `reason` is capped at `BOUNCE_REASON_MAX` (500)
+  chars — the feedback note is deleted at teardown, so the event is the only durable record of *why*. It is refused once the
   belt is over (`reviewing`/teardown): there is no step to rewind, only a PR. (The engine's own
   watch-phase rework — `by: "pr_watch"`, below — is the one path back from `reviewing`.) Unlike the agent
   signals it enqueues **no durable intent** — a person retries; an agent that has already stopped

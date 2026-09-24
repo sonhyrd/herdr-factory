@@ -434,7 +434,7 @@ The bouncer does **not** signal `step-done`, so once the target re-completes, th
 the still-not-done bouncer, bumping *its* pass and re-basing its clocks.
 
 The operator's **`rework <KEY> <toStep> --note "…"`** runs steps 1–5 identically (cap included) — it is
-the same engine path in operator mode — but records a `rework` event instead of `bounced`, lands from
+the same engine path in operator mode — but records a `rework` event instead of `bounced` (both keep the reason's first 500 chars in their detail), lands from
 any live phase including a park, ignores `canBounceTo`, and may target the step that is currently
 running. Forward, `reviewing` and teardown are refused. See [cli.md](./cli.md).
 

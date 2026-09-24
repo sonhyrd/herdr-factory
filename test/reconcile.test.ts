@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db/index.ts";
 import { Store } from "../src/db/store.ts";
-import { applyPendingFocus, bounceStep, claimTicket, teardownTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
+import { applyPendingFocus, BOUNCE_REASON_MAX, bounceStep, claimTicket, teardownTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
 import { applySignal } from "../src/core/signals.ts";
 import { createApp, type RepoRuntime, type ServerContext } from "../src/server/app.ts";
 import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
@@ -2084,6 +2084,18 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(existsSync(fb)).toBe(true);
     expect(readFileSync(fb, "utf8")).toContain("still 500s");
     expect(store.timeline("demo", "K-B1").some((e) => e.type === "bounced")).toBe(true);
+  });
+
+  it("bounce event detail keeps the reason, capped at BOUNCE_REASON_MAX (the note dies at teardown)", async () => {
+    const { deps, store, worktree, shipBelt } = build();
+    const run = seed(store, worktree, "K-BR", "running", "review");
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:pfix", done: true });
+    const reason = "The submit button still 500s.\n" + "x".repeat(2000);
+    await bounceStep(deps, store.getRun(run.id)!, shipBelt, deps.resolveSource("jira")!, "fix", reason);
+    const ev = store.timeline("demo", "K-BR").find((e) => e.type === "bounced")!;
+    const kept = (JSON.parse(ev.detail!) as { reason: string }).reason;
+    expect(kept.startsWith("The submit button still 500s.")).toBe(true);
+    expect(kept.length).toBe(BOUNCE_REASON_MAX);
   });
 
   it("bounce whose target pane is dead respawns it — the re-rendered prompt carries the rework banner + feedback pointer", async () => {
