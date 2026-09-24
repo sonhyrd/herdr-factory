@@ -1128,6 +1128,11 @@
               "type": "string",
               "minLength": 1
             },
+            "key_root": {
+              "default": "herdr-factory",
+              "type": "string",
+              "minLength": 1
+            },
             "key_prefix": {
               "default": "",
               "type": "string"
@@ -1156,6 +1161,11 @@
               "const": "local"
             },
             "public_base_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key_root": {
+              "default": "herdr-factory",
               "type": "string",
               "minLength": 1
             },
@@ -1203,6 +1213,11 @@
               "maximum": 9007199254740991
             },
             "public_base_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key_root": {
+              "default": "herdr-factory",
               "type": "string",
               "minLength": 1
             },

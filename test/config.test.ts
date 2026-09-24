@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { loadConfig, assertMainCheckout, expandHome, configJsonSchema, evidenceKeyPrefix, RepoConfigSchema } from "../src/config.ts";
+import { createEvidencePublisher } from "../src/clients/evidence.ts";
 import { DEFAULT_BRANCH_TAXONOMY, branchName } from "../src/core/branch.ts";
 import { DEFAULT_AGENT_CONFIG } from "../src/types.ts";
 import type { JiraSourceCfg } from "../src/clients/jira-source.ts";
@@ -1540,6 +1541,48 @@ describe("loadConfig — work sources + belts", () => {
     expect(ev.publicBaseUrl).toBe("https://evidence.example.test"); // trailing slash stripped
   });
 
+  it("key_root unset ⇒ the evidence key prefix is byte-identical to before (herdr-factory/…)", () => {
+    setup(
+      `repo:\n  path: __REPO__\nwork_sources:\n${JIRA_SRC}belt:\n${SHIP_BELT}evidence:
+  publisher: command
+  command: ./publish-evidence.sh
+  key_prefix: proj
+`,
+      { prompts: {} },
+    );
+    const ev = loadConfig("demo").config.evidence!;
+    expect(ev.keyRoot).toBe("herdr-factory");
+    expect(evidenceKeyPrefix({ keyRoot: ev.keyRoot, githubUsername: "alice", keyPrefix: ev.keyPrefix, ticketKey: "HF-1", runId: 5, stamp: "T" })).toBe("herdr-factory/alice/proj/HF-1/5-T");
+  });
+
+  it("key_root renames the first key segment, and the predicted command URLs follow it", () => {
+    setup(
+      `repo:\n  path: __REPO__\nwork_sources:\n${JIRA_SRC}belt:\n${SHIP_BELT}evidence:
+  publisher: command
+  command: ./publish-evidence.sh
+  public_base_url: https://evidence.example.test
+  key_root: hf
+`,
+      { prompts: {} },
+    );
+    const ev = loadConfig("demo").config.evidence!;
+    expect(ev.keyRoot).toBe("hf");
+    const prefix = evidenceKeyPrefix({ keyRoot: ev.keyRoot, githubUsername: "alice", keyPrefix: ev.keyPrefix, ticketKey: "HF-1", runId: 5, stamp: "T" });
+    expect(prefix).toBe("hf/alice/HF-1/5-T");
+    expect(createEvidencePublisher(ev).predictUrls(prefix, ["shot.png"])).toEqual(["https://evidence.example.test/hf/alice/HF-1/5-T/shot.png"]);
+  });
+
+  it.each(["a/b", "..", "a..b", "h f"])("rejects key_root %j (one path segment only), naming the key", (root) => {
+    setup(
+      `repo:\n  path: __REPO__\nwork_sources:\n${JIRA_SRC}belt:\n${SHIP_BELT}evidence:
+  publisher: local
+  key_root: ${JSON.stringify(root)}
+`,
+      { prompts: {} },
+    );
+    expect(() => loadConfig("demo")).toThrow(/key_root/);
+  });
+
   it("resolves a `command` publisher with an argv array + explicit timeout", () => {
     setup(
       `repo:\n  path: __REPO__\nwork_sources:\n${JIRA_SRC}belt:\n${SHIP_BELT}evidence:
@@ -1769,10 +1812,10 @@ describe("configJsonSchema", () => {
 
 describe("evidenceKeyPrefix", () => {
   it("builds herdr-factory / user / key_prefix / ticket / run-stamp, dropping empty segments", () => {
-    expect(evidenceKeyPrefix({ githubUsername: "alice", keyPrefix: "proj", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/alice/proj/RWR-1/5-T");
-    expect(evidenceKeyPrefix({ keyPrefix: "proj", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/proj/RWR-1/5-T"); // no username
-    expect(evidenceKeyPrefix({ githubUsername: "alice", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/alice/RWR-1/5-T"); // no key_prefix
-    expect(evidenceKeyPrefix({ ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/RWR-1/5-T"); // neither → base only
+    expect(evidenceKeyPrefix({ keyRoot: "herdr-factory", githubUsername: "alice", keyPrefix: "proj", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/alice/proj/RWR-1/5-T");
+    expect(evidenceKeyPrefix({ keyRoot: "herdr-factory", keyPrefix: "proj", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/proj/RWR-1/5-T"); // no username
+    expect(evidenceKeyPrefix({ keyRoot: "herdr-factory", githubUsername: "alice", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/alice/RWR-1/5-T"); // no key_prefix
+    expect(evidenceKeyPrefix({ keyRoot: "herdr-factory", ticketKey: "RWR-1", runId: 5, stamp: "T" })).toBe("herdr-factory/RWR-1/5-T"); // neither → base only
   });
 });
 
