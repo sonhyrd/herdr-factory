@@ -87,7 +87,10 @@ scenario(
     expect(ev.data.fromStep).toBe("evidence");
     expect(ev.data.toStep).toBe("work");
     expect(ev.data.pass).toBe(2);
-    expect(w.factory.cli(["timeline", key]).stdout, "`timeline` prints it").toMatch(/rework/);
+    expect(ev.data.reason, "the event keeps the operator's note (#113)").toBe(NOTE);
+    const timeline = w.factory.cli(["timeline", key]).stdout;
+    expect(timeline, "`timeline` prints it").toMatch(/rework/);
+    expect(timeline, "`timeline` shows the note").toContain(NOTE);
 
     // The note reaches the agent where a bounce's findings do: the feedback file, surfaced by the
     // rework banner at the very top of the re-rendered prompt.

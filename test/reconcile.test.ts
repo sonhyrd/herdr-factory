@@ -4616,7 +4616,7 @@ describe("operator rework — the operator's counterpart to an agent bounce", ()
     const ev = store.timeline("demo", "K-RW1").find((e) => e.type === "rework");
     expect(ev, "a rework event is on the timeline").toBeTruthy();
     const detail = JSON.parse(ev!.detail ?? "{}");
-    expect(detail).toMatchObject({ by: "operator", fromStep: "review", toStep: "fix", pass: 2 });
+    expect(detail).toMatchObject({ by: "operator", fromStep: "review", toStep: "fix", pass: 2, reason: "the narrow viewport still clips the toast" });
     // The note reaches the agent the same way a bounce's findings do: the rework banner + feedback file.
     expect(readFileSync(join(worktree, ".memory/herdr-factory/feedback-fix.md"), "utf8")).toContain("narrow viewport");
     expect(readFileSync(join(worktree, ".memory/herdr-factory/prompt-fix.md"), "utf8")).toContain("Rework requested — READ THIS FIRST");
