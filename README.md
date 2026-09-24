@@ -624,6 +624,10 @@ another host is not "ready" here.
   markdown sources), parks
   the run as `waiting_for_human` — **freeing its concurrency slot** — polls for the reply every
   30 seconds, then writes the answer into the worktree and resumes the same step automatically.
+  Because a waiting run holds no slot, the fleet can look healthy while a question sits unseen —
+  so posting it sends a notification (the question's first line + the item's URL), repeated every
+  `attention_renotify_seconds` until it is answered. A run that ends (done, abandoned, torn down)
+  closes its still-pending question as `abandoned`.
   The wait is never a trap: an agent that gets past the blocker on its own and signals `step-done`
   (or bounces the work back) un-parks the run and moves the belt on, closing the now-moot question
   with a note on the ticket so nobody answers into the void.
@@ -783,7 +787,7 @@ would build nothing into the new workspace.
 | Key                          | Default | Meaning                                                         |
 | ---------------------------- | ------- | --------------------------------------------------------------- |
 | `max_active_workspaces`      | 3       | cap on concurrently **worked** workspaces (one per run); parked + idle PR-watch runs hold no slot |
-| `attention_renotify_seconds` | 3600    | re-notify cadence for parked runs                               |
+| `attention_renotify_seconds` | 3600    | re-notify cadence for parked runs and unanswered ask-human questions |
 | `step_budget_seconds`        | 3600    | fallback per-step budget — used when a step sets no `budget_seconds` and its primitive declares no default (`work` 5400 · `evidence` 2400 · `review` 1800 · `pr` 3600) |
 | `stall_seconds`              | 2700    | no new commits for this long → attention (heartbeat steps only) |
 | `idle_nudge_seconds`         | 300     | a running step whose pane sits at its prompt this long is re-prompted **once** ("if you're done, write the handoff and run step-done") before any watchdog trips; `0` disables it |

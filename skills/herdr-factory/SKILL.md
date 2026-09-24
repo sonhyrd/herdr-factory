@@ -191,7 +191,8 @@ Use these words precisely; the config and the CLI both key off them.
 - **attention / parked** — a run stopped for a human. Holds no concurrency slot; `resume <KEY>` puts it
   back with fresh clocks.
 - **ask-human** — an agent asking a question through the work source; the run waits, frees its slot, and
-  resumes the same step when a reply arrives.
+  resumes the same step when a reply arrives. Posting notifies (`<KEY> asks a human`), re-notified every
+  `attention_renotify_seconds` while unanswered; ending the run closes the question as `abandoned`.
 - **the outbox / intents** — durable, retried side effects (source status write-backs, evidence uploads).
 - **tick** — one reconcile pass over a repo (default every 60s): flush the outbox, advance every active
   run, then claim new work.

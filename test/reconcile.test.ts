@@ -2022,6 +2022,43 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.agentSend.at(-1)?.[1]).toContain("Human guidance has arrived");
   });
 
+  it("ask-human notifies once, then renotifies once per attention_renotify_seconds window while pending", async () => {
+    const { deps, store, worktree, calls, setNow } = build();
+    const run = seed(store, worktree, "K-ASKN", "running", "fix");
+    await requestHumanInput(deps, run, "fix", "Which toast wins?\nlong context here");
+    expect(calls.notify).toBe(1);
+    expect(calls.notified[0]?.[0]).toContain("K-ASKN asks a human");
+    expect(calls.notified[0]?.[1]).toContain("Which toast wins?");
+    expect(calls.notified[0]?.[1]).not.toContain("long context");
+
+    const tick = async (t: number) => {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    };
+    await tick(1000);
+    await tick(1000 + 3599);
+    expect(calls.notify).toBe(1); // inside the window: never more
+    await tick(1000 + 3600);
+    expect(calls.notify).toBe(2);
+    expect(calls.notified[1]?.[0]).toContain("still waiting for a human");
+    await tick(1000 + 3601);
+    await tick(1000 + 7199);
+    expect(calls.notify).toBe(2);
+    await tick(1000 + 7200);
+    expect(calls.notify).toBe(3);
+  });
+
+  it("ending a run leaves no pending question for it", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-ASKEND", "running", "fix");
+    const asked = await requestHumanInput(deps, run, "fix", "which toast?");
+    await teardownTicket(deps, "K-ASKEND");
+    expect(store.getRun(run.id)!.endedAt).not.toBeNull();
+    expect(store.pendingHumanQuestionForRun(run.id)).toBeUndefined();
+    expect(store.getHumanQuestion(asked.questionId)!.status).toBe("abandoned");
+    expect(store.listIntents("demo", { runId: run.id, kind: "human_reply_poll", status: "waiting" })).toHaveLength(0);
+  });
+
   it("running fix + step-done fix → review (spawns review agent, no Jira move; wires the handoff)", async () => {
     const { deps, store, worktree, calls } = build();
     const run = seed(store, worktree, "K-4", "running", "fix");
