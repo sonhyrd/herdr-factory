@@ -1525,7 +1525,7 @@ export function configLoadError(repoName: string): string | null {
   } catch {
     /* missing — loadConfig says so */
   }
-  const hit = configChecks.get(repoName);
+  const hit = configChecks.get(ymlPath);
   if (hit && hit.mtimeMs === mtimeMs) return hit.error;
   let error: string | null = null;
   try {
@@ -1534,7 +1534,7 @@ export function configLoadError(repoName: string): string | null {
     const lines = (e instanceof Error ? e.message : String(e)).split("\n");
     error = lines.length > 1 ? lines.slice(1).map((l) => l.trim()).join("; ") : lines[0]!;
   }
-  configChecks.set(repoName, { mtimeMs, error });
+  configChecks.set(ymlPath, { mtimeMs, error });
   return error;
 }
 
