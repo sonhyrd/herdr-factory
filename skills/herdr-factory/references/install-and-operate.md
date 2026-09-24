@@ -210,6 +210,16 @@ The main-checkout sweep has its own check, reading `<stateRoot>/checkout-sync.js
 | `⚠ main checkouts up to date — chrysus: diverged, skipped (4m ago)` | local commits that aren't on `origin/main` — resolve by hand |
 | `✓ main checkouts up to date — no sync recorded yet …` | fresh box (the first sweep runs on the next `ensure-up` tick) |
 
+The live config dir (`~/.config/herdr-factory`) is never synced — the operator rolls it out by hand —
+so `live config up to date` compares its HEAD with `origin/main` (`--deep` fetches first; the shallow
+run uses the last-fetched ref) and lists tracked files with local edits. Amber-or-green; it never pulls:
+
+| doctor line | Meaning |
+|---|---|
+| `✓ live config up to date — at origin/main` | healthy (`… as of the last fetch (--deep fetches)` on a shallow run) |
+| `⚠ live config up to date — live config 3 commit(s) behind origin/main (<oldest missing subject>) …` | merged config changes not rolled out — `git pull --ff-only` in the config dir |
+| `⚠ live config up to date — uncommitted changes to repos/x/config.yml …` | hand edits on this host — commit them upstream or discard them |
+
 The **skill bundle** rides along: `herdr-factory skill install` defaults to a *symlink* into
 `~/.claude/skills/herdr-factory`, so an auto-update keeps the skill in lock-step with the engine. A
 `--copy`/`--into <checkout>` installation does not.
@@ -618,7 +628,7 @@ must revert that file yourself if `blocked` comes back non-empty.
 ### The Doctor tab is not `doctor --deep`
 
 `src/tui/doctor.ts` calls `baseGroups()`: the machine-wide groups only — *managed by
-herdr-factory* (`node runtime >= 26`, `auto-update`, `main checkouts up to date`, `supervisor service`, `server`, `database`) and
+herdr-factory* (`node runtime >= 26`, `auto-update`, `main checkouts up to date`, `live config up to date`, `supervisor service`, `server`, `database`) and
 *you provide* (`git`, `herdr`, `gh`, `claude`). `r` re-runs the shallow checks; `d` runs the deep ones
 (`gh auth status`, `herdr workspace list`). The banner reads
 `● all checks passed (shallow) · r: re-run · d: deep` or

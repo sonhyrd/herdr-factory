@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/clients/exec.ts";
-import { checkoutSyncCheck } from "../src/doctor.ts";
+import { checkoutSyncCheck, liveConfigCheck } from "../src/doctor.ts";
 import { syncCheckouts, splitBaseRef, type CheckoutTarget } from "../src/watchers/checkouts.ts";
 
 const tmps: string[] = [];
@@ -187,5 +187,43 @@ describe("checkoutSyncCheck", () => {
     );
     expect(amber.warn).toBe(true);
     expect(amber.detail).toContain("b: dirty tree, skipped");
+  });
+});
+
+// The live config dir is rolled out by hand; doctor only reports how far it lags (issue #115).
+describe("liveConfigCheck", () => {
+  it("warns with the count and first subject when behind, ✓ once current — without moving HEAD", async () => {
+    const { seed, local } = await setup();
+    const head = await git(local, "rev-parse", "HEAD");
+    await commit(seed, "app.txt", "v2", "fix the port race");
+    await commit(seed, "app.txt", "v3", "c3");
+    await git(seed, "push", "-q", "origin", "main");
+
+    const behind = await liveConfigCheck(local, true);
+    expect(behind.ok).toBe(true);
+    expect(behind.warn).toBe(true);
+    expect(behind.detail).toContain("live config 2 commit(s) behind origin/main (fix the port race)");
+    expect(await git(local, "rev-parse", "HEAD")).toBe(head); // fetch only, never a pull
+
+    await git(local, "merge", "-q", "--ff-only", "origin/main");
+    const current = await liveConfigCheck(local, true);
+    expect(current.warn).toBeUndefined();
+    expect(current.detail).toBe("at origin/main");
+  });
+
+  it("warns naming a modified tracked file, ignoring untracked ones", async () => {
+    const { local } = await setup();
+    writeFileSync(join(local, "app.txt"), "edited");
+    writeFileSync(join(local, "scratch.txt"), "untracked");
+    const dirty = await liveConfigCheck(local);
+    expect(dirty.warn).toBe(true);
+    expect(dirty.detail).toContain("uncommitted changes to app.txt");
+    expect(dirty.detail).not.toContain("scratch.txt");
+  });
+
+  it("is quiet when the dir is not a git checkout", async () => {
+    const r = await liveConfigCheck(mkTmp("ck-plain-"));
+    expect(r.warn).toBeUndefined();
+    expect(r.detail).toContain("not a git checkout");
   });
 });

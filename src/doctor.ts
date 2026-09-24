@@ -22,7 +22,8 @@ import { pingHealth, readServerInfo } from "./server/client.ts";
 import { HERDR_AGENT_KINDS } from "./types.ts";
 import * as service from "./watchers/service.ts";
 import { ago, readUpdateStatus, updateChannel, updateStalled } from "./watchers/update-status.ts";
-import { readCheckoutSync, type CheckoutSync } from "./watchers/checkouts.ts";
+import { CHECKOUT_GIT_TIMEOUT_MS, readCheckoutSync, type CheckoutSync } from "./watchers/checkouts.ts";
+import { configDir } from "./config-paths.ts";
 
 /** One check's outcome. `detail` is extra context: a version/path/endpoint on success, or the
  *  failure reason on ✗. `warn` marks an amber (not-a-failure) state — a healthy check that still
@@ -101,6 +102,34 @@ export function checkoutSyncCheck(state: Record<string, CheckoutSync> = readChec
   const stale = entries.filter((c) => c.outcome === "skipped" || c.outcome === "failed");
   const detail = entries.map(line).join(" · ");
   return stale.length > 0 ? { name, ok: true, warn: true, detail } : { name, ok: true, detail };
+}
+
+/** The live config dir (`~/.config/herdr-factory`) vs its `origin/main` (issue #115). Rollout there
+ *  is manual — nothing syncs it (see watchers/checkouts.ts) — so it silently fell behind merged
+ *  fixes on every host. Amber when HEAD is behind `origin/main` or a tracked file has local edits.
+ *  Never a ✗, and never touches the checkout: `fetch` (only under --deep — the shallow doctor makes
+ *  no network calls, so it compares against the last-fetched ref) moves remote-tracking refs only. */
+export async function liveConfigCheck(dir = configDir(), fetch = false): Promise<DoctorCheck> {
+  const name = "live config up to date";
+  if (!existsSync(join(dir, ".git"))) return { name, ok: true, detail: `${dir} is not a git checkout — nothing to compare` };
+  // Lazy: updater.ts's Effect stack stays out of doctor's import graph (see CHECKOUT_GIT_TIMEOUT_MS).
+  const { execBounded } = await import("./watchers/updater.ts");
+  const git = (...args: string[]) => execBounded("git", args, dir, CHECKOUT_GIT_TIMEOUT_MS);
+  try {
+    if (fetch) await git("fetch", "origin", "--quiet");
+    const warns: string[] = [];
+    const behind = Number(await git("rev-list", "--count", "HEAD..origin/main"));
+    if (behind > 0) {
+      const first = (await git("log", "--reverse", "--format=%s", "HEAD..origin/main")).split("\n")[0];
+      warns.push(`live config ${behind} commit(s) behind origin/main (${first})${fetch ? "" : " as of the last fetch"}`);
+    }
+    const dirty = (await git("diff", "--name-only", "HEAD")).split("\n").filter(Boolean); // staged + unstaged, tracked only
+    if (dirty.length > 0) warns.push(`uncommitted changes to ${dirty.join(", ")}`);
+    if (warns.length > 0) return { name, ok: true, warn: true, detail: `${warns.join(" · ")} — roll out by hand in ${dir}` };
+    return { name, ok: true, detail: `at origin/main${fetch ? "" : " as of the last fetch (--deep fetches)"}` };
+  } catch (e) {
+    return { name, ok: true, warn: true, detail: `could not check — ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 /** Dev servers that outlived their run (or its park): a LISTENing process whose cwd is inside
@@ -444,6 +473,7 @@ export async function baseGroups(deep = false, repo?: string): Promise<DoctorGro
     }),
     updateCheck(),
     Promise.resolve(checkoutSyncCheck()),
+    liveConfigCheck(configDir(), deep),
     attempt("supervisor service", async () => {
       if (!(await service.isLoaded())) throw new Error("not loaded — run `herdr-factory install`");
     }),
