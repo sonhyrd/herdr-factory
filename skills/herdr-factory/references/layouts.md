@@ -186,7 +186,13 @@ children (the actual server, its esbuild helpers) go with it. It is **never a pa
 (`pkill -f`/`killall` would take out other runs' servers on the same host), and never fatal: no
 file, an unreadable one, or a port nothing is listening on is one log line.
 
-Already-leaked servers: `herdr-factory doctor --deep` lists them (pid, port, cwd) and never kills —
+The same kill runs **at every step change and every park** — step-done advance (and the hand-off to
+the PR watch), bounce, operator `rework`, attention park, `ask-human` — so a dev-server `command:`
+pane is **killed when its step ends and is not restarted**: the next step starts whatever server it
+needs itself. Each kill is a `dev_server_stopped` event in `timeline` (port, pid(s), RSS, why).
+
+Already-leaked servers: `herdr-factory doctor --deep` lists them (pid, port, RSS, cwd) — including a
+listener in a **parked** run's worktree — and never kills —
 see [troubleshooting.md](./troubleshooting.md) §4.
 
 ## Claude Code's folder-trust prompt

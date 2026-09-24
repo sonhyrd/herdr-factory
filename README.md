@@ -1463,7 +1463,7 @@ silently. Omit `layouts` (and a belt's
 `default_layout`/`layout_matching`) and steps just spawn their own dedicated panes — zero layout
 setup required.
 
-#### Dev servers: tell teardown which port is yours (`hf-port`)
+#### Dev servers: tell the factory which port is yours (`hf-port`)
 
 A dev server started in a layout pane is **reparented** when the workspace closes, so without help
 it outlives its own worktree — holding its port (the next run's server then silently moves up the
@@ -1485,9 +1485,19 @@ with it). It is never a pattern kill (`pkill`/`killall` would take out other run
 same host), and never fatal: no file, an unreadable one, or a port nothing is listening on is one
 log line and teardown carries on.
 
+The same kill runs **at every step change and every park**, not only at teardown: on a step-done
+advance (and the hand-off to the PR watch), a bounce, an operator `rework`, a park for attention and
+an `ask-human`. A dev server the work step started would otherwise hold its port and its memory
+through evidence, review and any park — memory the gate counts as free. The next step starts
+whatever server it needs itself (the work prompt also tells the agent to stop its own server before
+`step-done`; the engine kill is the guarantee). Each kill is a `dev_server_stopped` event in
+`timeline` with the port, pid(s), RSS and why. A run with no `hf-port` transitions exactly as before.
+A layout `command:` pane running the dev server is killed too, and is not restarted — start it from
+the step that needs it.
+
 Already leaked? `herdr-factory doctor --deep` lists any listener running inside `~/.herdr/worktrees`
-with no live run — the orphans, with pid, port and cwd. It only reports; teardown is the only thing
-that kills, and only ever its own run's port.
+with no live, **unparked** run — the orphans, with pid, port, RSS and cwd. It only reports; the
+engine kills only ever its own run's port.
 
 ### Prompts
 

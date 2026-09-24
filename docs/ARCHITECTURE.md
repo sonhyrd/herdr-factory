@@ -960,7 +960,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
-pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
+pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · dev_server_stopped · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
 match on (the e2e suite asserts exactly that).
@@ -1933,7 +1933,7 @@ checkout has checked out — are skipped with a warning: a worktree that ended u
 accident, and deleting a shared branch is not teardown's job. The remote/PR branch is GitHub's
 domain (merge auto-delete or left as-is).
 
-### The dev server dies with its run (the `hf-port` handshake, `core/dev-server.ts`)
+### The dev server dies with its step (the `hf-port` handshake, `core/dev-server.ts`)
 
 Steps 1–5 touch workspaces, dirs and refs — never processes. A dev server started inside a layout
 pane is **reparented** when the workspace closes, so it outlived its own worktree and kept its port
@@ -1957,9 +1957,22 @@ pattern kill**: no `pkill -f`, no `killall`, or a host running three or four run
 siblings' servers. Only the pid(s) holding this run's own port.
 
 A missing, unreadable or implausible `hf-port`, and a port nothing is listening on, are each **one
-log line and carry on** — teardown must never fail because a server was already gone. `doctor
---deep` reports what already leaked; it never kills, because teardown is the only thing that
-kills and only ever its own run's port.
+log line and carry on** — teardown must never fail because a server was already gone.
+
+**Not only at teardown — at every step change and park** (`stopDevServer` in `core/reconcile.ts`).
+A work step's `pnpm dev` otherwise keeps its port and its RSS through evidence, review and any park
+(a 2.4 GB `nuxt dev` starved a sibling run's `pnpm build`). So the same kill runs, under the run
+lock, when a step-done advances to the next step (after the tree guard, before the pointer moves)
+or hands off to the PR watch, when `bounceStep` rewinds (agent bounce and operator rework alike),
+in `escalateAttention` (every attention park, including the bounce cap and the tree guard) and in
+`requestHumanInput` (waiting_for_human). The next step starts whatever server it needs itself. A
+kill that found a listener records a `dev_server_stopped` event — `{port, pids, rssKb, why, step}`
+(RSS read just before the SIGTERM) — which `timeline` and the `run` feed show. No `hf-port` ⇒ a
+no-op, so a run without the handshake transitions exactly as before.
+
+`doctor --deep` reports what already leaked — a listener under the worktrees root whose run is
+finished **or parked** (`Store.workingWorktreePaths` excludes `attention`/`waiting_for_human`),
+with its RSS. It never kills: the engine kills only its own run's port.
 
 The terminal status write-back (`merged`/`aborted`/`done`) is **enqueued in the transition
 outbox before cleanup** and attempted immediately — teardown never blocks on it, and a failed
@@ -2651,11 +2664,13 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   the worktree is deregistered). `worktree remove` can exit 0 yet leak the workspace+dir, so
   the fallbacks are active, not defensive-only. This sequence lives once in
   `removeRunWorktree` (teardown + belt deletion share it).
-- **Teardown kills the run's own dev server, and only that** (§9): the port comes from
-  `<git dir>/hf-port`, read BEFORE the `rmrf`; the kill targets the LISTENER's process group after
-  the workspace is closed. Never a pattern kill (`pkill -f`/`killall` would take out sibling runs
-  on the same host), and never fatal — a missing port file or a dead server is one log line.
-  `doctor --deep` reports orphaned worktree listeners; nothing but teardown kills.
+- **The engine kills the run's own dev server, and only that** (§9): at every step change (advance,
+  bounce, rework), every park (attention, waiting_for_human) and teardown — all through
+  `stopDevServer`. The port comes from `<git dir>/hf-port` (teardown reads it BEFORE the `rmrf`);
+  the kill targets the LISTENER's process group. Never a pattern kill (`pkill -f`/`killall` would
+  take out sibling runs on the same host), and never fatal — a missing port file or a dead server
+  is one log line. `doctor --deep` reports orphaned worktree listeners (finished or parked runs);
+  it never kills.
 - **A run is identified by its WORKTREE, never by its branch** (§7, *Branch tracking*).
   `runs.worktree_name` is frozen at claim; `runs.branch` follows the worktree (an agent may rename
   it to the repo's convention). Anything that must find or clean up a run — the layout hook's
