@@ -46,7 +46,7 @@ export interface RunObligations {
     /** Bounce-cap counters (keyed by TARGET step) that have counted at least one bounce. */
     bounceCaps: { step: string; count: number; max: number }[];
     /** The active step's idle-nudge episode, when one is open: `idleSince` = when its pane was
-     *  first seen at its prompt, `nudgedAt` = when the one nudge of this episode was sent (null =
+     *  first seen at its prompt, `nudgedAt` = when the latest nudge of this episode was sent (null =
      *  the window hasn't elapsed yet). Null when nothing is idle, or the nudge is disabled. */
     idleNudge: { idleSince: number | null; nudgedAt: number | null } | null;
   };

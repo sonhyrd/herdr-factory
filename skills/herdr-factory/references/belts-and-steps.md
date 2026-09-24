@@ -138,7 +138,7 @@ within `limits.stall_seconds` (default **2700**) parks `step_stalled`. **budget*
 past `budget_seconds` (5400). Both guards **veto while the pane state is `working`** — a live agent is
 never parked by a timer (logged `past <what> but still working — extending`). Both are rescued by a
 genuine later `step-done` or `bounce`. Before either can trip, an agent that has sat at its prompt for
-`limits.idle_nudge_seconds` (default **300**) is re-prompted once — see the idle nudge in
+`limits.idle_nudge_seconds` (default **300**) is re-prompted, and again at 2× with its exact step-done command — see the idle nudge in
 `references/architecture.md` §10. `work` never opens a PR and never touches the item's status. Its prompt runs each of the repo's
 lint/type-check/test commands through the **gate wrapper** (`@@GATE_CMD@@` →
 `herdr-factory gate <key> <name> -- <cmd>`), which records a receipt pinned to the commit it ran at,

@@ -1790,24 +1790,35 @@ agent isn't actively `working`, or stalled past `stall_seconds`, the run → `at
 drifted off — and never ran `step-done`: perfectly alive, sitting at its prompt, invisible until a
 watch expires 45-60 minutes later and parks the run for a human who types `resume` and watches it
 finish in three. So a step whose watches evaluated to *none* and whose pane has been continuously
-`isReadyForInput` for `limits.idle_nudge_seconds` (default 300, `0` disables) is re-prompted once,
+`isReadyForInput` for `limits.idle_nudge_seconds` (default 300, `0` disables) is re-prompted,
 with the same message `resume` sends (continue the step, re-read its prompt and `TASKS.md` if it exists) — both callers go through one `nudgeStepAgent` helper, because
 a drift in the TEXT between them would be a silent bug. The nudge parks nothing; it only tries to
 make the park unnecessary.
 
-Three rules keep it cheap and non-destructive:
+Four rules keep it cheap and non-destructive:
 
-- **Once per idle EPISODE, not per tick.** The mark is one `watch_state` row (`run`, the step,
-  `idle_nudge`) — no new run column, the same shape as the `pr_green` mark: `based_at` = when the
-  pane was first seen idle, `sig` = the branch HEAD at the moment the nudge went out. The episode
-  ends — and the row clears — when the pane goes `working` again, or when HEAD moves (a turn can
-  start and finish between two ticks, so `working` alone would miss it). Idle → nudge → work → idle
-  is two nudges; idle for an hour is one. A `resume` clears the row too: the step starts over.
+- **At most two nudges per idle EPISODE, not one per tick.** The first goes out at the window, the
+  second at 2× the window and carries the step's exact `herdr-factory … step-done … --pass N` command
+  (an agent that ignored "run the command from your prompt" often runs a command it is handed). The
+  mark is one `watch_state` row (`run`, the step, `idle_nudge`) — no new run column: `based_at` =
+  when the pane was first seen idle, `sig` = the branch HEAD when the latest nudge went out, `meta` =
+  `{pass, n, at, rev, over, held}` (nudges sent, when the latest went out, the last pane revision
+  seen, and the park-hold marks below). A row whose `meta.pass` is not the step's current pass reads
+  as empty. The episode ends — clock and count clear — when the pane goes `working` again, or when
+  HEAD moves (a turn can start and finish between two ticks, so `working` alone would miss it). A
+  `resume` clears the row too: the step starts over.
+- **`unknown` panes only when proven quiet.** A harness with no herdr lifecycle hooks (cursor-agent)
+  reports `unknown` forever. Its pane is nudged only once herdr's per-pane `revision` has held still
+  for the whole window — a revision that moved since the last tick counts exactly like `working`,
+  and a herdr that reports no revision means the pane is never nudged. Its nudge goes down the
+  confirmed path followed by one `enter` key (`agent send-keys`): Cursor can take the text into its
+  input box without submitting it, and a revision probe can't tell that from a real submission. The
+  revision is re-read after the send, so the nudge's own echo is not mistaken for the agent working.
 - **Memoized pane state, never `fresh: true`.** The resume path forces a fresh read because it is a
   one-shot interactive action; this runs every tick for every running step, so it rides the ~5s
   agent-list memo — otherwise it re-adds the O(runs) herdr call per tick the batched snapshot work
   exists to avoid (asserted in the `idle-nudge` e2e lane, the way `graphqlCallCount` is for the PR watch).
-- **Fire-and-forget, never `confirm`.** `agentSend({ confirm: true })` is `agent prompt --wait
+- **Fire-and-forget for idle/done panes, never `confirm`.** `agentSend({ confirm: true })` is `agent prompt --wait
   --until working --timeout 20s`, and both callers run inside the run lock. For a human resume that
   is fine — one action, one run. For the per-tick nudge it is self-defeating: the lock it would pin
   for up to 20s is the same lock the `step-done` it is trying to elicit needs, so the agent's signal
@@ -1815,10 +1826,22 @@ Three rules keep it cheap and non-destructive:
   agent that never reports `working` (a quiet harness) makes that the common case. So the idle nudge
   submits and moves on; its `nudged` flag means "herdr accepted the submission", and the next tick's
   pane state says the rest for free. Only `resume` keeps `{ fresh: true, confirm: true }`, where
-  `nudged` still means "the agent demonstrably woke up".
+  `nudged` still means "the agent demonstrably woke up" — and an `unknown` pane, which has no other
+  way to show the prompt landed.
+
+**The park hold.** The nudge runs only when the watches say *none*, so a step whose budget or stall
+window expired while its agent was `working` (the veto extends it) used to park on the very first
+tick that found the agent at its prompt — the nudge never got a look (this is how runs parked on
+`step_budget` with worker `done` and no `idle_nudge` event at all, when the agent finished a turn
+after its budget, or after a tick gap). So an extend stamps `meta.over`, and a later `step_budget` /
+`step_stalled` park against an idle, done or `unknown` pane of that step is **held** while the
+nudges run: at most 3× the window from the first held tick, and not at all once both nudges are out
+and a window has passed since the second. A step that never ran over, a dead or blocked pane, and
+a plugin watch's trip all park exactly as before.
 
 A `working` pane is never nudged (injecting a foreign turn interleaves two conversations) and a gone
-pane is the respawn machinery's job. Each nudge records an `idle_nudge` event, and `explain`'s
+pane is the respawn machinery's job. Each nudge records an `idle_nudge` event (`detail.nth` = 1 or
+2, `detail.worker`), and `explain`'s
 `step_budget` / `step_stalled` narratives report it — "the engine already nudged this idle agent N
 ago and it still never signalled" is what tells an operator this is a wedged agent, not a slow one.
 

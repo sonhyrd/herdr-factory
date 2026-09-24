@@ -513,8 +513,9 @@ Both forms end with the ready-made
 | *(a plugin guard's reason)* | a registered `GuardSpec` + evaluator | evaluator-defined | per its `autoRescueOnDone` / `autoRespawnLimit` | `obligations` reports the derived `rescue` class |
 
 Both `step_budget` and `step_stalled` should now be **rare for a merely forgetful agent**: an idle
-pane is re-prompted once after `limits.idle_nudge_seconds` (default 300) long before either window
-expires, and `explain <KEY>` says so — *"The engine already nudged this idle agent N ago and it still
+pane is re-prompted after `limits.idle_nudge_seconds` (default 300) and again at 2× with its exact
+step-done command, long before either window expires (and a window that ran out while the agent was
+working holds its park for those nudges, ≤ 3× the window), and `explain <KEY>` says so — *"The engine already nudged this idle agent N ago and it still
 never signalled — that is a wedged agent, not a slow one."* When you see that line, `resume` will
 probably not help either: the agent is stuck, not slow. Check the pane itself. A park with **no**
 such line, on the other hand, is an agent that was genuinely working (or `idle_nudge_seconds: 0`).
@@ -832,9 +833,11 @@ HEAD move after that trips); `NULL` = still tracking. Rows are never deleted —
 based_at IS NULL` means "deliberately cleared", not "absent".
 
 `idle_nudge` is the proactive nudge's episode, not a watch that can park: `based_at` = when the pane
-was first seen at its prompt, `sig` = the branch HEAD at the moment the one nudge of that episode
-went out (`NULL` = the `limits.idle_nudge_seconds` window has not elapsed yet). Both `NULL` = no open
-episode (the pane is `working`, HEAD moved, or the run was resumed).
+was first seen at its prompt (or, for an `unknown` pane, quiet), `sig` = the branch HEAD when the
+latest nudge of that episode went out (`NULL` = the `limits.idle_nudge_seconds` window has not
+elapsed yet), `meta` = `{pass, n, at, rev, over, held}` — nudges sent (≤ 2), when the latest went
+out, the pane revision last seen, and when the step first ran over / first had a park held. Both
+`NULL` = no open episode (the pane is `working`, HEAD moved, or the run was resumed).
 
 **Q9 — human questions and their poll clocks**
 
