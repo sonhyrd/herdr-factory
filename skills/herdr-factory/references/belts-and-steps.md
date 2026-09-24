@@ -120,7 +120,7 @@ undispatched and retries under the layout wait, instead of starting the step's b
 agent that never got the work.
 
 Finishing is always the same protocol: write `handoff-<step>.md` — against the scaffold's **fixed
-template** (`sha:` line, then `## Did` / `## Decisions` / `## Uncertain` / `## Next step should
+template** (`sha:` line, then `## Did` / `## Decisions` / `## Uncertain` / `## Found` / `## Next step should
 verify`, under 40 lines, empty sections deleted; plus any section this step's prompt requires,
 which is exempt from the cap) — then run the rendered `step-done` command, which
 on success prints where the run landed (`advanced <step> → <next>`), so no step needs to poll

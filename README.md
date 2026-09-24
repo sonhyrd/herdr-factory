@@ -1578,7 +1578,8 @@ substitution. Universal tokens (always injected):
 
 **The handoff note is a fixed template, not an essay.** The finish protocol hands every step the
 exact shape to write — a `sha:` line naming the commit it covers, then `## Did`, `## Decisions`,
-`## Uncertain`, `## Next step should verify` — capped at 40 lines, with empty sections deleted
+`## Uncertain`, `## Found` (out-of-scope problems, each with `file:line`), `## Next step should verify` —
+capped at 40 lines (`## Found` included), with empty sections deleted
 rather than padded. Free-form notes had grown to where streaming one cost 40–80 seconds of a step's
 budget and the next agent still had to hunt for the three facts it needed.
 
