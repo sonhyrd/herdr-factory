@@ -94,6 +94,7 @@ interface FakeState {
   adoptFails: boolean; // `agent start` refuses (herdr's agent_not_ready / a pane it can't adopt)
   agentLabel: string | null; // the agent herdr DETECTED in the pane (`agent list`'s `agent`) — null ⇒ never detected (#99)
   adoptError?: string; // herdr's lastAgentError after a refused `agent start`
+  revision?: number | null; // herdr's per-pane `revision` (bumped on every screen change); absent ⇒ null
 }
 
 /** A resolved belt step for the fakes. Budgets/heartbeat/opensPr mirror what config.ts derives for
@@ -154,6 +155,8 @@ function build(opts: { multi?: boolean } = {}) {
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
     transitionOverrides: [] as [string, WorkState, string][],
     agentSend: [] as [string, string][],
+    confirmedSends: [] as string[], // panes an agentSend was CONFIRMED on (`--wait --until …`)
+    sendKeys: [] as [string, string][], // `agent send-keys` — [paneId, keys]
     // Display-only pane state (herdr `pane report-metadata`) — [paneId, agentName, title ?? null].
     // This replaced the pane RENAMES the factory used to convey step/attention state with.
     paneDisplay: [] as [string, string | undefined, string | null, Record<string, string | null>][],
@@ -285,7 +288,13 @@ function build(opts: { multi?: boolean } = {}) {
     worktreeBranch: async () => "fix/K-1",
     firstPaneOfTab: async () => "w1:p1",
     listPanes: async () => [{ paneId: "w1:p1", tabId: "w1:t1", label: null }],
-    agentSend: async (p, t) => { calls.agentSend.push([p, t]); return !state.promptStalls; },
+    agentSend: async (p, t, o) => {
+      calls.agentSend.push([p, t]);
+      if (o?.confirm) calls.confirmedSends.push(p);
+      return !state.promptStalls;
+    },
+    paneRevision: async () => state.revision ?? null,
+    agentSendKeys: async (p, keys) => { calls.sendKeys.push([p, keys.join(" ")]); },
     agentFocus: async (id) => { calls.agentFocus.push(id); },
     focusedPane: async () => state.focusedPane,
     reportPaneDisplay: async (p, d) => { calls.paneDisplay.push([p, d.agentName, d.title ?? null, d.tokens ?? {}]); },
@@ -1511,12 +1520,103 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(nudges(calls)[0]![1]).toMatch(/step-done/);
     expect(store.timeline("demo", "IN-1").filter((e) => e.type === "idle_nudge").length).toBe(1);
 
-    for (const t of [1500, 2000, 3000, 3500]) {
+    expect(nudges(calls)[0]![1]).not.toContain("--pass"); // the first nudge points at the prompt
+
+    setNow(1000 + 599);
+    await reconcileRun(deps, store.getRun(run.id)!); // the second nudge waits for 2× the window
+    expect(nudges(calls).length).toBe(1);
+    setNow(1000 + 601);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(nudges(calls).length).toBe(2);
+    // …and carries the step's exact step-done command, pass stamp and all.
+    expect(nudges(calls)[1]![1]).toMatch(/herdr-factory --repo demo step-done IN-1 fix --source jira --pass 1/);
+
+    for (const t of [2000, 2500]) {
       setNow(t);
       await reconcileRun(deps, store.getRun(run.id)!);
     }
-    expect(nudges(calls).length, "many more idle ticks are still exactly one nudge").toBe(1);
+    expect(nudges(calls).length, "many more idle ticks are still exactly two nudges").toBe(2);
     expect(store.getRun(run.id)!.phase).toBe("running"); // the nudge never parks anything
+  });
+
+  it("idle nudge: an `unknown` pane is nudged only once its output has held still for the whole window", async () => {
+    // cursor-agent reports `unknown` forever (no herdr lifecycle hooks), so its only sign of life is
+    // the pane's screen revision.
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "unknown";
+    state.revision = 10;
+    const quiet = seed(store, worktree, "IN-U1", "running", "fix");
+    calls.agentSend.length = 0;
+    await reconcileRun(deps, store.getRun(quiet.id)!); // first look: a baseline revision, no clock yet
+    setNow(1060);
+    await reconcileRun(deps, store.getRun(quiet.id)!); // unchanged — the quiet clock starts
+    setNow(1060 + 301);
+    await reconcileRun(deps, store.getRun(quiet.id)!);
+    expect(nudges(calls).length).toBe(1);
+    expect(calls.confirmedSends).toEqual(["w1:p1"]); // the confirmed path, not fire-and-forget
+    expect(calls.sendKeys).toEqual([["w1:p1", "enter"]]); // …plus the Enter a stranded Cursor prompt needs
+
+    // A pane whose output keeps moving is working — never interrupted, however long it runs.
+    const busy = seed(store, worktree, "IN-U2", "running", "fix");
+    calls.agentSend.length = 0;
+    for (let t = 2000; t <= 4000; t += 60) {
+      setNow(t);
+      state.revision = t; // the screen changes between every two ticks
+      await reconcileRun(deps, store.getRun(busy.id)!);
+    }
+    expect(nudges(calls).length).toBe(0);
+  });
+
+  it("idle nudge: an `unknown` pane is left alone when herdr reports no revision", async () => {
+    const { deps, store, state, calls, worktree, setNow } = build();
+    state.paneState = "unknown";
+    state.revision = null;
+    const run = seed(store, worktree, "IN-U3", "running", "fix");
+    calls.agentSend.length = 0;
+    for (const t of [1000, 1400, 1800, 2200]) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(nudges(calls).length).toBe(0);
+  });
+
+  it("idle nudge: a run that never signals gets exactly two nudges before its budget park", async () => {
+    const { deps, store, state, calls, worktree, setNow, config } = build();
+    config.limits.stallSeconds = 100_000; // isolate the budget watch
+    state.paneState = "idle";
+    const run = seed(store, worktree, "IN-B1", "running", "fix");
+    calls.agentSend.length = 0;
+    for (let t = 1000; store.getRun(run.id)!.phase === "running" && t < 10_000; t += 60) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+    expect(store.getRun(run.id)!.attentionReasonCode).toBe("step_budget");
+    expect(nudges(calls).length).toBe(2);
+  });
+
+  it("idle nudge: a step that ran past budget WHILE working is nudged twice before it parks, not parked on its first idle tick", async () => {
+    // Runs 159/65: the budget tripped while the agent worked (the veto extended it), and the first
+    // tick that found it `done` parked it on the spot — the idle nudge never got a look.
+    const { deps, store, state, calls, worktree, setNow, config } = build();
+    config.limits.stallSeconds = 100_000;
+    state.paneState = "working";
+    const run = seed(store, worktree, "IN-B2", "running", "fix");
+    calls.agentSend.length = 0;
+    setNow(1000 + 5500); // the fix step's budget is 5400s
+    await reconcileRun(deps, store.getRun(run.id)!); // past budget, still working: extended
+    expect(store.getRun(run.id)!.phase).toBe("running");
+
+    state.paneState = "done"; // the turn ends, step-done never ran
+    const start = 1000 + 6300;
+    for (let t = start; store.getRun(run.id)!.phase === "running" && t < start + 5000; t += 60) {
+      setNow(t);
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(nudges(calls).length).toBe(2);
+    expect(store.getRun(run.id)!.phase).toBe("attention");
+    expect(store.getRun(run.id)!.attentionReasonCode).toBe("step_budget");
+    expect(deps.now() - start, "the hold is bounded at 3× the window").toBeLessThanOrEqual(3 * 300 + 60);
   });
 
   it("idle nudge: a working pane is never nudged, however long the step runs", async () => {

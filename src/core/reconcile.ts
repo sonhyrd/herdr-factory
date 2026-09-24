@@ -15,7 +15,7 @@ import { branchName } from "./branch.ts";
 import { fmtDur } from "./explain.ts";
 import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
-import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
+import { CLI_PATH, firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
 import { adoptLayoutAgent, awaitShellPrompt, deriveAgentName } from "./layout.ts";
 import { PANE_RELAUNCH_COUNTER } from "../steps/guards.ts";
@@ -29,6 +29,7 @@ import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
 import { flushOutbox, type OutboxFlow } from "./outbox.ts";
 import { consumeIntentHandoffs, ledgerFlow, notifySuspended } from "./ledger.ts";
 import { INTENT_KINDS } from "../intents/registry.ts";
+import { signalCommand } from "../signals/registry.ts";
 import { wakeResolver } from "./watch.ts";
 import { observeEvidenceHead, verificationSteps } from "./evidence-head.ts";
 import { recordSourceAuthEvent, recordTick, recordTickDuration, recordTickLockSkipped, telemetryEvent, telemetrySpan } from "../telemetry/index.ts";
@@ -2509,10 +2510,12 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   const outcome = await evaluateStepWatches(deps, run, step, rs, "watchdog");
   if (outcome.action === "defer") return;
   if (outcome.action === "extend") {
+    markOverrun(deps, run, step.name, rs);
     deps.log("info", outcome.note);
     return;
   }
   if (outcome.action === "park") {
+    if ((outcome.reason === "step_budget" || outcome.reason === "step_stalled") && (await holdParkForNudge(deps, run, step, rs))) return;
     await escalateAttention(deps, run, { reason: outcome.reason, attentionReason: outcome.attentionReason, body: outcome.body, detail: outcome.detail });
     return;
   }
@@ -2564,7 +2567,7 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
   }
   if (rs.absentAt != null) deps.store.upsertRunStep(run.id, step.name, { absentAt: null }); // seen alive again
   // Alive, not done, no watchdog verdict: the one remaining shape is an agent sitting at its prompt
-  // with nothing prompting it. Nudge it once, well before any watch trips.
+  // with nothing prompting it. Nudge it (twice at most), well before any watch trips.
   await nudgeIdleStepAgent(deps, run, step, rs);
   deps.log("info", `${run.ticketKey}: awaiting step-done ${step.name} (pane ${rs.paneId})`);
 }
@@ -2574,7 +2577,8 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
 // never ran `step-done`. It sits at its prompt, perfectly alive, until the stall or budget window
 // expires 45-60 minutes later and parks the run for a human. One message heals it.
 //
-// Only a pane at its PROMPT is nudged (idle, or done having finished a turn — isReadyForInput): a
+// Only a pane at its PROMPT is nudged (idle, or done having finished a turn — isReadyForInput — or,
+// for the idle nudge alone, an `unknown` pane proven quiet; see below): a
 // `working` pane is mid-turn (its own work, an on-demand question, or human-driven — injecting a
 // foreign turn interleaves two conversations), and a dead pane is the respawn machinery's job
 // (absence confirmation → spawnStep). The nudge points at the pass's rendered prompt file, whose
@@ -2605,17 +2609,24 @@ async function nudgeStepAgent(
   stepName: string,
   paneId: string,
   lead: string,
-  opts: { fresh?: boolean; confirm?: boolean } = {},
+  opts: { fresh?: boolean; confirm?: boolean; stepDone?: string; unknownOk?: boolean } = {},
 ): Promise<{ nudged: boolean; worker?: string }> {
   try {
     const worker = await deps.herdr.paneState(paneId, opts.fresh ? { fresh: true } : undefined);
-    if (!isReadyForInput(worker)) return { nudged: false, worker };
+    const unknown = worker === "unknown" && opts.unknownOk === true;
+    if (!isReadyForInput(worker) && !unknown) return { nudged: false, worker };
+    const done = opts.stepDone
+      ? `If the step is already complete, write your handoff note and run this exact command now, then stop: ${opts.stepDone}`
+      : `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`;
     const nudged = await deps.herdr.agentSend(
       paneId,
-      `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief, and read ${MEMORY_DIR}/TASKS.md if it exists. ` +
-        `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`,
-      { confirm: opts.confirm === true },
+      `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief, and read ${MEMORY_DIR}/TASKS.md if it exists. ${done}`,
+      { confirm: opts.confirm === true || unknown },
     );
+    // The Cursor trap: its input box can take the text without submitting it, which a revision probe
+    // can't tell apart from a real submission (the echo moves the screen either way). One Enter
+    // submits a stranded prompt; on an empty input it is a no-op.
+    if (unknown) await deps.herdr.agentSendKeys?.(paneId, ["enter"]);
     deps.log(nudged ? "info" : "warn", `${run.ticketKey}: nudge of the ${stepName} agent (pane ${paneId}) ${nudged ? "submitted" : "was not accepted"}`);
     return { nudged, worker };
   } catch {
@@ -2631,18 +2642,47 @@ async function nudgeStepAgent(
 //  * It rides the MEMOIZED pane state (no `fresh: true`). The resume path forces a fresh read
 //    because it is a one-shot interactive action; this one is O(runs) per tick, and a fresh read
 //    here would re-add exactly the per-run herdr call the batched snapshot work removed.
-//  * Once per idle EPISODE, not once per tick. The mark is one `watch_state` row (run, step,
-//    `idle_nudge`) — no new run column, the same shape as the `pr_green` mark: `basedAt` = when the
-//    pane was first seen idle, `sig` = the HEAD at the moment the nudge was sent (or "nudged" when
-//    there is no worktree HEAD to read). The episode ends — and the row clears — when the pane goes
-//    `working` again, or when the branch HEAD moves: either is real progress, and the next idle
-//    stretch is news again. So idle → nudge → work → idle is two nudges, and idle for an hour is one.
+//  * At most TWO nudges per idle EPISODE, not one per tick: the first at `window`, the second at
+//    2×`window` carrying the exact step-done command (an agent that ignored "run the command from
+//    your prompt" often acts on the command itself). The mark is one `watch_state` row (run, step,
+//    `idle_nudge`): `basedAt` = when the pane was first seen idle, `sig` = the HEAD at the last
+//    nudge (or "nudged" when there is no worktree HEAD), `meta` = {pass, n nudges, at last nudge,
+//    rev, over/held for the park hold below}. The episode ends — and the clock and count clear — when
+//    the pane goes `working` again, or when the branch HEAD moves: either is real progress.
+//
+// An `unknown` pane (a harness with no herdr lifecycle hooks — cursor-agent) is nudged too, but
+// only once herdr's per-pane `revision` has held still for the whole window: output that keeps
+// moving is an agent at work, treated exactly like `working`. Its nudge goes down the CONFIRMED path
+// plus a trailing Enter (see nudgeStepAgent), and the revision is re-read after the send so the
+// nudge's own echo doesn't count as the agent waking up.
 const IDLE_NUDGE = "idle_nudge";
+
+type NudgeMeta = { pass?: number; n?: number; at?: number; rev?: number | null; over?: number; held?: number };
+
+/** The idle-nudge row for this step's CURRENT pass (a row left by an earlier pass reads as empty). */
+function readNudge(deps: Deps, run: Run, step: string, rs: RunStep): { sig: string | null; basedAt: number | null; m: NudgeMeta } {
+  const st = deps.store.getWatchState(run.id, step, IDLE_NUDGE);
+  let m: NudgeMeta = {};
+  try {
+    m = JSON.parse(st?.meta || "{}") as NudgeMeta;
+  } catch {
+    /* unreadable meta ⇒ a fresh episode */
+  }
+  if (m.pass !== rs.pass) return { sig: null, basedAt: null, m: { pass: rs.pass } };
+  return { sig: st?.sig ?? null, basedAt: st?.basedAt ?? null, m };
+}
+
+function writeNudge(deps: Deps, run: Run, step: string, patch: { sig?: string | null; basedAt?: number | null }, m: NudgeMeta): void {
+  deps.store.upsertWatchState(run.id, step, IDLE_NUDGE, { ...patch, meta: JSON.stringify(m) });
+}
 
 async function nudgeIdleStepAgent(deps: Deps, run: Run, step: StepConfig, rs: RunStep): Promise<void> {
   const window = deps.config.limits.idleNudgeSeconds;
   if (window <= 0 || !rs.paneId) return; // 0 disables the nudge entirely
-  const clear = (): void => void deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { sig: null, basedAt: null });
+  const { sig, basedAt, m } = readNudge(deps, run, step.name, rs);
+  // Ending an episode keeps the park-hold bound (over/held): it is per pass, not per episode.
+  const endEpisode = (rev?: number | null): void =>
+    writeNudge(deps, run, step.name, { sig: null, basedAt: null }, { pass: rs.pass, rev, over: m.over, held: m.held });
 
   let worker: string;
   try {
@@ -2650,44 +2690,82 @@ async function nudgeIdleStepAgent(deps: Deps, run: Run, step: StepConfig, rs: Ru
   } catch {
     return; // herdr unreachable / pane gone: the liveness + watchdog paths own recovery
   }
-  const st = deps.store.getWatchState(run.id, step.name, IDLE_NUDGE);
+  let rev: number | null = null;
+  if (worker === "unknown") {
+    rev = (await deps.herdr.paneRevision?.(rs.paneId, {}).catch(() => null)) ?? null;
+    if (rev == null) return; // can't tell a quiet pane from a working one: not ours to prompt into
+    if (rev !== m.rev) worker = "working"; // the screen moved since the last look — it is working
+  }
   if (worker === "working") {
-    if (st?.basedAt != null || st?.sig != null) clear(); // the episode ended — the agent is busy again
+    if (basedAt != null || sig != null || m.n || m.rev !== (rev ?? undefined)) endEpisode(rev ?? undefined);
     return;
   }
-  if (!isReadyForInput(worker)) return; // gone/unknown/blocked: not ours to prompt into
+  if (!isReadyForInput(worker) && worker !== "unknown") return; // gone/blocked: not ours to prompt into
 
-  if (st?.sig != null) {
-    // Already nudged in this episode. The only thing that can re-open it from here is a HEAD move
-    // (the agent worked and finished between two ticks, so we never observed `working`).
-    const head = run.worktreePath ? await deps.git.headSha(run.worktreePath).catch(() => null) : null;
-    if (head && head !== st.sig) clear();
-    return;
+  const head = (): Promise<string | null> => (run.worktreePath ? deps.git.headSha(run.worktreePath).catch(() => null) : Promise.resolve(null));
+  if (sig != null) {
+    // Already nudged in this episode. A HEAD move re-opens it (the agent worked and finished
+    // between two ticks, so we never observed `working`).
+    const h = await head();
+    if (h && h !== sig) return endEpisode(m.rev);
   }
-  if (st?.basedAt == null) {
-    deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { basedAt: deps.now() });
-    return; // first tick that saw it idle — start the clock
-  }
-  if (deps.now() - st.basedAt < window) return;
+  if (basedAt == null) return writeNudge(deps, run, step.name, { basedAt: deps.now() }, m); // first idle sight — start the clock
+  const n = m.n ?? 0;
+  if (n >= 2 || deps.now() - basedAt < (n + 1) * window) return;
 
   const { nudged } = await nudgeStepAgent(
     deps,
     run,
     step.name,
     rs.paneId,
-    `${run.ticketKey}: this pane has been idle for ~${fmtDur(deps.now() - st.basedAt)} and the ${step.name} step has not been signalled done.`,
+    `${run.ticketKey}: this pane has been idle for ~${fmtDur(deps.now() - basedAt)} and the ${step.name} step has not been signalled done.`,
+    {
+      unknownOk: true,
+      stepDone:
+        n === 1 ? signalCommand(CLI_PATH, deps.config.repoName, "step-done", { key: run.ticketKey, step: step.name, source: run.workSource ?? undefined, pass: String(rs.pass ?? 1) }) : undefined,
+    },
   );
-  // Mark the episode nudged EVEN IF the send wasn't confirmed: one nudge per idle stretch is the
-  // contract, and a retry loop on an unconfirmed send is how a wedged pane gets spammed every tick.
-  const head = run.worktreePath ? await deps.git.headSha(run.worktreePath).catch(() => null) : null;
-  deps.store.upsertWatchState(run.id, step.name, IDLE_NUDGE, { sig: head || "nudged" });
+  // Count the nudge EVEN IF the send wasn't confirmed: the cap is the contract, and a retry loop on
+  // an unconfirmed send is how a wedged pane gets spammed every tick.
+  const after = worker === "unknown" ? ((await deps.herdr.paneRevision?.(rs.paneId, { fresh: true }).catch(() => null)) ?? rev) : m.rev;
+  writeNudge(deps, run, step.name, { sig: (await head()) || "nudged" }, { ...m, n: n + 1, at: deps.now(), rev: after });
   deps.store.recordEvent({
     runId: run.id,
     repo: deps.config.repoName,
     ticketKey: run.ticketKey,
     type: "idle_nudge",
-    detail: { step: step.name, pane: rs.paneId, nudged, idleSeconds: deps.now() - st.basedAt },
+    detail: { step: step.name, pane: rs.paneId, nudged, nth: n + 1, worker, idleSeconds: deps.now() - basedAt },
   });
+}
+
+// A budget/stall watch that tripped while the agent was `working` is extended (the veto); the
+// first tick that then finds the agent at its prompt used to park it on the spot — before the idle
+// nudge, which only runs when the watches say `none`, ever saw it idle. That is how a run that
+// finished its turn a minute past budget parked with no nudge at all. So once a step has been
+// extended past a watch, a park against its non-working pane is HELD while the nudges run: at most
+// 3×window from the first held tick (both nudges, plus a window for the second to be acted on),
+// and not at all once both nudges are out and a window has passed. The `over` mark is set on
+// the extend; a step that never ran over keeps its old park-on-trip behaviour, and only the two
+// timers (budget, stall) are held — a plugin watch's trip is a real condition, not a clock.
+function markOverrun(deps: Deps, run: Run, step: string, rs: RunStep): void {
+  const { sig, basedAt, m } = readNudge(deps, run, step, rs);
+  if (m.over == null) writeNudge(deps, run, step, { sig, basedAt }, { ...m, over: deps.now() });
+}
+
+async function holdParkForNudge(deps: Deps, run: Run, step: StepConfig, rs: RunStep): Promise<boolean> {
+  const window = deps.config.limits.idleNudgeSeconds;
+  if (window <= 0 || !rs.paneId) return false;
+  const { sig, basedAt, m } = readNudge(deps, run, step.name, rs);
+  if (m.over == null) return false;
+  const worker = await deps.herdr.paneState(rs.paneId).catch(() => "gone");
+  if (!isReadyForInput(worker) && worker !== "unknown") return false; // a dead/blocked pane parks as before
+  if ((m.n ?? 0) >= 2 && deps.now() - (m.at ?? 0) >= window) return false;
+  const held = m.held ?? deps.now();
+  if (deps.now() - held >= 3 * window) return false;
+  if (m.held == null) writeNudge(deps, run, step.name, { sig, basedAt }, { ...m, held });
+  await nudgeIdleStepAgent(deps, run, step, rs);
+  deps.log("info", `${run.ticketKey}: ${step.name} ran over its watch while working — holding the park for the idle nudge`);
+  return true;
 }
 
 /** Transition the work item to its review state and move the run into the human-review watch.
@@ -3056,7 +3134,7 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
       ));
       // A human resume is a fresh start for the step — including its idle-nudge episode, so an
       // agent that sat idle through the park can be nudged again if it idles after the resume.
-      deps.store.upsertWatchState(run.id, run.step, IDLE_NUDGE, { sig: null, basedAt: null });
+      deps.store.upsertWatchState(run.id, run.step, IDLE_NUDGE, { sig: null, basedAt: null, meta: "{}" });
     }
   }
   // `worker` rides along so an unexplained `nudged:false` is diagnosable: it names the state the
