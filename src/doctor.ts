@@ -107,8 +107,9 @@ export function checkoutSyncCheck(state: Record<string, CheckoutSync> = readChec
  *  herdr's worktrees dir with no live, unparked run owning that worktree. They keep a port (so the next run's server silently
  *  moves up its range and an evidence pass can film a stale server) and their whole RSS — capacity
  *  the scheduler believes it has and does not. Amber, never a ✗, and REPORT ONLY: doctor never
- *  kills; teardown is the only thing that kills, and only its own run's port. Deep-only (it runs
- *  an lsof per listener). */
+ *  kills; the engine's `stopDevServer` does, only its own run's port, at every step change (advance,
+ *  bounce, rework), every park (attention, waiting_for_human) and teardown. Deep-only (it runs an
+ *  lsof per listener). */
 export async function orphanListenerCheck(): Promise<DoctorCheck> {
   const name = "orphaned dev servers";
   try {
