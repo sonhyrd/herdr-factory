@@ -1451,6 +1451,18 @@ from the running server's config (`layout_wait_retry` carries `layoutRebuilt`). 
 build FAILED for that workspace (a config that didn't load, an apply error), the park names it
 (`… never became available — layout hook: no factory repo config for …`) and `explain` leads with it;
 a layout the hook built, or skipped on purpose, leaves the park reason as it always was.
+An agent that is running in its pane but that herdr never **detected** — `herdr agent list` shows
+the pane `unknown` with **no** `agent` label (seen with `cursor-agent` after a self-update) — takes
+no prompt however long the wait runs. After ~2 min of waiting (or at the first expiry, if
+`layout_wait_seconds` is shorter) the factory relaunches it **once per pane per step**: `/quit` in
+the pane, wait for the shell prompt, type the layout's command again (`cursor-agent` for kind
+`cursor`, else the kind, plus the pane's `args`), and wait up to 60 s for herdr to detect it. It
+records `pane_relaunched` and re-arms the wait without spending a retry; a dispatch or `resume`
+allows another relaunch. It never uses `agent start` for this, because herdr's stale registration
+refuses it. For the same reason, when an expiry's re-run of `agent start` is refused with
+`agent_name_taken` or `agent_pane_busy`, the factory types the command instead. If the run still
+parks, the reason is `<step>: agent in pane <id> was never detected by Herdr (status unknown)`, and
+`explain` says so rather than pointing at plugin links or tab names.
 Before any `claude` agent is started, in a layout pane or a dedicated one, the factory marks the
 worktree trusted in Claude Code's config (`projects[<worktree>].hasTrustDialogAccepted` in
 `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`, leaving every other key alone), so a fresh

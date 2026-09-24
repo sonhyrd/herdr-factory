@@ -957,7 +957,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 (we set `ended_at`), so the web UI can show attempts, outcomes, and durations.
 
 **event types** (the `EventType` union in `src/types.ts`): `claimed · claimed_elsewhere · transition · worktree_created ·
-layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · idle_nudge · bounced · rework ·
+layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · pane_relaunched · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
 stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
 pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · resumed ·
@@ -1682,7 +1682,9 @@ step (`spawnStep`):
      and starting the budget clock under someone else's work. An expired window is **re-armed in place** up to the layout-wait guard's
      `autoRespawnLimit` (3) — a transient herdr/layout race must be retried by the engine, not
      handed to a human; each expiry first builds the layout when the workspace has none of its
-     tabs (`buildLayoutInto`, §4) or else re-starts a layout agent sitting at a shell prompt — and
+     tabs (`buildLayoutInto`, §4) or else re-starts a layout agent sitting at a shell prompt (typing
+     the layout's command into the pane when `agent start` is refused `agent_name_taken` /
+     `agent_pane_busy` — a stale herdr registration that nothing frees) — and
      only once that budget is spent does the reconciler escalate to `attention`, the park's reason
      suffixed `— layout hook: <its failure line for the workspace>` when the build failed (`explain`
      quotes it instead of the generic causes, pointing at `doctor` only for a config-load line; a
@@ -1690,7 +1692,17 @@ step (`spawnStep`):
      successful engine rebuild clears the line, a failed one records `engine rebuild failed: …`); a run already parked with `layout_wait_timeout` is likewise auto-un-parked and
      re-dispatched while budget remains (see [§7](#7-the-reconciler--multi-agent-pipeline)), so
      such a park needs no `step-done` (its agent never existed) and no human `resume` unless the
-     pane is genuinely never coming up. It **never** spawns
+     pane is genuinely never coming up. One state is handled before any window is spent: a pane
+     herdr lists `unknown` with **no agent label** (`paneAgentLabel` → null) holds an agent herdr
+     never detected, so every confirmed dispatch fails and no amount of waiting helps. After
+     `min(120 s, layout_wait_seconds)` the wait **relaunches** it (`relaunchUndetectedAgent`): `/quit`
+     via `pane run`, `awaitShellPrompt`, `pane run` of the layout's command, then up to 30 × 2 s for
+     herdr to detect it. It records `pane_relaunched` and re-arms `started_at` without bumping the
+     layout-wait counter. It runs once per step, tracked by the `pane_relaunch` guard counter, which is
+     refunded wherever the layout-wait budget is (dispatch, resume). If the run still parks, the
+     reason reads `<step>: agent in pane <id> was never detected by Herdr (status unknown)`
+     (`detail.undetectedPane`), and `explain` gives that cause instead of the plugin-link / tab-name
+     hint. It **never** spawns
      its own pane when a tab/pane is configured — so the user's auto-spawned layout (setup
      commands, dev servers, agent startup) can settle before work begins.
    - **Not configured** (no tab/pane): create a dedicated pane (a new tab) and adopt the harness
