@@ -181,8 +181,13 @@ async function herdrVersionCheck(herdrBin: string, env?: NodeJS.ProcessEnv): Pro
 // pane that LOOKS ready while the whole run burns quietly. So these checks are CONFIG-driven: a
 // host whose belts never touch Cursor reports "not configured" rather than ✗ (issue #49).
 
-/** Where each agent engine reads its skills from, relative to $HOME. */
-const SKILL_ROOT: Record<string, string> = { cursor: ".cursor/skills", claude: ".claude/skills" };
+/** Where each agent engine reads its skills from, relative to $HOME — first root is the engine's
+ *  own. Cursor also reads Claude's and the shared `~/.agents` root (issue #104), so a skill linked
+ *  only there still counts. */
+const SKILL_ROOTS: Record<string, string[]> = {
+  cursor: [".cursor/skills", ".claude/skills", ".agents/skills"],
+  claude: [".claude/skills"],
+};
 
 /** The herdr agent KIND a harness block runs as: its explicit `kind`, else the command when the
  *  command itself names a kind (`claude`), else Cursor's CLI under its own binary name. undefined
@@ -389,11 +394,15 @@ export async function agentToolingChecks(tooling: AgentTooling, deep: boolean, e
     checks.push(
       attempt("agent skills", async () => {
         const missing = named.filter(({ engine, name }) => {
-          const root = SKILL_ROOT[engine];
-          return root ? !existsSync(join(homedir(), root, name, "SKILL.md")) : false;
+          const roots = SKILL_ROOTS[engine] ?? [];
+          return roots.length > 0 && !roots.some((root) => existsSync(join(homedir(), root, name, "SKILL.md")));
         });
         if (missing.length > 0) {
-          throw new Error(missing.map(({ engine, name }) => `${name} missing at ~/${SKILL_ROOT[engine]}/${name}/SKILL.md`).join("; ") + " — install (or re-link) the skill on this host");
+          const where = ({ engine, name }: { engine: string; name: string }) => {
+            const [own, ...also] = SKILL_ROOTS[engine]!;
+            return `${name} missing at ~/${own}/${name}/SKILL.md` + (also.length ? ` (nor under ${also.map((r) => `~/${r}`).join(", ")})` : "");
+          };
+          throw new Error(missing.map(where).join("; ") + " — install (or re-link) the skill on this host");
         }
         return `${named.length} present (${named.map((s) => s.name).sort().join(", ")})`;
       }),
