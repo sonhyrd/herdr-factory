@@ -183,8 +183,11 @@ echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"
 Teardown reads `hf-port` **before** it removes anything and, once the workspace is closed, kills
 whatever still LISTENs on that port — the listener's **process group**, so a `pnpm dev` parent's
 children (the actual server, its esbuild helpers) go with it. It is **never a pattern kill**
-(`pkill -f`/`killall` would take out other runs' servers on the same host), and never fatal: no
-file, an unreadable one, or a port nothing is listening on is one log line.
+(`pkill -f`/`killall` would take out other runs' servers on the same host), it signals only a
+listener whose **cwd is inside the run's worktree** (anything else on the port — or an unreadable
+cwd — is left running and logged `pid P belongs to <cwd>, not this run; left running`), and never
+fatal: no file, an unreadable one, or a port nothing is listening on is one log line (the empty case
+names the `lsof` it ran).
 
 The same kill runs **at every step change and every park** — step-done advance (and the hand-off to
 the PR watch), bounce, operator `rework`, attention park, `ask-human` — so a dev-server `command:`

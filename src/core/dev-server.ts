@@ -17,9 +17,12 @@
 //     esbuild/cli helpers too.
 //   - NEVER a pattern kill. No `pkill -f`, no `killall`: a host running three or four runs would
 //     lose its siblings' servers. Only the pid(s) holding this run's own port.
-import { readFileSync, statSync } from "node:fs";
+//   - Never trust the port alone. A port is not proof of ownership — concurrent runs have shared
+//     one, and a teardown killed a sibling's server. A listener is signalled only when its cwd is
+//     inside this run's worktree; any other (or unreadable) cwd is left running and logged.
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { run } from "../clients/exec.ts";
 
 /** Written into the worktree's git dir by the target repo's setup/dev command (one `echo`). */
@@ -73,9 +76,11 @@ async function lsof(args: string[], timeoutMs: number): Promise<string> {
   }
 }
 
+const listenerArgs = (port: number): string[] => ["-nP", "-ti", `tcp:${port}`, "-sTCP:LISTEN"];
+
 /** pids LISTENing on a TCP port (`lsof -nP -ti tcp:<port> -sTCP:LISTEN`). */
 export async function listenerPids(port: number): Promise<number[]> {
-  const out = await lsof(["-nP", "-ti", `tcp:${port}`, "-sTCP:LISTEN"], 10_000);
+  const out = await lsof(listenerArgs(port), 10_000);
   return out
     .split("\n")
     .map((l) => Number.parseInt(l.trim(), 10))
@@ -110,24 +115,72 @@ async function rssKbOf(pid: number): Promise<number | null> {
   return Number.isInteger(kb) ? kb : null;
 }
 
+/** `realpath`, tolerating a path that no longer exists (teardown reaps AFTER the worktree is
+ *  removed): the deepest existing ancestor is resolved and the rest re-appended. */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    const parent = dirname(p);
+    return parent === p ? p : join(realPath(parent), basename(p));
+  }
+}
+
+const inside = (cwd: string, dir: string): boolean => cwd === dir || cwd.startsWith(`${dir}/`);
+
 export interface KilledListener {
   pid: number;
   /** RSS read just before the SIGTERM — the memory the kill gave back. */
   rssKb: number | null;
+  cwd: string;
 }
 
-/** Kill whatever listens on `port`: group SIGTERM → grace → SIGKILL on whatever still listens.
- *  Returns the listeners that were holding the port (empty ⇒ nothing was listening). */
-export async function killPortListeners(port: number, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<KilledListener[]> {
-  const pids = await listenerPids(port);
-  if (pids.length === 0) return [];
-  const killed: KilledListener[] = [];
-  for (const pid of pids) killed.push({ pid, rssKb: await rssKbOf(pid) });
-  const ownPgid = await pgidOf(process.pid);
-  for (const pid of pids) await signalListener(pid, ownPgid, "SIGTERM");
-  await sleep(GRACE_MS);
-  for (const pid of await listenerPids(port)) await signalListener(pid, ownPgid, "SIGKILL");
-  return killed;
+export interface ReapResult {
+  /** Listeners inside the run's worktree, signalled. */
+  killed: KilledListener[];
+  /** Listeners on the port whose cwd is elsewhere (null = unreadable) — left running. */
+  skipped: { pid: number; cwd: string | null }[];
+  /** The lsof command that found the listeners — evidence for a "nothing was listening". */
+  lsof: string;
+}
+
+/** The process-touching half of the reap, injectable so tests never signal a real process. */
+export interface ReapIO {
+  listenerPids: (port: number) => Promise<number[]>;
+  cwdOf: (pid: number) => Promise<string | null>;
+  rssKbOf: (pid: number) => Promise<number | null>;
+  signal: (pid: number, sig: "SIGTERM" | "SIGKILL") => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const realIO: ReapIO = {
+  listenerPids,
+  cwdOf,
+  rssKbOf,
+  signal: async (pid, sig) => signalListener(pid, await pgidOf(process.pid), sig),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/** Kill the listeners on `port` whose cwd is inside `worktreePath` (realpath prefix match): group
+ *  SIGTERM → grace → SIGKILL on whichever of them still listen. A listener with any other cwd, or
+ *  one that can't be read, is never signalled — it comes back in `skipped`. */
+export async function killPortListeners(port: number, worktreePath: string, io: ReapIO = realIO): Promise<ReapResult> {
+  const wt = realPath(worktreePath);
+  const result: ReapResult = { killed: [], skipped: [], lsof: `lsof ${listenerArgs(port).join(" ")}` };
+  const cwdIfOwned = async (pid: number): Promise<{ cwd: string | null; ours: boolean }> => {
+    const cwd = await io.cwdOf(pid).catch(() => null);
+    return { cwd, ours: cwd != null && inside(realPath(cwd), wt) };
+  };
+  for (const pid of await io.listenerPids(port)) {
+    const { cwd, ours } = await cwdIfOwned(pid);
+    if (ours) result.killed.push({ pid, rssKb: await io.rssKbOf(pid), cwd: cwd! });
+    else result.skipped.push({ pid, cwd });
+  }
+  if (result.killed.length === 0) return result;
+  for (const k of result.killed) await io.signal(k.pid, "SIGTERM");
+  await io.sleep(GRACE_MS);
+  for (const pid of await io.listenerPids(port)) if ((await cwdIfOwned(pid)).ours) await io.signal(pid, "SIGKILL");
+  return result;
 }
 
 export interface OrphanListener {
@@ -155,10 +208,11 @@ async function listeningProcesses(): Promise<{ pid: number; command: string; por
   return out;
 }
 
-/** A process's cwd, via lsof's field output (`-Fn` ⇒ an `n<path>` line). Works on macOS + Linux. */
+/** A process's cwd, via lsof's field output (`-Fn` ⇒ an `n<path>` line). Works on macOS + Linux.
+ *  Linux suffixes a removed dir with ` (deleted)` — a torn-down worktree's server — stripped. */
 async function cwdOf(pid: number): Promise<string | null> {
   const out = await lsof(["-a", "-d", "cwd", "-Fn", "-p", String(pid)], 10_000);
-  return /^n(.+)$/m.exec(out)?.[1]?.trim() ?? null;
+  return /^n(.+)$/m.exec(out)?.[1]?.trim().replace(/ \(deleted\)$/, "") ?? null;
 }
 
 /** Listeners running inside a factory worktree that no WORKING run owns — dev servers that outlived

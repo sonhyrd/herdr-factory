@@ -1,7 +1,7 @@
 import type { BeltConfig, Config } from "../config.ts";
 import type { Store } from "../db/store.ts";
 import type { MachineConfig } from "../machine.ts";
-import type { KilledListener } from "./dev-server.ts";
+import type { ReapResult } from "./dev-server.ts";
 import type {
   Agent,
   BeltMatch,
@@ -441,10 +441,11 @@ export interface Deps {
   /** The claim gate's "does the config file on disk still load?" (null = yes, else the error) —
    *  configLoadError() in production. Absent ⇒ no gate (tests whose config lives only in memory). */
   configCheck?: () => string | null;
-  /** Kill whatever LISTENs on a TCP port and return the listeners that held it — the dev-server
-   *  reap (hf-port handshake) at every step change, park and teardown. Tests inject it so no test
-   *  ever signals a real process. Absent ⇒ killPortListeners() from core/dev-server.ts. */
-  killPortListeners?: (port: number) => Promise<KilledListener[]>;
+  /** Kill the listeners on a TCP port whose cwd is inside the run's worktree, and report them and
+   *  the ones left running — the dev-server reap (hf-port handshake) at every step change, park and
+   *  teardown. Tests inject it so no test ever signals a real process. Absent ⇒ killPortListeners()
+   *  from core/dev-server.ts. */
+  killPortListeners?: (port: number, worktreePath: string) => Promise<ReapResult>;
 }
 
 export type { Agent };

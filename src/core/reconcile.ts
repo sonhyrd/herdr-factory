@@ -1255,17 +1255,22 @@ async function showRunPaneOwner(deps: Deps, run: Run, state: PaneRunState, fallb
  *  starts whatever server it needs itself. No hf-port ⇒ a no-op; never fatal; never a pattern kill.
  *  `port` is passed by teardown, which must read it before the checkout (and its git dir) goes. */
 async function stopDevServer(deps: Deps, run: Run, why: string, port = run.worktreePath ? readRunPort(run.worktreePath) : null): Promise<void> {
-  if (port == null) return;
+  if (port == null || !run.worktreePath) return;
   try {
-    const killed = await (deps.killPortListeners ?? killPortListeners)(port);
+    const { killed, skipped, lsof } = await (deps.killPortListeners ?? killPortListeners)(port, run.worktreePath);
+    // Never trust the port alone: a listener outside this run's worktree is a sibling's, not ours.
+    for (const s of skipped) {
+      deps.log("warn", `${run.ticketKey}: dev server port ${port} (${why}) — pid ${s.pid} belongs to ${s.cwd ?? "an unreadable cwd"}, not this run; left running`);
+    }
     if (killed.length === 0) {
-      deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — nothing was listening`);
+      if (skipped.length === 0) deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — nothing was listening (${lsof})`);
       return;
     }
     const pids = killed.map((k) => k.pid);
     const rssKb = killed.some((k) => k.rssKb != null) ? killed.reduce((n, k) => n + (k.rssKb ?? 0), 0) : null;
     deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "dev_server_stopped", detail: { port, pids, rssKb, why, step: run.step } });
-    deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — killed pid(s) ${pids.join(", ")}${rssKb != null ? ` (${Math.round(rssKb / 1024)} MB RSS)` : ""}`);
+    const each = killed.map((k) => `${k.pid} (${k.rssKb != null ? `${Math.round(k.rssKb / 1024)} MB` : "unknown"} RSS, cwd ${k.cwd})`);
+    deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — killed pid(s) ${each.join(", ")}`);
   } catch (e) {
     deps.log("warn", `${run.ticketKey}: could not stop the dev server on port ${port} (${why}) — ${err(e)}`);
   }
