@@ -492,4 +492,4 @@ All under `<worktree>/.memory/herdr-factory/` (`@@MEMORY_DIR@@`). This is the re
 | `issue.json`, `attachments/` | the source client | raw payload and downloaded media |
 | `evidence/` | the evidence agent | `@@EVIDENCE_DIR@@` — captured screenshots/video, published by the upload command |
 
-The target repo must **not** track this directory: add `.memory/` to its `.gitignore`. A freshly created worktree that ships a committed `.memory/herdr-factory` has it removed with a warning. See [target-repo.md](./target-repo.md).
+The target repo must **not** track this directory. The engine appends `.memory/` to the checkout's `info/exclude` on every worktree create/reopen, so the untracked dir never dirties the tree. A freshly created worktree that ships a committed `.memory/herdr-factory` has it removed with a warning. See [target-repo.md](./target-repo.md).

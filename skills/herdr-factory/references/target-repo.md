@@ -10,7 +10,7 @@ better output from the same config.
 
 - Why does `repo.path` have to be the main checkout, and what happens if it isn't?
 - Why did the run fail at claim time with a `herdr worktree create` error?
-- Why is a run reading a stale/wrong task doc, and what does `.memory/` in `.gitignore` fix?
+- Why is a run reading a stale/wrong task doc, and why must `.memory/` never be committed?
 - What does the factory read out of my repo on its own (PR template, prompt pack) vs. via a prompt?
 - Which files in my repo do the agents actually look for, and which step changes behaviour because of them?
 - Why does my `evidence` step keep bouncing or asking a human about credentials?
@@ -25,7 +25,7 @@ better output from the same config.
 |---|---|---|---|
 | 1 | `repo.path` points at the **MAIN** checkout — `<path>/.git` must be a **directory**, not a file | `assertMainCheckout` at every config load, by `init`, and by `doctor`'s `repo.path is a main git checkout` | Load error: `repo.path "<p>" looks like a linked worktree (.git is a file); herdr needs the MAIN checkout`, or `repo.path "<p>" is not a git checkout (no .git)`. herdr cannot fork a worktree from a linked worktree |
 | 2 | `repo.base_ref` names a ref that **exists in that checkout** (default `origin/main`) | **Nothing** — never validated at load | A failing `herdr worktree create --base <base_ref>` at claim time. The throw is caught by the tick, so you get an `error` log line + an `error` event **every tick** and a run that never leaves `claiming` — no park, no watchdog |
-| 3 | `.memory/` in the repo's `.gitignore` | Partially self-healing (see below) | A committed `.memory/herdr-factory/` in the repo's tree lands in every fresh worktree, and because each source's materialize is skip-if-exists, a committed `task.md`/`ticket.json` **silently supplants the real work item** |
+| 3 | `.memory/` not tracked by the repo (a `.gitignore` line is optional — the engine excludes it via `info/exclude`) | Partially self-healing (see below) | A committed `.memory/herdr-factory/` in the repo's tree lands in every fresh worktree, and because each source's materialize is skip-if-exists, a committed `task.md`/`ticket.json` **silently supplants the real work item** |
 | 4 | A GitHub `origin` remote, **or** an explicit `repo.github: owner/name` | `doctor`'s `git origin resolved`; the engine derives `owner/name` by parsing `git remote get-url origin` | `no origin — set repo.github or add a git remote`. Without it the PR watch, CI/review polling and the `github_issues` source have no repo to query |
 | 5 | `gh` authenticated as an account with **push + PR-create** rights on that repo | `doctor --deep` runs `gh auth status` (presence only in the default mode) | The engine's use of the `gh` CLI is read-only (PR discovery, CI/review polling, `gh api user`) — but with a `github_issues` source the engine itself also **writes** over the API (issue labels, comments, close) using `GITHUB_TOKEN` from the repo env or the token from `gh auth token`, so a read-only credential breaks those write-backs too. The **agent** runs `git push -u origin <branch>` and `gh pr create`, so a read-only token fails inside the `pr` step as well — never in `doctor` |
 | 6 | The agent harness on PATH **and** `herdr integration install <agent>` run on this machine (see [install-and-operate.md](./install-and-operate.md)) | **Nothing in `doctor` checks the integration** | Without the integration hook herdr never reports `idle`/`working` for that harness. Dispatch tolerates that (an `unknown` agent is prompted, and the submission is confirmed by the pane's screen changing), but everything that reads the agent's state degrades: the idle nudge never fires, `resume` declines to re-prompt, and the liveness/stall diagnoses go blind |
@@ -44,9 +44,11 @@ Notes on each:
   `git -C <repo.path> rev-parse --verify <base_ref>`.
 - **(3)** On the worktree-**CREATE** path only, the engine deletes a `.memory/herdr-factory` that came
   with the checkout and warns:
-  `<KEY>: removed a committed .memory/herdr-factory from the fresh worktree — the repo should not track factory memory (add .memory/ to its .gitignore)`.
+  `<KEY>: removed a committed .memory/herdr-factory from the fresh worktree — the repo should not track factory memory`.
   A **reopened** worktree is never scrubbed (its memory dir is the run's own live state), so a committed
-  copy still poisons any run that reattaches. Add the ignore rule; don't rely on the scrub.
+  copy still poisons any run that reattaches. Untrack it; don't rely on the scrub. The *untracked* case
+  is self-healing: every worktree create/reopen appends `.memory/` (once) to the checkout's
+  `info/exclude`, so a repo without the `.gitignore` line no longer parks runs as `dirty_tree`.
 - **(6)** The integration is **machine-wide, not per-repo** — the hooks live in `$HOME`
   (e.g. `~/.claude/hooks/herdr-agent-state.sh`). `herdr integration status` lists every supported
   harness and whether its hook is `current` / `outdated` / `not installed`.
@@ -275,7 +277,7 @@ changes output quality.
 
 | # | Do this | Verify with |
 |---|---|---|
-| 1 | Add `.memory/` to the repo's `.gitignore`; if a `.memory/herdr-factory` is already tracked, `git rm -r --cached` it and commit | `git -C <repo> check-ignore -v .memory/` prints the rule (exit 0); `git -C <repo> ls-files .memory` prints nothing |
+| 1 | If a `.memory/herdr-factory` is tracked, `git rm -r --cached` it and commit (a `.gitignore` line is optional: the engine appends `.memory/` to `info/exclude` on every worktree create/reopen) | `git -C <repo> ls-files .memory` prints nothing |
 | 2 | Point `repo.path` at the main checkout | `test -d <repo.path>/.git` (must be a **directory**); `herdr-factory --repo <name> doctor` → ✓ `repo.path is a main git checkout` |
 | 3 | Set `base_ref` to a ref that exists (the factory fetches it before each new worktree; a local, remote-less ref is yours to keep fresh) | `git -C <repo.path> rev-parse --verify <base_ref>`; check freshness with `git -C <repo.path> log -1 --format=%cr <base_ref>` |
 | 4 | Confirm the GitHub repo resolves | `herdr-factory --repo <name> doctor` → ✓ `git origin resolved` shows `owner/name`; else set `repo.github` |

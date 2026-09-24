@@ -1619,9 +1619,11 @@ A token that would reach the agent unrendered (unknown, or out of scope for the 
 
 Everything a run reads and writes lives in `.memory/herdr-factory/` inside its worktree: the
 rendered prompts, handoff notes, the work doc (`ticket.json`, or `task.md`/`task/`), attachments,
-bounce feedback, human questions and replies, and captured evidence. Never commit this folder in
-your repo (add `.memory/` to its `.gitignore`) — a committed copy would shadow each new run's real
-work doc, so the factory removes it from every freshly created worktree.
+bounce feedback, human questions and replies, and captured evidence. The factory appends `.memory/`
+to the checkout's `info/exclude` whenever it creates or reopens a run's worktree, so the folder never
+shows in `git status` (and never parks a read-only step as `dirty_tree`) — no `.gitignore` edit
+needed. Never *commit* it, though: an exclude doesn't untrack a committed copy, which would shadow
+each new run's real work doc, so the factory removes it from every freshly created worktree.
 
 ### Editor schema
 
