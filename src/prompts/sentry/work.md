@@ -43,13 +43,17 @@ guidance genuinely conflicts with them, follow this prompt and say so in your ha
    Understand *why* the error happens for real inputs — not just how to silence it. A `try/catch`
    that swallows the symptom is NOT a fix; fix the underlying defect (the null that shouldn't be
    null, the unhandled case, the bad assumption).
-3. Bootstrap the worktree if needed (install deps / run the repo's setup).
-4. Implement the fix following the repo's own conventions (above) and preferring existing
+3. **Track multi-part work in `@@MEMORY_DIR@@/TASKS.md`.** When the work has more than one
+   part, write the parts there as a checklist, tick each item when it's done, and add anything new
+   you find along the way. After a context summary or a resume, re-read it before doing anything
+   else. It lives in the memory dir, never in the repo — never commit it.
+4. Bootstrap the worktree if needed (install deps / run the repo's setup).
+5. Implement the fix following the repo's own conventions (above) and preferring existing
    patterns. Keep the change focused on this error.
-5. **Add a regression test** that reproduces the failure and now passes, where the codebase makes
+6. **Add a regression test** that reproduces the failure and now passes, where the codebase makes
    that practical — this is a real bug that reached production, so prove it won't come back. Write
    it the way the repo writes tests (its own layout, harness, and helpers).
-6. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area (its
+7. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area (its
    documented ones if it has them). Fix everything they report.
 
    **Run each one through the gate wrapper**, which records a receipt (command, commit, exit code,
@@ -71,10 +75,15 @@ guidance genuinely conflicts with them, follow this prompt and say so in your ha
 
    **Run them one final time, after your last commit** — a receipt is only useful to a later step
    if its commit is the branch's HEAD.
-7. **Commit** your work to the branch — code only, and commit incrementally as you go (this keeps
+8. **Commit** your work to the branch — code only, and commit incrementally as you go (this keeps
    the dispatcher's progress heartbeat alive).@@COMMIT_CONVENTIONS@@
 
 Do NOT open a PR, and do NOT resolve or change the Sentry issue (the dispatcher owns lifecycle).
+
+**When the change splits into many independent parts** — a migration across many modules, an
+upstream merge with many conflicted files, an audit — give each part its own subagent. Check each
+subagent's evidence before you accept its result, and gather the results in one table in your
+handoff.
 
 **If you were sent back for rework** there is a "Rework requested — READ THIS FIRST" banner at the
 top of this prompt: a later step tried to verify your change and it did not hold up. Read those

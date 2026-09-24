@@ -454,6 +454,14 @@ function scaffold(
     `If the two genuinely conflict, follow this prompt and note the conflict in your handoff.\n` +
     inputs +
     readOnlyNote +
+    // Panes run with permissions skipped, so this paragraph is the only guard against a destructive
+    // command — and the only thing telling an unattended agent not to stop and wait for a "go on".
+    `\n## Keep going; never destroy\n` +
+    `When this step doesn't need a human, keep going until it is done — do not pause for confirmation. ` +
+    `Stop only through \`ask-human\` (below), when you cannot continue without a human. ` +
+    `**Never do anything destructive**: no force-push, no deleting data or branches you didn't create, no changes outside this worktree ` +
+    `(other checkouts, \`~/.config\`, databases, production, published releases or tags) beyond what this prompt's own commands do. ` +
+    `If the work needs one of those, ask a human. This pane runs with permissions skipped, so this rule is the only guard.\n` +
     `\n## Asking a human for guidance\n` +
     `If you are blocked by ambiguous requirements, missing source material, impossible verification, or conflicting evidence, do NOT guess and do NOT run step-done. ` +
     `Write a concise question to \`${MEMORY_DIR}/human-question-${step.name}.md\`, then run \`${askHumanCmd}\` and stop. ` +
@@ -482,9 +490,11 @@ function scaffold(
     `## Did\n- <what changed, one bullet per thing, max 5>\n\n` +
     `## Decisions\n- <choice → why, only where a reader could not infer it from the diff; omit the heading if none>\n\n` +
     `## Uncertain\n- <assumptions a human could correct; omit the heading if none>\n\n` +
+    // Out-of-scope problems had nowhere to go and were lost; this is their home.
+    `## Found\n- <problems you noticed outside this step's scope (pre-existing bugs, flaky or failing tests, stale docs), each with \`file:line\`; omit the heading if none>\n\n` +
     `## Next step should verify\n- <max 5 bullets, each concrete and checkable>\n` +
     "```\n\n" +
-    `   Keep it under 40 lines total. Do not restate the diff, narrate your process, or pad a section to look thorough — ` +
+    `   Keep it under 40 lines total (\`## Found\` included). Do not restate the diff, narrate your process, or pad a section to look thorough — ` +
     `an empty section is deleted, not filled. Plus any section this step's prompt requires (verbatim findings, repro steps, verdict tables); those are exempt from the cap. The same brevity applies to a PR body: state the facts, stop.\n` +
     `2. Then run \`${stepDoneCmd}\` and stop. Do NOT change the work item's status — the dispatcher owns all status transitions.\n` +
     // The signal is the only thing that advances the belt, and a REJECTED one exits non-zero with the

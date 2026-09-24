@@ -40,15 +40,19 @@ repo's guidance genuinely conflicts with them, follow this prompt and say so in 
    your handoff — or use the ask-human path below when you genuinely cannot proceed.
 2. If `@@MEMORY_DIR@@/attachments/` exists, **open and study every attachment** (images,
    videos) before designing a solution — they are part of the spec.
-3. Bootstrap the worktree if needed (install deps / run the repo's setup).
-4. Implement the change following the repo's own conventions (above) and preferring existing
+3. **Track multi-part work in `@@MEMORY_DIR@@/TASKS.md`.** When the work has more than one
+   part, write the parts there as a checklist, tick each item when it's done, and add anything new
+   you find along the way. After a context summary or a resume, re-read it before doing anything
+   else. It lives in the memory dir, never in the repo — never commit it.
+4. Bootstrap the worktree if needed (install deps / run the repo's setup).
+5. Implement the change following the repo's own conventions (above) and preferring existing
    patterns. Keep the change focused. **Edit files with the harness's own file-edit tool** —
    it fails loudly when its target text is not found. When a scripted edit is genuinely the
    right tool (one mechanical change repeated across many files), **assert the replacement
    landed**: compare the text before and after, or re-read the file and grep for the new
    text, and treat a no-op replace as a failure — a `replace` that matches nothing still
    exits 0.
-5. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area
+6. Verify: run the repo's own lint, type-check, and unit-test commands for the affected area
    (its documented ones if it has them). Fix everything they report.
 
    **Run each one through the gate wrapper**, which records a receipt (command, commit, exit code,
@@ -70,12 +74,17 @@ repo's guidance genuinely conflicts with them, follow this prompt and say so in 
 
    **Run them one final time, after your last commit** — a receipt is only useful to a later step
    if its commit is the branch's HEAD.
-6. **Commit** your work to the branch — code only, and commit incrementally as you go
+7. **Commit** your work to the branch — code only, and commit incrementally as you go
    (this keeps the dispatcher's progress heartbeat alive).@@COMMIT_CONVENTIONS@@
-7. **Stop any dev server you started** before `step-done` — a server you launched by hand
+8. **Stop any dev server you started** before `step-done` — a server you launched by hand
    outlives this worktree and holds its port and memory forever.
 
 Do NOT open a PR, and do NOT change the work item's status (the dispatcher owns that).
+
+**When the change splits into many independent parts** — a migration across many modules, an
+upstream merge with many conflicted files, an audit — give each part its own subagent. Check each
+subagent's evidence before you accept its result, and gather the results in one table in your
+handoff.
 
 **If you were sent back for rework** there is a "Rework requested — READ THIS FIRST" banner at the
 top of this prompt: a later step tried to verify your change and it did not hold up. Read those
