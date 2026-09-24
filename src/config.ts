@@ -104,6 +104,16 @@ const CommandEvidenceSchema = z
     command: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1)).min(1)]).transform((c) => (typeof c === "string" ? [c] : c)),
     // Seconds before the publish command is killed (a hung backend must not wedge the outbox flush).
     timeout_seconds: z.coerce.number().int().positive().default(300),
+    // Optional public origin the command's uploads are served from (no trailing slash). Set, the URL
+    // layout is declared — `<public_base_url>/<prefix>/<relative path>`, same as s3 — so
+    // `evidence-upload` prints the URLs up front and uploads in the BACKGROUND instead of blocking
+    // the agent. Unset, the URLs come only from the command's stdout (inline publish, as before).
+    public_base_url: z
+      .string()
+      .trim()
+      .min(1)
+      .transform((s) => s.replace(/\/+$/, ""))
+      .optional(),
     key_prefix: evidenceKeyPrefixField,
     github_username: evidenceGithubUsernameField,
   })
@@ -150,7 +160,14 @@ function resolveEvidence(ev: ParsedEvidence | undefined): Config["evidence"] {
     case "local":
       return { publisher: "local", publicBaseUrl: ev.public_base_url, keyPrefix: ev.key_prefix, githubUsername: ev.github_username };
     case "command":
-      return { publisher: "command", command: ev.command, timeoutSeconds: ev.timeout_seconds, keyPrefix: ev.key_prefix, githubUsername: ev.github_username };
+      return {
+        publisher: "command",
+        command: ev.command,
+        timeoutSeconds: ev.timeout_seconds,
+        publicBaseUrl: ev.public_base_url,
+        keyPrefix: ev.key_prefix,
+        githubUsername: ev.github_username,
+      };
   }
 }
 
@@ -1271,7 +1288,7 @@ export interface Config {
   evidence?:
     | { publisher: "s3"; bucket: string; region: string; cloudfrontDomain: string; keyPrefix: string; githubUsername?: string; profile?: string }
     | { publisher: "local"; publicBaseUrl?: string; keyPrefix: string; githubUsername?: string }
-    | { publisher: "command"; command: string[]; timeoutSeconds: number; keyPrefix: string; githubUsername?: string };
+    | { publisher: "command"; command: string[]; timeoutSeconds: number; publicBaseUrl?: string; keyPrefix: string; githubUsername?: string };
   guidance?: string;
   /** Repo-wide conventions injected into agent prompts. `commits` is free text or a file pointer
    *  (resolved at render time in step.ts); surfaced as @@COMMIT_CONVENTIONS@@. */

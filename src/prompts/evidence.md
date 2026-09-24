@@ -201,7 +201,7 @@ handoff.
      it to the right row; if upload isn't configured it prints a skip notice and produces no URLs —
      that's fine). Put each URL in the table against the criterion its asset proves, so later steps
      can use them. **Use the printed URLs even if the command says the upload was
-     "deferred"** (e.g. AWS creds are down) — the URLs are final and the engine retries the bytes in the
+     "deferred"** (e.g. AWS creds are down) or that it is uploading "in the background" — the URLs are final and the engine retries the bytes in the
      background until they land, so do NOT ask-human, bounce, or retry the command for an upload/infra
      hiccup. Then run `@@STEP_DONE_CMD@@`.
    - **BOUNCE — any criterion is not proven.** The work isn't done; do **not** run step-done. Per

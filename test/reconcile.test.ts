@@ -4637,3 +4637,64 @@ describe("watch-phase rework — evidence belongs to a head (issue #84)", () => 
     expect(store.getRun(run.id)!.phase).toBe("attention");
   });
 });
+
+// ── The evidence gate (issue #90) ──────────────────────────────────────────────────────────────
+// A PR-opening step embeds the evidence URLs, and with background uploads those URLs are printed
+// before the bytes land — so the advance INTO that step waits for the run's latest publish.
+describe("evidence gate — the PR-opening step waits for evidence_uploaded", () => {
+  const publish = (store: Store, runId: number, key: string, prefix = "p1") =>
+    store.enqueueIntent({ repo: "demo", kind: "evidence_publish", scope: `run:${runId}`, runId, ticketKey: key, dedupKey: prefix, payload: "{}", causeScope: "publisher:command", supersedeScope: true });
+
+  it("holds the advance while the upload is pending, then advances once it is delivered", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-EG1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    const job = publish(store, run.id, "K-EG1");
+    expect((await applySignal(deps, "step-done", { key: "K-EG1", step: "review" })).ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("review"); // pr never started on bytes that haven't landed
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    store.markIntentDelivered(job.id);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.step).toBe("pr");
+  });
+
+  it("passes straight through when the run published nothing, and gates on the LATEST publish only", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-EG2", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    publish(store, run.id, "K-EG2", "old"); // superseded by the re-capture below
+    store.markIntentDelivered(publish(store, run.id, "K-EG2", "new").id);
+    expect((await applySignal(deps, "step-done", { key: "K-EG2", step: "review" })).ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("pr");
+  });
+
+  it("parks a FAILED upload with a clear reason instead of shipping dead links", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-EG3", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    store.markIntentFailed(publish(store, run.id, "K-EG3").id, "evidence dir gone (torn down before publish)");
+    await applySignal(deps, "step-done", { key: "K-EG3", step: "review" });
+    const fresh = store.getRun(run.id)!;
+    expect(fresh.phase).toBe("attention");
+    expect(fresh.attentionReasonCode).toBe("evidence_upload_failed");
+    expect(fresh.attentionReason).toContain("evidence dir gone");
+    expect(fresh.step).toBe("review"); // the resume re-runs this same advance
+  });
+
+  it("parks a SUSPENDED (failing command) upload; resume retries it at once and the gate then holds for it", async () => {
+    const { deps, store, worktree } = build();
+    const run = seed(store, worktree, "K-EG4", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    const job = publish(store, run.id, "K-EG4");
+    for (let i = 0; i < 10; i++) store.recordIntentAttempt(job.id, "publish command exited 1: boom", "transient", 30);
+    expect(store.getIntent(job.id)!.suspendedAt).not.toBeNull();
+    await applySignal(deps, "step-done", { key: "K-EG4", step: "review" });
+    expect(store.getRun(run.id)!.attentionReasonCode).toBe("evidence_upload_failed");
+    expect(store.getRun(run.id)!.attentionReason).toContain("exited 1: boom");
+    expect((await resumeRun(deps, store.getRun(run.id)!)).ok).toBe(true);
+    expect(store.getIntent(job.id)!.suspendedAt).toBeNull(); // refundOnResume: a fresh attempt window, due now
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("review"); // held again — pending, not stuck
+  });
+});

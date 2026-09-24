@@ -1523,6 +1523,21 @@ describe("loadConfig — work sources + belts", () => {
     if (ev.publisher !== "command") throw new Error("expected command");
     expect(ev.command).toEqual(["./publish-evidence.sh"]); // string normalized to a one-element argv
     expect(ev.timeoutSeconds).toBe(300); // default
+    expect(ev.publicBaseUrl).toBeUndefined(); // unset ⇒ inline publish, URLs from stdout (unchanged)
+  });
+
+  it("resolves a `command` publisher's optional public_base_url (the background-upload opt-in)", () => {
+    setup(
+      `repo:\n  path: __REPO__\nwork_sources:\n${JIRA_SRC}belt:\n${SHIP_BELT}evidence:
+  publisher: command
+  command: ./publish-evidence.sh
+  public_base_url: https://evidence.example.test/
+`,
+      { prompts: {} },
+    );
+    const ev = loadConfig("demo").config.evidence!;
+    if (ev.publisher !== "command") throw new Error("expected command");
+    expect(ev.publicBaseUrl).toBe("https://evidence.example.test"); // trailing slash stripped
   });
 
   it("resolves a `command` publisher with an argv array + explicit timeout", () => {

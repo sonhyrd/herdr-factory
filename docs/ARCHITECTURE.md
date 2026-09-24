@@ -972,7 +972,22 @@ evidence media: every undelivered evidence upload is
 retried through the run's `EvidencePublisher` (`s3`|`local`|`command`, selected from
 `evidence.publisher`) until the backend accepts it, so an AWS SSO session expiring mid-run — or any
 transient backend outage — no longer ships a PR with broken evidence links (the `evidence-upload`
-CLI publishes the URLs + attempts inline up-front, then enqueues the bytes here). The kind is
+CLI publishes the URLs + attempts inline up-front, then enqueues the bytes here). **Background
+mode** (issue #90): a `command` publisher that declares `public_base_url` has predictable URLs, so
+`evidence-upload` enqueues, prints them, spawns a detached `evidence-deliver <intentId>` child and
+returns at once — the agent is not held by a minutes-long upload. The child OWNS the row through the
+enqueue lease (sized `max(EVIDENCE_PUBLISH_LEASE_SECONDS, timeout_seconds + 60)`, so the flush never
+double-delivers) and runs `deliverIntentNow` (`core/ledger.ts` — the kernel's own deliver + outcome
+bookkeeping, so a success records `evidence_uploaded` and a failure clears the lease onto the normal
+retry clock). A child that never starts or dies just lets the lease lapse; the flush takes over. It
+runs outside the tick on purpose: a Phase-0 delivery blocks the repo's whole pass for its duration.
+**The evidence gate** (`holdForEvidenceUpload`, `reconcile.ts`) closes the loop: the advance INTO a
+PR-opening step (`opensPr`) reads the run's LATEST `evidence_publish` row — none or `delivered` →
+advance; `pending` → hold (checked before any of the advance's side effects, so it re-runs cleanly
+each pass while the steps before it have already finished); `failed`, or `pending` but SUSPENDED →
+park `evidence_upload_failed` instead of shipping dead links. The kind declares
+`refundOnResume: "due_now"`, so a `resume` after the operator fixes the publisher clears the
+suspension and the gate holds for the fresh attempt. The kind is
 publisher-agnostic: it drives `publisher.publish` / `publisher.classifyError`, and the creds probe
 is gated on the publisher exposing `probeLiveness` — only `s3` does, so `local`/`command` (no `auth`
 kind, never auth-stuck) skip it entirely. For `s3`, the prePass probe does two jobs: PROACTIVE
@@ -1207,7 +1222,7 @@ herdr agent in its own tab/pane, dispatched and gated by the reconciler. The run
 | **work** | read the work doc + attachments → implement → lint/type/tests (each through `gate`, leaving a receipt) → commit | `handoff-work.md` + `step-done work` |
 | **evidence** *(opt-in)* | derive a test plan from acceptance criteria → read the repo's guidance/skills/local memory *first* (by path) → run the app and **sign in** via the repo's own dev-server/login helpers and credentials (right persona; an SSO+MFA redirect is expected, an un-completable login is ask-human, not a bounce) → capture before/after screenshots+video (`capture-attempt` signals each try) → publish via `evidence.publisher` (s3/local/command) → per-criterion verdict: pass forward or **bounce to work** | `handoff-evidence.md` + `step-done` / `bounce` |
 | **review** | fresh-eyes **read-only** gate — never edits or commits (enforced: a commit parks the run): reads the work step's gate receipts rather than re-running its suites, then passes forward or **bounces to work** with findings | `handoff-review.md` + `step-done` / `bounce` |
-| **pr** | push + open the PR (evidence URLs embedded) → drive the automated round (CI green + bot comments) | `step-done pr` → human review |
+| **pr** | *(starts only once the run's latest evidence publish has landed — the evidence gate, §7)* push + open the PR (evidence URLs embedded) → drive the automated round (CI green + bot comments) | `step-done pr` → human review |
 
 The steps come from the run's **belt**: each `steps[]` entry names a primitive `type`, resolved
 against its `StepDescriptor` (`src/steps/registry.ts`) onto a generic `StepConfig` — budget,
@@ -2074,7 +2089,9 @@ about to revert. It's driven two ways:
       optional `profile`; pure `@aws-sdk` multipart via `lib-storage`, ambient creds), **`local`**
       (optional `public_base_url`; copies captures into the resident server's serve dir, served at
       `/evidence/<key>/…`), **`command`** (`command` argv + optional `timeout_seconds`; a user
-      executable run with `(captureDir, keyPrefix)` that uploads + prints one URL per file). All three
+      executable run with `(captureDir, keyPrefix)` that uploads + prints one URL per file; optional
+      `public_base_url` declares the URL layout `<base>/<prefix>/<file>` — `predictUrls` then answers
+      and `evidence-upload` goes BACKGROUND, see §7). All three
       share optional `key_prefix` / `github_username` (default: the `gh` login at publish time) and the
       key layout `herdr-factory/<github_username>/<key_prefix>/<key>/<runId>-<timestamp>/`, so the
       "prefix + filename" URL shape is backend-independent. Omit the block and evidence still
@@ -2141,6 +2158,7 @@ herdr-factory --repo <name> bounce <KEY> <toStep> --reason[-file] …     # agen
 herdr-factory --repo <name> rework <KEY> <toStep> --note[-file] …      # OPERATOR → send a live run back for another pass
 herdr-factory --repo <name> capture-attempt <KEY> [--source <name>]   # evidence agent → count a capture try (flaky-capture cap)
 herdr-factory --repo <name> evidence-upload <KEY> [--source <name>]    # publish captured evidence (via evidence.publisher)
+herdr-factory --repo <name> evidence-deliver <intentId>                # [hidden, internal] the detached child evidence-upload spawns in background mode
 herdr-factory --repo <name> gate <KEY> <name> [--step <s>] [--pass <n>] -- <cmd>  # agent → run a check + leave a receipt (exits with the check's code)
 herdr-factory --repo <name> gates <KEY> [--json] [--source <name>]     # agent → which checks already ran, at which commit, with what result
 herdr-factory --repo <name> runs [--all] | timeline <KEY> | logs [n]   # read the DB / repo log

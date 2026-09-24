@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEvidencePublisher, credsRefreshHint, evidenceCredentialInit } from "../src/clients/evidence.ts";
 import { flushOutbox } from "../src/core/outbox.ts";
-import { ledgerFlow } from "../src/core/ledger.ts";
+import { deliverIntentNow, ledgerFlow } from "../src/core/ledger.ts";
 import { EVIDENCE_PUBLISH_LEASE_SECONDS } from "../src/intents/kinds/evidence-publish.ts";
 import { createApp, type ServerContext } from "../src/server/app.ts";
 import { openDb } from "../src/db/index.ts";
@@ -89,6 +89,11 @@ describe("command publisher", () => {
     expect(createEvidencePublisher(cfg([okStub()])).predictUrls("pre", ["a.png"])).toBeNull();
   });
 
+  it("predicts `<public_base_url>/<prefix>/<file>` when the URL layout is declared (the background-upload opt-in)", () => {
+    const p = createEvidencePublisher({ ...cfg([okStub()]), publicBaseUrl: "https://evidence.example" });
+    expect(p.predictUrls("HF-1/5-t", ["shot.png", "sub/a b.mp4"])).toEqual(["https://evidence.example/HF-1/5-t/shot.png", "https://evidence.example/HF-1/5-t/sub/a%20b.mp4"]);
+  });
+
   it("publishes by running the command + parsing its stdout URLs (ignoring log noise)", async () => {
     const noisy = stub("noisy.sh", 'echo "uploading…"\ncd "$1" || exit 2\nfind . -type f | sed "s|^\\./||" | sort | while read f; do echo "https://cdn.example/$2/$f"; done\necho "done"');
     const p = createEvidencePublisher(cfg([noisy]));
@@ -165,6 +170,24 @@ describe("evidence publish with a real command publisher", () => {
     // Still inside the 60s backoff → not due; past it → due again (the retry).
     expect(dueNow(store, 2400)).toHaveLength(0);
     expect(dueNow(store, 2400 + 61)).toHaveLength(1);
+  });
+
+  it("deliverIntentNow (the background child) delivers its OWN leased row — no wait for the lease or a tick", async () => {
+    const ok = stub("ok.sh", 'cd "$1" || exit 2\nfind . -type f | sed "s|^\\./||" | sort | while read f; do echo "https://cdn.example/$2/$f"; done');
+    const { deps, store, job } = setup([ok]); // still inside the enqueue lease: the flush would skip it
+    await deliverIntentNow(deps, store.getIntent(job.id)!);
+    expect(store.getIntent(job.id)!.status).toBe("delivered");
+    expect(store.timeline("r", "K-EV").some((e) => e.type === "evidence_uploaded")).toBe(true);
+  });
+
+  it("a failed background delivery hands the row to the flush's retry clock (lease cleared)", async () => {
+    const fail = stub("fail.sh", 'echo "backend down" >&2\nexit 1');
+    const { deps, store, job } = setup([fail]);
+    await deliverIntentNow(deps, store.getIntent(job.id)!);
+    const row = store.getIntent(job.id)!;
+    expect(row.status).toBe("pending");
+    expect(row.leaseUntil).toBeNull();
+    expect(row.attempts).toBe(1);
   });
 
   it("success → delivered + evidence_uploaded event", async () => {

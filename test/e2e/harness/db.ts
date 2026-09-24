@@ -70,6 +70,8 @@ export interface IntentRow {
   status: string;
   attempts: number;
   next_attempt_at: number;
+  suspended_at: number | null;
+  lease_until: number | null;
   last_error: string | null;
   error_class: string | null;
   resolved_at: number | null;

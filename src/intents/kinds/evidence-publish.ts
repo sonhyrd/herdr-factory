@@ -56,6 +56,8 @@ function publisherOf(deps: Deps) {
 export const evidencePublishKind: IntentKindDef = {
   kind: "evidence_publish",
   ordering: "latest-wins",
+  // A run parked by the evidence gate (a suspended upload) resumes straight into a fresh attempt.
+  refundOnResume: "due_now",
 
   // The creds probe (S3 only — `local`/`command` expose no probeLiveness, and only S3 classifies
   // `auth`, so nothing is ever auth-stuck for them). Two jobs on one probe:

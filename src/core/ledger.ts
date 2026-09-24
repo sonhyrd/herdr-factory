@@ -90,6 +90,15 @@ async function maybeNotify(deps: Deps, kind: IntentKindDef, row: Intent, failure
   deps.store.markIntentNotified(row.id);
 }
 
+/** Deliver ONE row now, outside the flush — the caller already OWNS it (it holds the enqueue lease,
+ *  e.g. the `evidence-upload` background child). Same deliver + outcome bookkeeping as the flush,
+ *  so a failure lands on the normal retry clock (a retry clears the lease; the flush takes over). */
+export async function deliverIntentNow(deps: Deps, row: Intent): Promise<void> {
+  const kind = intentKindFor(row.kind);
+  if (!kind) return;
+  await applyOutcome(deps, kind, row, await kind.deliver(deps, row));
+}
+
 /** The ledger as a Phase-0 flush flow — plugged into `outboxFlows` beside the legacy outboxes. */
 export function ledgerFlow(deps: Deps, kinds: readonly IntentKindDef[] = INTENT_KINDS): OutboxFlow<Intent> {
   const repo = deps.config.repoName;

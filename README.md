@@ -1179,15 +1179,29 @@ evidence:
 **`command`** — bring-your-own backend (GCS, Azure, an internal artifact store). The executable is
 run with two trailing args — the capture directory and the key prefix — and must upload the bytes
 and print one public URL per file to stdout (each ending in that file's path). A non-zero exit or a
-timeout is retried on the outbox's flat 30s clock (suspending after 10 failures). Because the URLs come from stdout, they are known only
-after a successful run (a deferred `command` publish has no links to embed until it lands).
+timeout is retried on the outbox's flat 30s clock (suspending after 10 failures). Without
+`public_base_url` the URLs come from stdout, so they are known only after a successful run (a
+deferred `command` publish has no links to embed until it lands) and `evidence-upload` publishes
+inline — the evidence agent waits for the upload.
+
+Set **`public_base_url`** to declare the URL layout — `<public_base_url>/<prefix>/<relative path>`,
+the same shape as `s3` — and `evidence-upload` prints those URLs and **returns at once**: the upload
+runs in a detached background process (retried by the outbox on failure), so a minutes-long upload
+no longer holds the evidence agent. Your command must then upload each file at exactly that path.
 
 ```yaml
 evidence:
   publisher: command
   command: ./publish-evidence.sh # a bare path, or an argv array [tool, --flag, …]
   timeout_seconds: 300 # optional; default 300
+  public_base_url: https://evidence.example.com # optional; set ⇒ predicted URLs + background upload
 ```
+
+**The evidence gate.** Whatever the publisher, a PR-opening step (`pr`) never starts until the run's
+latest evidence publish has landed (`evidence_uploaded`) — the PR embeds those URLs. A pending upload
+holds the advance (the steps before it, e.g. `review`, run meanwhile); an upload that fails
+permanently or suspends after its retries parks the run as `evidence_upload_failed`. Fix the
+publisher (`doctor --deep`) and `resume` — the resume retries the upload at once.
 
 `doctor --deep` verifies the setup with a per-publisher round-trip: an S3 write probe, a
 `local` static-serve fetch, or a `command` dry-run.

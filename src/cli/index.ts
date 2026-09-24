@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import { configJsonSchema, configSchemaPath, evidenceKeyPrefix, globalDbPath, isManagedNode, loadConfig, managedNodePath, nodePathFile, repoConfigDir, writeConfigSchema, type WorkSourceConfig } from "../config.ts";
@@ -19,6 +21,7 @@ import { availableMemoryMb, claimDeferralNote, describeMachine } from "../machin
 import { claimTicket, flushDurableIntents, reconcileRepo, reconcileRun, resumeRun, teardownTicket, withRunLockWaiting, withTickLock } from "../core/reconcile.ts";
 import { evidencePublishKind, EVIDENCE_PUBLISH_LEASE_SECONDS } from "../intents/kinds/evidence-publish.ts";
 import { RETRY_INTERVAL_SECONDS } from "../schedule.ts";
+import { deliverIntentNow } from "../core/ledger.ts";
 import { applySignal, type SignalBody, type SignalResult } from "../core/signals.ts";
 import { runObligations } from "../core/obligations.ts";
 import { formatGateReceipts, runGate } from "../core/gate-receipts.ts";
@@ -1005,8 +1008,15 @@ program
       // regardless of whether delivery lands now. Latest-wins: a re-capture (different prefix)
       // supersedes the run's earlier undelivered publishes. The lease keeps the server's Phase-0
       // flush from claiming the row while the inline attempt below is mid-upload; a failed inline
-      // attempt clears it. The `command` publisher can't pre-compute URLs (they come from its
-      // stdout) — its links print only after a successful publish below.
+      // attempt clears it. A `command` publisher with no `public_base_url` can't pre-compute URLs
+      // (they come from its stdout) — its links print only after a successful publish below.
+      //
+      // BACKGROUND mode (a `command` publisher that declares `public_base_url`): the URLs are known,
+      // so don't make the agent wait out a minutes-long upload — a detached child (`evidence-deliver`)
+      // owns the lease and publishes; a failure lands on the ledger's normal retry clock, and the
+      // PR-opening step waits for `evidence_uploaded` (the reconciler's evidence gate).
+      const background = ev.publisher === "command" && !!ev.publicBaseUrl;
+      const leaseSeconds = background ? Math.max(EVIDENCE_PUBLISH_LEASE_SECONDS, ev.timeoutSeconds + 60) : EVIDENCE_PUBLISH_LEASE_SECONDS;
       const job = deps.store.enqueueIntent({
         repo,
         kind: evidencePublishKind.kind,
@@ -1016,13 +1026,20 @@ program
         dedupKey: prefix,
         payload: JSON.stringify({ keyPrefix: prefix, evidenceDir: dir }),
         causeScope: `publisher:${ev.publisher}`,
-        leaseUntil: deps.now() + EVIDENCE_PUBLISH_LEASE_SECONDS,
+        leaseUntil: deps.now() + leaseSeconds,
         supersedeScope: true,
       });
       const predicted = publisher.predictUrls(prefix, files);
       if (predicted) {
         console.log("public URLs (use these in your handoff even if delivery is deferred — they resolve once the bytes land):");
         for (const url of predicted) console.log(url);
+      }
+      if (background) {
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--repo", repo, "evidence-deliver", String(job.id)], { detached: true, stdio: "ignore" });
+        child.on("error", () => {}); // a failed spawn just waits out the lease; the server's flush retries
+        child.unref();
+        console.log(`evidence-upload: uploading ${files.length} evidence file(s) via ${ev.publisher} in the background — the pr step waits for it; carry on`);
+        return;
       }
 
       // Inline fast path: publish now (the common success case). On failure DON'T hard-fail — the
@@ -1046,6 +1063,21 @@ program
           console.log(`evidence-upload: publish deferred — ${c.reason}. The engine will retry automatically; ${tail}`);
         }
       }
+    } catch (e) {
+      fail(e);
+    }
+  }));
+
+program
+  .command("evidence-deliver <intentId>", { hidden: true })
+  .description("[internal] deliver one leased evidence publish now — the detached child `evidence-upload` spawns in background mode")
+  .action(cliAction("evidence-deliver", async (intentId: string) => {
+    try {
+      const deps = await buildDeps(requireRepo());
+      const row = deps.store.getIntent(Number(intentId));
+      // Superseded by a re-capture (or already delivered) while this child was starting: nothing to do.
+      if (row?.status !== "pending") return;
+      await deliverIntentNow(deps, row);
     } catch (e) {
       fail(e);
     }

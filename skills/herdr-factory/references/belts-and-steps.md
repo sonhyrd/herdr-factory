@@ -81,7 +81,7 @@ Notes that matter when composing:
   stall diagnosis wins a double-trip.
 - Escalation reason codes you will see in `status`, in the HTTP `obligations` endpoint
   (`GET /repos/<repo>/obligations?key=<KEY>`), and narrated by `explain <KEY>`: `step_budget`, `step_stalled`,
-  `read_only_violation`, `dirty_tree`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
+  `read_only_violation`, `dirty_tree`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
   Park texts and remediations → [troubleshooting.md](./troubleshooting.md).
 
 ---
@@ -158,8 +158,12 @@ and one final time after the last commit so the receipts sit at HEAD — see
   `max_capture_attempts: 0` parks on the first attempt.
 - **Non-gating by design.** `capture_limit` is a watchdog park: a later genuine `step-done` (or a
   bounce) un-parks and advances, so a flaky app cannot wedge the pipeline. Separately, publishing never
-  blocks — `evidence-upload` prints the deterministic URLs up front and enqueues a durable outbox
-  intent; an upload failure notifies but **never parks**. With no `evidence:` block configured it
+  blocks the evidence step — `evidence-upload` prints the deterministic URLs up front and enqueues a
+  durable outbox intent (a `command` publisher with `public_base_url` even uploads in a detached
+  background process and returns at once). What waits is the **PR-opening step**: the evidence gate
+  holds the advance into `pr` until the run's latest publish has landed (`evidence_uploaded`), and
+  parks `evidence_upload_failed` if it failed permanently or suspended after its retries — `resume`
+  retries it once the publisher is fixed. With no `evidence:` block configured it
   prints ``evidence-upload: no `evidence:` block configured for this repo — skipping publish (no URLs
   produced)`` and the step still captures and assesses.
 - **Capture mutex.** A machine-global lock named `capture` (TTL 1200 s, acquire polls every 5 s up to

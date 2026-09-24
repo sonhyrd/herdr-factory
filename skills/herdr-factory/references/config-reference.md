@@ -358,7 +358,7 @@ Shared by all publishers:
 |---|---|
 | `s3` | `bucket`**!**, `region`**!**, `cloudfront_domain`**!** (a `https?://` prefix and trailing `/`s are stripped to a bare host), `profile` (optional AWS CLI named profile) |
 | `local` | `public_base_url` — default `http://127.0.0.1:<server port>`, trailing `/`s stripped |
-| `command` | `command`**!** (`string` or non-empty `array(string)`; a bare string becomes a 1-element argv, run with **no shell**, capture dir + key prefix appended as the last two args), `timeout_seconds` (int positive, default **300**) |
+| `command` | `command`**!** (`string` or non-empty `array(string)`; a bare string becomes a 1-element argv, run with **no shell**, capture dir + key prefix appended as the last two args), `timeout_seconds` (int positive, default **300**), `public_base_url` (optional, trailing `/`s stripped) — set, the URLs are predicted as `<public_base_url>/<prefix>/<relative path>` and `evidence-upload` uploads in the **background** (returns at once); unset, the URLs come from the command's stdout and the publish is inline |
 
 Object key layout is publisher-independent:
 `herdr-factory/<github_username>/<key_prefix>/<work_key>/<runId>-<stamp>/<file>`, empty segments
@@ -472,7 +472,7 @@ stay. `reload` otherwise picks up edits.
 | `branch.prefixes` reserved key | `default` |
 | product vocabulary (not directly writable) | `work_spec`, `work_raw`, `commits`, `handoff`, `evidence`, `pull_request`, `bounce_feedback`, `human_reply`, `close_reference` |
 | guard kinds (seen in diagnostics) | `budget`, `heartbeat`, `read_only`, `capture_cap`, `layout_wait`, `exclusive_resource` |
-| escalation reasons (seen in diagnostics) | `step_budget`, `step_stalled`, `read_only_violation`, `dirty_tree`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit` |
+| escalation reasons (seen in diagnostics) | `step_budget`, `step_stalled`, `read_only_violation`, `dirty_tree`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit` |
 
 ---
 
