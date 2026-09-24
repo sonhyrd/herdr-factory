@@ -106,6 +106,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `ask-human` | a blocked agent asks through the work source, frees its slot, and resumes on the answer |
 | `ask-human-self-resolved` | an agent that asks and then unblocks itself: its `step-done` un-parks the run and closes the moot question |
 | `missing-api-key` | an uncredentialed source is never dialled and never claims, while its neighbour ships; credentials un-pause it |
+| `invalid-config-claims` | a `config.yml` the running code can't load stops claims — `/status` and `doctor` say `config invalid: …` — and restoring the file resumes claiming with no restart (issue #95) |
 | `evidence` | the opt-in evidence station captures, publishes through the `local` publisher, and the resident server serves the bytes |
 | `evidence-publish-retry` | a failing publisher retries in the background, flags the run's `problem`, and delivers once `intents/recover` is called |
 | `capture-cap` | a flaky capture loop parks at the cap — and the station's own verdict still wins |

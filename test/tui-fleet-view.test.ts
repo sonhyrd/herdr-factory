@@ -348,6 +348,12 @@ describe("what the board leads with", () => {
     ).toEqual([]);
   });
 
+  it("a repo whose config stopped loading is listed — it claims nothing until fixed (issue #95)", () => {
+    const config = { kind: "config", detail: "config invalid: evidence: Unrecognized key — claims paused until the file loads" };
+    const items = needsYou([machineView({ repos: [withRuns("app", [], { problems: [config, { kind: "auth", detail: "gh auth" }] })] })]);
+    expect(items.map((i) => [i.repo, i.text, i.key])).toEqual([["app", `✗ app  ${config.detail}`, undefined]]);
+  });
+
   it("a run on a silent machine is still listed, and marked as un-actionable", () => {
     const items = needsYou([
       machineView({ name: "build-box", local: false, state: "unverifiable", stale: true, repos: [withRuns("api", [activeRun({ phase: "attention" })])] }),

@@ -516,6 +516,14 @@ export class HerdrClient {
     return (j.result?.panes ?? []).map((p) => ({ paneId: p.pane_id, tabId: p.tab_id, label: p.label ?? null }));
   }
 
+  /** Every tab label in a workspace. [] when herdr can't be asked. */
+  async tabLabels(workspaceId: string): Promise<string[]> {
+    const j = await runJson<TabListResp>(this.bin, ["tab", "list", "--workspace", workspaceId], { allowFail: true }).catch(
+      () => ({}) as TabListResp,
+    );
+    return (j.result?.tabs ?? []).map((t) => t.label ?? "");
+  }
+
   /** The first pane in a tab (a fresh worktree's root pane), or null. */
   async firstPaneOfTab(workspaceId: string, tabId: string): Promise<string | null> {
     return (await this.listPanes(workspaceId)).find((p) => p.tabId === tabId)?.paneId ?? null;

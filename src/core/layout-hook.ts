@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { listConfiguredRepos, stateRoot } from "../config-paths.ts";
 import { resolveHookLayout } from "./layout-match.ts";
 import type { Deps } from "./deps.ts";
+import type { WorkspaceInfo } from "../types.ts";
 
 // ── Event payload ────────────────────────────────────────────────────────────────────────────────
 // herdr passes the event as JSON in HERDR_PLUGIN_EVENT_JSON. Created events nest the workspace under
@@ -170,12 +171,42 @@ export function markDecided(workspaceId: string): void {
   }
 }
 
+// The hook runs headless, so a build it could NOT do reaches only herdr's plugin log. Its failure
+// line per workspace (a config that didn't load, an apply error) is kept here so a run that parks
+// waiting for a layout can name why the build never happened (`layout_wait_timeout`); any other
+// outcome clears it, so a successful or deliberately-skipped build never takes the blame. Keyed by
+// workspace id → session-scoped, like decided.
+function failureDir(): string {
+  return join(hookStateDir(), "failed");
+}
+const failurePath = (workspaceId: string): string => join(failureDir(), workspaceId.replace(/[^A-Za-z0-9_.-]/g, "_"));
+/** Record the hook's failure line for a workspace, or clear it (`null`). Best effort. */
+export function noteHookFailure(workspaceId: string, line: string | null): void {
+  try {
+    if (line == null) rmSync(failurePath(workspaceId), { force: true });
+    else {
+      mkdirSync(failureDir(), { recursive: true });
+      writeFileSync(failurePath(workspaceId), line);
+    }
+  } catch {
+    /* a park just names no hook line */
+  }
+}
+export function lastHookFailure(workspaceId: string): string | null {
+  try {
+    return readFileSync(failurePath(workspaceId), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop the whole per-workspace "decided" cache. Called from the one-shot `[[startup]]` hook: a new
  *  herdr server hands out workspace ids from scratch, so every entry is either stale or — worse —
  *  about to collide with a DIFFERENT workspace that recycles the id, which would make the hook skip a
  *  layout it never actually applied. Returns whether anything was there. */
 export function clearDecided(): boolean {
   const dir = decidedDir();
+  rmSync(failureDir(), { recursive: true, force: true }); // same session scope
   if (!existsSync(dir)) return false;
   try {
     rmSync(dir, { recursive: true, force: true });
@@ -264,23 +295,36 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
   if (isFocus && env.HERDR_FACTORY_FOCUS_HOOK?.trim() === "0") return { skipped: "focus hook disabled" };
   if (isFocus && isDecided(workspaceId)) return { skipped: "already decided" };
 
-  const done = (skipped: string): HookResult => {
-    if (isFocus) markDecided(workspaceId);
-    return { skipped };
-  };
+  try {
+    const res = await evaluateWorkspace(env, workspaceId, payload);
+    // A config that failed to load must not settle the workspace: once it's fixed, the next focus
+    // (or the engine's layout wait) has to find it undecided and build.
+    if (isFocus && !res.retry) markDecided(workspaceId);
+    noteHookFailure(workspaceId, res.retry ? res.skipped! : null);
+    return res.applied ? { applied: res.applied } : { skipped: res.skipped };
+  } catch (e) {
+    noteHookFailure(workspaceId, e instanceof Error ? e.message : String(e));
+    throw e;
+  }
+}
 
+async function evaluateWorkspace(
+  env: Record<string, string | undefined>,
+  workspaceId: string,
+  payload: EventPayload,
+): Promise<HookResult & { retry?: boolean }> {
   const { HerdrClient } = await import("../clients/herdr.ts");
   const herdr = new HerdrClient(env.HERDR_BIN_PATH ?? "herdr");
 
   const info = await herdr.workspaceInfo(workspaceId);
-  if (!info?.checkoutPath) return done("not a worktree workspace");
-  if (!info.isLinkedWorktree) return done("main checkout — never touch");
-  const checkoutPath = info.checkoutPath;
+  if (!info?.checkoutPath) return { skipped: "not a worktree workspace" };
+  if (!info.isLinkedWorktree) return { skipped: "main checkout — never touch" };
 
   // Which factory repo owns this worktree? Its main checkout (repo.path) is the worktree's repo_root.
   const { loadConfig } = await import("../config.ts");
   const repoRoot = info.repoRoot ? resolve(info.repoRoot) : null;
   let repoName: string | undefined;
+  const loadErrors: string[] = [];
   if (repoRoot) {
     for (const name of listConfiguredRepos()) {
       try {
@@ -288,15 +332,34 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
           repoName = name;
           break;
         }
-      } catch {
-        /* skip a repo whose config doesn't currently load */
+      } catch (e) {
+        // Can't tell whether this repo owns the worktree — say so, and don't settle the workspace.
+        loadErrors.push(`repo "${name}" config failed to load: ${(e instanceof Error ? e.message : String(e)).split("\n").join(" ")}`);
       }
     }
   }
-  if (!repoName) return done(`no factory repo config for ${repoRoot ?? checkoutPath}`);
+  if (!repoName) {
+    const skipped = `no factory repo config for ${repoRoot ?? info.checkoutPath}`;
+    return loadErrors.length > 0 ? { skipped: `${skipped} (${loadErrors.join("; ")})`, retry: true } : { skipped };
+  }
 
   const { buildDeps } = await import("../build-deps.ts");
-  const deps: Deps = await buildDeps(repoName);
+  return buildLayoutInto(await buildDeps(repoName), repoName, workspaceId, info, payload);
+}
+
+/** Build the matching layout into one worktree workspace, for `repoName`'s config — the hook's body
+ *  once it knows the repo, and what the engine's layout wait re-runs when a run's workspace never got
+ *  its layout (the hook failed while the config didn't load). Never marks "decided" (the focus path's
+ *  caller does). Throws on an apply failure after releasing the claim. */
+export async function buildLayoutInto(
+  deps: Deps,
+  repoName: string,
+  workspaceId: string,
+  info: WorkspaceInfo,
+  payload: EventPayload = {},
+): Promise<HookResult> {
+  const checkoutPath = info.checkoutPath!;
+  const done = (skipped: string): HookResult => ({ skipped });
 
   // Which run owns this worktree? By checkout PATH first (immune to anything an agent does inside
   // it — including renaming the branch), then by name: at CREATE time — the event this hook exists
@@ -380,7 +443,6 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
     type: "layout_applied",
     detail: { layout: layout.id, workspaceId, checkoutPath, ...(prunedTabs.length > 0 ? { prunedTabs } : {}), ...(fresh ? {} : { appended: true }) },
   });
-  if (isFocus) markDecided(workspaceId);
   deps.log("info", `layout hook: built "${layout.id}" into ${checkoutPath}`);
   return { applied: layout.id };
 }

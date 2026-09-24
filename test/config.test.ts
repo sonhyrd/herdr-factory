@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { hostname, tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { loadConfig, assertMainCheckout, expandHome, configJsonSchema, evidenceKeyPrefix, RepoConfigSchema } from "../src/config.ts";
+import { loadConfig, configLoadError, assertMainCheckout, expandHome, configJsonSchema, evidenceKeyPrefix, RepoConfigSchema } from "../src/config.ts";
 import { createEvidencePublisher } from "../src/clients/evidence.ts";
 import { DEFAULT_BRANCH_TAXONOMY, branchName } from "../src/core/branch.ts";
 import { DEFAULT_AGENT_CONFIG } from "../src/types.ts";
@@ -2158,5 +2158,25 @@ describe("assertMainCheckout", () => {
     writeFileSync(join(linked, ".git"), "gitdir: /elsewhere");
     expect(() => assertMainCheckout(main)).not.toThrow();
     expect(() => assertMainCheckout(linked)).toThrow(/linked worktree/);
+  });
+});
+
+describe("configLoadError — the claim gate's view of the file on disk (issue #95)", () => {
+  it("null while it loads; the issue lines when it doesn't; re-read only when the mtime moves", () => {
+    const { repoDir, repoPath } = setup(cfg(JIRA_SRC, SHIP_BELT));
+    const yml = join(repoDir, "config.yml");
+    expect(configLoadError("demo")).toBeNull();
+
+    writeFileSync(yml, cfg(JIRA_SRC, SHIP_BELT).replaceAll("__REPO__", repoPath) + "limits:\n  max_active_workspaces: -1\n");
+    const stamp = new Date(Date.now() + 5_000);
+    utimesSync(yml, stamp, stamp);
+    expect(configLoadError("demo")).toMatch(/^limits\.max_active_workspaces: /);
+
+    // Same mtime ⇒ the cached verdict, even though the content changed underneath.
+    writeFileSync(yml, cfg(JIRA_SRC, SHIP_BELT).replaceAll("__REPO__", repoPath));
+    utimesSync(yml, stamp, stamp);
+    expect(configLoadError("demo")).toMatch(/max_active_workspaces/);
+    utimesSync(yml, stamp, new Date(Date.now() + 10_000));
+    expect(configLoadError("demo")).toBeNull();
   });
 });

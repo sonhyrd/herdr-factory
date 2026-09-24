@@ -758,6 +758,16 @@ Everything repo-specific lives in `~/.config/herdr-factory/repos/<name>/`:
 The server discovers every folder under `repos/` that contains a `config.yml`; onboarding a repo
 is pure data (`herdr-factory reload` picks it up without a restart).
 
+The running server keeps the config it loaded, but before every claim pass it checks that
+`config.yml` on disk **still loads with the running code** (re-read only when the file's mtime
+changes). If it doesn't — typically a key a newer herdr-factory added, written before this host
+updated — that repo **claims nothing** (runs already in flight carry on, other repos are
+unaffected) and says why: `config invalid: <error> — claims paused until the file loads` in the
+dashboard's "needs you" list and the repo's problems, and on `doctor`'s `config loads + sources
+buildable` row. Fixing the file resumes claiming on the next tick, with no restart or `reload`.
+A claim is refused because every fresh process reads the file — the layout hook among them — and
+would build nothing into the new workspace.
+
 ### `repo`
 
 - `path` — the **main** checkout (not a linked worktree; validated at load). `~`/`$HOME` expand.
@@ -1435,6 +1445,12 @@ transient herdr/layout race self-heals — even from an already-parked run), and
 run park for attention. Each expiry first **re-runs the layout's own `agent start`** for that pane
 (same kind and args) when the pane is sitting at a shell prompt with no agent — the layout hook
 starts a pane's agent once, so an agent that failed to come up would otherwise never be retried.
+When the workspace has **none** of the layout's tabs at all — the hook built nothing, e.g. because
+the repo's config didn't load when the workspace was created — the expiry builds the layout itself,
+from the running server's config (`layout_wait_retry` carries `layoutRebuilt`). When the hook's
+build FAILED for that workspace (a config that didn't load, an apply error), the park names it
+(`… never became available — layout hook: no factory repo config for …`) and `explain` leads with it;
+a layout the hook built, or skipped on purpose, leaves the park reason as it always was.
 Before any `claude` agent is started, in a layout pane or a dedicated one, the factory marks the
 worktree trusted in Claude Code's config (`projects[<worktree>].hasTrustDialogAccepted` in
 `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`, leaving every other key alone), so a fresh
@@ -1786,7 +1802,8 @@ cursor.
   - **"needs you" heads the board**, above the hosts and never narrowed by the machine filter: PRs
     that are green and waiting to be merged (the factory never merges — see
     [`work_to_pull_request`](#work_to_pull_request--feed-it-a-ticket-get-a-merged-pr)), runs parked for `attention`, runs that asked a human a
-    question, and machines that have gone silent. There is nothing to press to get it and nothing
+    question, repos whose `config.yml` stopped loading (they claim nothing until it's fixed), and
+    machines that have gone silent. There is nothing to press to get it and nothing
     drawn when it is empty. Its run entries *are* the runs — `s`, `x`, `d` and `↵` act on them from
     there, so a parked run never has to be found twice.
   - **Idle repos collapse** to one line per machine — `idle · agent-kit · paul-clips` — because a
