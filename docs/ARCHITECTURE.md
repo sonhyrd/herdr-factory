@@ -1506,8 +1506,8 @@ for `review`, destroy the fresh-eyes value. Context crosses a boundary two ways:
 
 - **Structured handoff doc (default).** The outgoing agent writes
   `.memory/herdr-factory/handoff-<step>.md` against a **fixed template** the finish protocol spells
-  out: a `sha: <commit>` line, then `## Did`, `## Decisions`, `## Uncertain`, `## Next step should
-  verify` — capped at 40 lines, empty sections deleted rather than padded, plus any section this
+  out: a `sha: <commit>` line, then `## Did`, `## Decisions`, `## Uncertain`, `## Found` (out-of-scope
+  problems, each with `file:line`), `## Next step should verify` — capped at 40 lines (`## Found` included), empty sections deleted rather than padded, plus any section this
   step's prompt requires (verbatim findings, repro steps, verdict tables), which is exempt from
   the cap. Deliberately lossy —
   keeps the signal, drops the transcript noise. This is the next agent's primary input. The template
@@ -1743,7 +1743,7 @@ step (`spawnStep`):
    `@@STEP_DONE_CMD@@`/`@@BOUNCE_CMD@@`/`@@EVIDENCE_UPLOAD_CMD@@` — each carrying `--source` so
    the signal resolves unambiguously, …), appends `guidelines-prompt.md`, and appends the
    **handover scaffold**: where you are in the belt, the prior step's handoff + session pointer,
-   the ask-human protocol, the bounce protocol (when the step declares a bounce), and the
+   the keep-going / never-destroy rule (don't pause for confirmation; stop only via ask-human; no force-push, no deleting what you didn't create, nothing outside the worktree), the ask-human protocol, the bounce protocol (when the step declares a bounce), and the
    finish protocol — write your handoff note, then signal `step-done`. The rendered prompt is
    written to `.memory/herdr-factory/prompt-<step>.md`; the agent is told to read it.
    Two dataflow refinements keep a primitive honest in any belt (`productActiveFor` in `step.ts`,
@@ -1791,7 +1791,7 @@ drifted off — and never ran `step-done`: perfectly alive, sitting at its promp
 watch expires 45-60 minutes later and parks the run for a human who types `resume` and watches it
 finish in three. So a step whose watches evaluated to *none* and whose pane has been continuously
 `isReadyForInput` for `limits.idle_nudge_seconds` (default 300, `0` disables) is re-prompted once,
-with the same message `resume` sends — both callers go through one `nudgeStepAgent` helper, because
+with the same message `resume` sends (continue the step, re-read its prompt and `TASKS.md` if it exists) — both callers go through one `nudgeStepAgent` helper, because
 a drift in the TEXT between them would be a silent bug. The nudge parks nothing; it only tries to
 make the park unnecessary.
 

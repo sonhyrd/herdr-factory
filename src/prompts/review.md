@@ -61,9 +61,11 @@ findings belong in your handoff or bounce note.
      step can use them@@END@@, then run `@@STEP_DONE_CMD@@`. Do **not** edit code, do **not** commit.
    - **Not acceptable.** There's a bug, missing coverage, the wrong approach@@WHEN:evidence@@, or the
      evidence doesn't prove the change@@END@@. Do **not** fix it yourself and do **not** run step-done.
-     Write concrete, actionable findings — exactly what must change — to `@@MEMORY_DIR@@/bounce-@@STEP@@.md`,
-     then run `@@BOUNCE_CMD@@` (see "Sending the work back for rework" below). This returns the run to
-     the **@@BOUNCE_TARGET@@** step to do the work.
+     Write concrete, actionable findings — exactly what must change — to `@@MEMORY_DIR@@/bounce-@@STEP@@.md`.
+     Each finding gives `file:line`, why it's wrong, and **how to show it fails** — a command, a
+     test, or an input → wrong output — so the work step can reproduce it before fixing. Then run
+     `@@BOUNCE_CMD@@` (see "Sending the work back for rework" below). This returns the run to the
+     **@@BOUNCE_TARGET@@** step to do the work.
 
 Use the previous step's handoff and, if you need detail it doesn't capture, query the earlier agents
 on demand (see the inputs section below). Do NOT open a PR and do NOT change the work item's status

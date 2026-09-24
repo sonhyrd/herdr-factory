@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db/index.ts";
@@ -1079,16 +1079,61 @@ describe("gate receipts + the handoff template reach the agent (end-to-end rende
 
   it("every step's scaffold carries the FIXED handoff template, not a free-form 'write a note'", async () => {
     const body = await render(0, shippedWork);
-    for (const heading of ["sha: <commit>", "## Did", "## Decisions", "## Uncertain", "## Next step should verify"]) {
+    for (const heading of ["sha: <commit>", "## Did", "## Decisions", "## Uncertain", "## Found", "## Next step should verify"]) {
       expect(body, heading).toContain(heading);
     }
-    expect(body).toContain("Keep it under 40 lines total");
+    expect(body).toContain("Keep it under 40 lines total (`## Found` included)");
     expect(body).toContain("exempt from the cap");
     expect(body).not.toContain("EXACTLY this template");
     expect(body).toContain("The same brevity applies to a PR body");
     expect(body).not.toMatch(/brevity applies to a bounce note/);
     // And it tells the agent step-done reports the landing, so it has no reason to poll `status`.
     expect(body).toContain("advanced fix → <next step>");
+  });
+});
+
+// ISSUE #106: practices for long unattended runs.
+describe("long-run practices reach the agent (end-to-end render)", () => {
+  const shipped = (p: string) => readFileSync(new URL(`../src/prompts/${p}`, import.meta.url), "utf8");
+  const render = async (idx: 0 | 1, body: string) => {
+    const { deps, store, worktree, shipBelt } = build();
+    shipBelt.steps[idx]!.enginePrompt = body;
+    const step = shipBelt.steps[idx]!;
+    const run = seed(store, worktree, "K-LR", "running", step.name);
+    await renderStepPrompt(deps, run, shipBelt, deps.resolveSource("jira")!, step, null);
+    return readFileSync(join(worktree, MEMORY_DIR, `prompt-${step.name}.md`), "utf8");
+  };
+
+  it.each(["work.md", "github_issues/work.md", "jira/work.md", "sentry/work.md"])(
+    "%s renders the TASKS.md checklist step and the subagent paragraph",
+    async (p) => {
+      const body = await render(0, shipped(p));
+      expect(body).toContain(`${MEMORY_DIR}/TASKS.md`);
+      expect(body).toContain("never commit it");
+      expect(body).toContain("give each part its own subagent");
+      expect(body).toContain("Check each\nsubagent's evidence");
+      expect(body).not.toMatch(/@@[A-Z_]+@@/);
+    },
+  );
+
+  it("every step's scaffold says keep going, stop only via ask-human, and never destroy", async () => {
+    const body = await render(1, shipped("review.md"));
+    expect(body).toContain("## Keep going; never destroy");
+    expect(body).toContain("Stop only through `ask-human`");
+    expect(body).toContain("no force-push");
+    expect(body).toContain("published releases or tags");
+  });
+
+  it("the review prompt asks every bouncing finding to show how it fails", async () => {
+    expect(await render(1, shipped("review.md"))).toContain("**how to show it fails**");
+  });
+
+  it("no shipped prompt carries a thinking directive", () => {
+    const dir = new URL("../src/prompts/", import.meta.url);
+    for (const p of readdirSync(dir, { recursive: true }) as string[]) {
+      if (!p.endsWith(".md")) continue;
+      expect(readFileSync(new URL(p, dir), "utf8"), p).not.toMatch(/think (carefully|hard|step)|step[- ]by[- ]step/i);
+    }
   });
 });
 
@@ -4151,6 +4196,7 @@ describe("resume nudges the resumed step's idle agent", () => {
     expect(msg).toContain("A human resumed K-NU1");
     expect(msg).toContain("fix step over budget"); // the park reason, so the agent knows why
     expect(msg).toContain("prompt-fix.md"); // points at the pass's rendered prompt (valid --pass stamp)
+    expect(msg).toContain("TASKS.md"); // the checklist that survives compaction
     expect(msg).toContain("step-done");
   });
 

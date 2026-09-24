@@ -75,6 +75,7 @@ scenario(
       .filter((c) => c.argv.some((a) => /has been idle for ~/.test(a)));
     expect(sent.length, "one nudge submission, pointing the agent back at its own brief").toBe(1);
     expect(sent[0]!.argv.join("\n"), "…and at the step-done it forgot").toMatch(/prompt-work\.md[\s\S]*step-done/);
+    expect(sent[0]!.argv.join("\n"), "…and at its TASKS.md checklist, if it wrote one (issue #106)").toContain("TASKS.md");
 
     // The nudged agent finishes the step it had already done the work for — no human, no park.
     await w.waitFor(() => w.db.step(run.id, "work")?.done === 1, { label: "the nudged agent signals step-done", timeoutMs: 120_000 });

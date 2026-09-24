@@ -2607,7 +2607,7 @@ async function nudgeStepAgent(
     if (!isReadyForInput(worker)) return { nudged: false, worker };
     const nudged = await deps.herdr.agentSend(
       paneId,
-      `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief. ` +
+      `${lead} Continue the ${stepName} step in this worktree — re-read ${MEMORY_DIR}/prompt-${stepName}.md if you need the full brief, and read ${MEMORY_DIR}/TASKS.md if it exists. ` +
         `If the step is already complete, write your handoff note and run the step-done command from that prompt now, then stop.`,
       { confirm: opts.confirm === true },
     );

@@ -31,8 +31,8 @@ At render time the engine builds each step's prompt in this order:
 4. Your repo's **`guidelines-prompt.md`** (if present) is appended under a *"Repo-specific
    guidance"* heading — it applies to every step of every belt.
 5. The engine's **handover scaffold** is appended: which belt and step this is and the full
-   step sequence, how to read the prior step's handoff and query its agent on demand, the
-   ask-human protocol, the bounce protocol (where applicable), and the finish protocol (write
+   step sequence, how to read the prior step's handoff and query its agent on demand,
+   the keep-going / never-destroy rule (don't pause for confirmation; stop only via ask-human; no force-push, no deleting what you didn't create, nothing outside the worktree), the ask-human protocol, the bounce protocol (where applicable), and the finish protocol (write
    your handoff — opening with the `sha:` it covers — then run `step-done`).
 6. If the run was **bounced back** to this step — by a later step, or by the operator's
    `rework` — a *"⚠ Rework requested — READ THIS FIRST"* banner is prepended, pointing at the

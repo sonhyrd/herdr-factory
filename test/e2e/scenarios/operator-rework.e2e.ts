@@ -105,8 +105,25 @@ scenario(
     expect(prompt, "the finish protocol asks for the sha the handoff covers").toContain("sha: <commit>");
     expect(prompt).toContain("git rev-parse HEAD");
 
+    // Issue #106: the long-run practices reach a real-serve rendered prompt — the TASKS.md
+    // checklist and subagent paragraph (work base), keep-going/never-destroy and `## Found`
+    // (every step's scaffold).
+    expect(prompt, "the work step tracks multi-part work in TASKS.md").toContain(".memory/herdr-factory/TASKS.md");
+    expect(prompt).toContain("never commit it");
+    expect(prompt, "wide changes go to subagents").toContain("give each part its own subagent");
+    expect(prompt, "keep going; stop only for a human").toContain("## Keep going; never destroy");
+    expect(prompt).toContain("Stop only through `ask-human`");
+    expect(prompt).toContain("no force-push");
+    expect(prompt, "out-of-scope problems have a home").toMatch(/## Uncertain[\s\S]*## Found[\s\S]*## Next step should verify/);
+    expect(prompt, "counted inside the cap").toContain("Keep it under 40 lines total (`## Found` included)");
+
     // A rewind, not an abort: the belt runs forward from work again and finishes.
     await w.waitForEnd(key, "completed", { label: "the reworked run runs forward and completes", timeoutMs: 180_000 });
     expect(w.db.step(id, "evidence")!.pass, "evidence re-ran on its own next pass").toBe(2);
+
+    // Issue #106: a bouncing review finding must say how to show it fails.
+    const review = w.renderedPrompt("review", 1);
+    expect(review, "the review step was prompted").not.toBeNull();
+    expect(review!, "each bounce finding says how to show it fails").toContain("**how to show it fails**");
   },
 );
