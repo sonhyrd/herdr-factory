@@ -1,11 +1,14 @@
 # Resolver — PR #@@PR_NUMBER@@ (@@KEY@@)
 
-New review activity has landed on **PR #@@PR_NUMBER@@** for @@KEY@@ — unresolved review comments
-and/or failing CI checks. Your job is to drive this PR back to green.
+New review activity has landed on **PR #@@PR_NUMBER@@** for @@KEY@@ — unresolved review comments,
+failing CI checks, and/or a conflict with its base branch. Your job is to drive this PR back to green.
 
 ## Do
 1. Enumerate what's outstanding: every **unresolved review thread** and every **failing CI check** on
-   the PR.
+   the PR, and whether it **can merge** (`gh pr view @@PR_NUMBER@@ --json baseRefName,mergeable,mergeStateStatus`).
+   If it is `CONFLICTING` — or `BEHIND` a base that requires up-to-date branches — merge the base in
+   first (`git fetch origin <base> && git merge origin/<base>`; never rebase or force-push), resolve
+   the conflicts, run the repo's checks, commit and push. Never merge the PR itself.
 2. For **each review thread**: make the change it asks for, commit it (one focused commit per thread),
    push, then **resolve that thread**.
 3. For **each failing check**: first ask whether it is **this PR's** failure. Probe `main` **once**,

@@ -2875,6 +2875,80 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.notify).toBe(2);
   });
 
+  // --- issue #114: once per head, and a conflicted PR is not green -------------------------------
+  it("reviewing + the same head never notifies twice, even after a red flicker; a new green head notifies once", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-FLKR", "reviewing", null, { prNumber: 27, lastThreadSig: "sig-red" });
+    state.pr = { number: 27, state: "OPEN", url: "u", headOid: "sha-1" };
+    const red = { unresolved: 0, failing: 1, pending: 0, sig: "sig-red" };
+    const green = { unresolved: 0, failing: 0, pending: 0, sig: "sig-green" };
+    for (const sig of [green, red, green, red, green]) {
+      state.sig = sig;
+      await reconcileRun(deps, store.getRun(run.id)!);
+      // The dashboard's prGreen still tracks green-right-now, flicker included.
+      expect(store.getWatchState(run.id, "pull_request", "pr_green")?.sig ?? null).toBe(sig === green ? "sha-1" : null);
+    }
+    expect(calls.notify).toBe(1);
+    state.pr = { number: 27, state: "OPEN", url: "u", headOid: "sha-2" }; // a push, green
+    await reconcileRun(deps, store.getRun(run.id)!);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(2);
+  });
+
+  it("reviewing + a CONFLICTING PR → no notification, wakes the resolver once for that head", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-CONF", "reviewing", null, { prNumber: 28, lastThreadSig: "s0" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:p1" });
+    state.paneState = "idle";
+    state.pr = { number: 28, state: "OPEN", url: "u", headOid: "sha-1", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" };
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+    expect(calls.agentSend).toHaveLength(1); // resolver woken to merge the base
+    expect(readFileSync(join(worktree, ".memory/herdr-factory/prompt-resolver.md"), "utf8")).toContain("CONFLICTING");
+    const woken = store.timeline("demo", "K-CONF").find((e) => e.type === "resolver_woken");
+    expect(JSON.parse(String(woken?.detail))).toMatchObject({ baseMerge: "conflicting" });
+    // Same conflicted head, resolver back to idle: not a new round.
+    store.updateRun(run.id, { resolverActive: false });
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.agentSend).toHaveLength(1);
+    expect(calls.notify).toBe(0);
+  });
+
+  it("reviewing + a BEHIND PR notifies normally on a non-strict base, and wakes the resolver on a strict one", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-BHND", "reviewing", null, { prNumber: 29, lastThreadSig: "s0" });
+    store.upsertRunStep(run.id, "fix", { paneId: "w1:p1" });
+    state.paneState = "idle";
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    state.pr = { number: 29, state: "OPEN", url: "u", headOid: "sha-1", mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", strictBase: false };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+    expect(calls.agentSend).toHaveLength(0);
+
+    const { deps: d2, store: s2, state: st2, worktree: w2, calls: c2 } = build();
+    const strict = seed(s2, w2, "K-STRC", "reviewing", null, { prNumber: 30, lastThreadSig: "s0" });
+    s2.upsertRunStep(strict.id, "fix", { paneId: "w1:p1" });
+    st2.paneState = "idle";
+    st2.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    st2.pr = { number: 30, state: "OPEN", url: "u", headOid: "sha-1", mergeable: "MERGEABLE", mergeStateStatus: "BEHIND", strictBase: true };
+    await reconcileRun(d2, s2.getRun(strict.id)!);
+    expect(c2.notify).toBe(0);
+    expect(c2.agentSend).toHaveLength(1);
+  });
+
+  it("reviewing + mergeability still UNKNOWN → waits, then notifies once GitHub settles it", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-UNKN", "reviewing", null, { prNumber: 31, lastThreadSig: "s0" });
+    state.sig = { unresolved: 0, failing: 0, pending: 0, sig: "s0" };
+    state.pr = { number: 31, state: "OPEN", url: "u", headOid: "sha-1", mergeable: "UNKNOWN" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(0);
+    state.pr = { ...state.pr, mergeable: "MERGEABLE" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify).toBe(1);
+  });
+
   // --- issue #78: the pr step is still running --------------------------------------------------
   it("reviewing + green PR but the pr step has no step_done → no notify, no pr_green, prGreen false", async () => {
     const { deps, store, state, worktree, calls } = build();

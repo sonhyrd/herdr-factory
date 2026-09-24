@@ -2711,22 +2711,26 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
 // review threads, and every check CONCLUDED successfully (pending ≠ green) — notify once, through
 // the same `deps.herdr.notify` path as attention/auth so Collie carries it to the phone.
 //
-// "Once" is keyed on the PR's HEAD COMMIT, stored as the mark in `watch_state` (run, 'pull_request',
-// 'pr_green') — no new run column. Two things end an episode, and both have to, because either alone
-// is inert on some real repo:
-//   * the PR stops being green (a failing or still-running check, a new review thread) — the mark is
-//     cleared, so the next green is news again; and
-//   * the head commit CHANGES — a push is a new green even on a repo with NO CI at all, where the
-//     rollup never moves and nothing else in the signature would change (the factory's own repo is
-//     exactly that case, so keying only on green/not-green would make the rule inert where it matters).
-// Between them: once per green head, never once per tick, and red → green → red → green is two.
+// "Once" is keyed on the PR's HEAD COMMIT (issue #114). The `watch_state` row (run, 'pull_request',
+// 'pr_green') — no new run column — carries two things:
+//   * `sig`  — the head that is green RIGHT NOW (null while it isn't). The dashboard's prGreen reads
+//     it, so it is cleared the moment the PR stops being green; and
+//   * `meta` — the head the operator was last TOLD about. It survives a red flicker: a check that
+//     reruns, a thread opened and resolved, a conflict that comes and goes on the same head never
+//     re-notifies. Only a NEW head that is green is news — including on a repo with NO CI at all,
+//     where the rollup never moves and nothing but the head would change.
+// So: once per green head, never once per tick, and never twice for one head.
+//
+// Green also means mergeable: a CONFLICTING PR is not green (the watch wakes the resolver to merge
+// the base instead — see baseMergeNeeded), nor is one GitHub is still computing (UNKNOWN). A BEHIND
+// PR is not green only when its base requires up-to-date branches; elsewhere main moving is not the
+// PR's problem and must not churn every open PR.
 //
 // Known, accepted: on a repo that DOES run CI, GitHub can report a pushed commit for a few seconds
 // before its check runs exist — an empty rollup reads as green, so a tick landing in that window
 // pings early. We take it deliberately. The alternative (wait a tick to confirm) breaks the issue's
 // own acceptance criterion ("within a tick of the rollup going green") for every normal case in order
-// to smooth a rare one, and the mis-timed ping self-corrects: the next tick sees the checks pending,
-// which ends the episode, and the real green notifies again.
+// to smooth a rare one — and since the head is already marked told, the real green stays quiet.
 //
 // No duration is reported. The watch notifies on the FIRST tick that sees a green PR, so any "green
 // for …" it could print is either zero or invented from a timestamp that doesn't mean "green since"
@@ -2735,6 +2739,14 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
 // attentionRenotifySeconds throttles nothing here on purpose — a *new* green is news however soon it
 // lands, and the episode rule already makes repeats impossible.
 const GREEN_WATCH = { step: "pull_request", watch: "pr_green" } as const;
+
+/** Why the PR can't merge until its base is merged in, or null: CONFLICTING always; BEHIND only when
+ *  the base requires up-to-date branches (strict status checks). */
+function baseMergeNeeded(pr: PrInfo): "conflicting" | "behind" | null {
+  if (pr.mergeable === "CONFLICTING") return "conflicting";
+  if (pr.mergeStateStatus === "BEHIND" && pr.strictBase) return "behind";
+  return null;
+}
 
 async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig, evidenceStale: boolean): Promise<void> {
   const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
@@ -2749,20 +2761,29 @@ async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig, evi
   const stepRunning = prStepState != null && !prStepState.done;
   // Green also needs the gates' verdict to cover this head (issue #84): CI alone is not "ready".
   const green =
-    !stepRunning && !evidenceStale && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0;
+    !stepRunning && !evidenceStale && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0 &&
+    pr.mergeable !== "UNKNOWN" && baseMergeNeeded(pr) == null;
+  // A row written before `meta` carried the told head has it only in `sig`.
+  const told = st?.meta || st?.sig;
   if (!green) {
-    if (st?.sig != null) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null });
+    // A lookup without a head SHA marks "green": it can't tell heads apart, so it degrades to once
+    // per green episode — and only that mark ends on not-green. A head mark stands until a new head.
+    if (st?.sig != null || told === "green") {
+      deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null, meta: told === "green" ? "" : (told ?? "") });
+    }
     return;
   }
-  // The head SHA when the lookup carries one; a lookup that doesn't degrades to the green/not-green
-  // rule alone (still once per green — it just can't see a push that changes nothing else).
   const mark = pr.headOid || "green";
-  if (st?.sig === mark) return; // already told the operator about THIS green, on THIS head
+  if (told === mark) {
+    // Already told the operator about THIS head — green again after a flicker is not news.
+    if (st?.sig !== mark) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta: mark });
+    return;
+  }
 
   const title = pr.title ?? run.summary ?? "";
   const body = `${run.ticketKey} is ready to merge — PR #${pr.number}${title ? ` "${title}"` : ""} in ${deps.ghRepo} is green with no unresolved threads · ${pr.url}`;
   await deps.herdr.notify(`herdr-factory: ${run.ticketKey} ready to merge`, body).catch(() => {});
-  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark });
+  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta: mark });
   deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "pr_green", detail: { number: pr.number, head: pr.headOid } });
   deps.log("info", `${run.ticketKey}: PR #${pr.number} is green and mergeable — notified the operator (the factory never merges)`);
 }
@@ -2781,7 +2802,13 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
 
   // The watch has NO time limit (there is no watch_hours) — it rides until the PR merges or closes.
   const sig = snap?.sig ?? (await deps.github.reviewSignature(deps.ghRepo, pr.number));
-  const actionable = sig.unresolved > 0 || sig.failing > 0;
+  // A conflicted base (or BEHIND a strict one) is work for the resolver too: merge the base, push —
+  // and the pushed head then goes back through the gates via the evidence-head rule below.
+  const baseMerge = baseMergeNeeded(pr);
+  const actionable = sig.unresolved > 0 || sig.failing > 0 || baseMerge != null;
+  // The round's identity: threads + failing checks, plus the conflict on THIS head, so a conflict
+  // wakes the resolver once per head (a merge that lands but conflicts again is a new round).
+  const roundSig = baseMerge ? `${sig.sig}:${baseMerge}:${pr.headOid ?? ""}` : sig.sig;
   // Evidence belongs to a head: a code change pushed since the gates judged the PR sends the run back
   // through them — once the pushing agent is done (the pr step signalled, the resolver went idle).
   const belt = deps.resolveBelt(run.belt);
@@ -2805,7 +2832,7 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
   }
   await noteGreenPr(deps, run, pr, sig, ev?.stale === true);
   // A review state we haven't handled yet — the trigger to (re)wake the resolver.
-  const fresh = actionable && sig.sig !== run.lastThreadSig;
+  const fresh = actionable && roundSig !== run.lastThreadSig;
 
   // Dynamic occupancy: a reviewing run holds a max_active_workspaces slot ONLY while its resolver
   // is actively working. We need the resolver's live pane state only when there's fresh work to
@@ -2847,8 +2874,14 @@ async function reconcileReviewing(deps: Deps, run: Run, src: SourceRuntime, ctx:
     deps.log("warn", `${run.ticketKey}: resolver spawn failed; retrying next tick`);
     return;
   }
-  deps.store.updateRun(run.id, { lastThreadSig: sig.sig, resolverActive: true });
-  deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "resolver_woken", detail: { unresolved: sig.unresolved, failing: sig.failing } });
+  deps.store.updateRun(run.id, { lastThreadSig: roundSig, resolverActive: true });
+  deps.store.recordEvent({
+    runId: run.id,
+    repo,
+    ticketKey: run.ticketKey,
+    type: "resolver_woken",
+    detail: { unresolved: sig.unresolved, failing: sig.failing, ...(baseMerge ? { baseMerge } : {}) },
+  });
 }
 
 /**

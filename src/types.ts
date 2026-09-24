@@ -921,6 +921,14 @@ export interface PrInfo {
    *  its "already told the operator" mark on it: a PUSH is a new green even on a repo with no CI at
    *  all, where the check rollup never moves and nothing else in the signature changes. */
   headOid?: string;
+  /** GitHub's `mergeable` (MERGEABLE | CONFLICTING | UNKNOWN — UNKNOWN while GitHub is still
+   *  computing it), when the lookup carries it. A CONFLICTING PR is never "ready to merge". */
+  mergeable?: string;
+  /** GitHub's `mergeStateStatus` (CLEAN, BEHIND, BLOCKED, DIRTY, …), when the lookup carries it. */
+  mergeStateStatus?: string;
+  /** The base branch's protection requires branches to be up to date before merging (strict status
+   *  checks). Only then is a BEHIND PR not ready — elsewhere main moving must not churn every PR. */
+  strictBase?: boolean;
 }
 
 export interface ReviewSig {
