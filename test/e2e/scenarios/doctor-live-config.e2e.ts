@@ -48,7 +48,7 @@ scenario(
 
     // --- two merged changes upstream, not rolled out ----------------------------------------
     git(w.paths.home, "clone", "-q", origin, seed);
-    for (const [file, msg] of [["a.txt", "fix: the port race"], ["b.txt", "feat: a second change"]]) {
+    for (const [file, msg] of [["a.txt", "fix: the port race"], ["b.txt", "feat: a second change"]] as const) {
       writeFileSync(join(seed, file), `${msg}\n`);
       git(seed, "add", "-A");
       git(seed, "commit", "-q", "-m", msg);
