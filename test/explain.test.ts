@@ -243,6 +243,12 @@ describe("explainRun — attention parks", () => {
     expect(text).toContain("herdr plugin link");
   });
 
+  it("layout_wait_timeout: names the layout hook's last line instead of the generic causes (issue #95)", () => {
+    const text = joined(parked("layout_wait_timeout", "work: layout pane fix/work never became available — layout hook: no factory repo config for /repo"));
+    expect(text).toContain("The layout hook's last word on this workspace: no factory repo config for /repo.");
+    expect(text).not.toContain("Common causes");
+  });
+
   it("bounce_limit: shows the counters and both human options", () => {
     const text = joined(
       parked("bounce_limit", "bounced to work 6× (max 6)", {

@@ -4698,3 +4698,76 @@ describe("evidence gate — the PR-opening step waits for evidence_uploaded", ()
     expect(store.getRun(run.id)!.step).toBe("review"); // held again — pending, not stuck
   });
 });
+
+describe("an invalid config on disk (issue #95)", () => {
+  it("pauses claims and reports the error while the file doesn't load; a fixed file resumes them", async () => {
+    const { deps, store, state } = build();
+    let invalid: string | null = "evidence: Unrecognized key: \"key_root\"";
+    deps.configCheck = () => invalid;
+    state.eligible = [ticket("C-1")];
+    await reconcileRepo(deps);
+    expect(store.countActive("demo")).toBe(0);
+    expect(store.listProblems("demo")).toEqual([
+      expect.objectContaining({ kind: "config", detail: expect.stringMatching(/^config invalid: evidence: Unrecognized key/) }),
+    ]);
+
+    invalid = null; // the file was fixed — no restart
+    await reconcileRepo(deps);
+    expect(store.countActive("demo")).toBe(1);
+    expect(store.listProblems("demo")).toEqual([]);
+  });
+
+  describe("a run whose layout was never built", () => {
+    let stateDir = "";
+    afterEach(() => {
+      delete process.env.HERDR_FACTORY_LAYOUT_STATE_DIR;
+      rmSync(stateDir, { recursive: true, force: true });
+    });
+    function waiting() {
+      stateDir = mkdtempSync(join(tmpdir(), "lh-95-"));
+      process.env.HERDR_FACTORY_LAYOUT_STATE_DIR = stateDir;
+      const b = build();
+      b.deps.config.layouts.push({ id: "L", tabs: [{ title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false }] }] });
+      b.shipBelt.defaultLayout = "L";
+      b.state.paneState = "working";
+      return b;
+    }
+
+    it("an expired window builds the layout when none of its tabs exist", async () => {
+      const { deps, store, state, setNow } = waiting();
+      deps.herdr.tabLabels = async () => ["shell"]; // the hook built nothing
+      state.eligible = [ticket("L-1")];
+      await reconcileRepo(deps);
+      const run = store.activeRunForTicket("demo", "jira", "L-1")!;
+      setNow(1601);
+      await reconcileRun(deps, store.getRun(run.id)!);
+      const timeline = store.timeline("demo", "L-1");
+      expect(timeline.some((e) => e.type === "layout_applied")).toBe(true);
+      expect(JSON.parse(timeline.find((e) => e.type === "layout_wait_retry")!.detail ?? "{}").layoutRebuilt).toMatch(/built "L"/);
+    });
+
+    it("a workspace that has the layout's tabs is not rebuilt", async () => {
+      const { deps, store, state, setNow } = waiting();
+      deps.herdr.tabLabels = async () => ["fix"];
+      state.eligible = [ticket("L-2")];
+      await reconcileRepo(deps);
+      setNow(1601);
+      await reconcileRun(deps, store.getRun(store.activeRunForTicket("demo", "jira", "L-2")!.id)!);
+      expect(store.timeline("demo", "L-2").some((e) => e.type === "layout_applied")).toBe(false);
+    });
+
+    it("the park names the layout hook's last line for the workspace", async () => {
+      const { deps, store, state, setNow } = waiting();
+      state.eligible = [ticket("L-3")];
+      await reconcileRepo(deps);
+      const run = store.activeRunForTicket("demo", "jira", "L-3")!;
+      const { recordHookLine } = await import("../src/core/layout-hook.ts");
+      recordHookLine("w1", "no factory repo config for /main-checkout");
+      for (let t = 1601; store.getRun(run.id)!.phase !== "attention"; t += 601) {
+        setNow(t);
+        await reconcileRun(deps, store.getRun(run.id)!);
+      }
+      expect(store.getRun(run.id)!.attentionReason).toBe("fix: layout pane fix/agent never became available — layout hook: no factory repo config for /main-checkout");
+    });
+  });
+});

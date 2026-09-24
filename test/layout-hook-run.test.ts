@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   panes: [] as { paneId: string; tabId: string; label: string | null }[],
   ownerRun: undefined as { id: number; ticketKey: string; belt: string } | undefined,
   applied: [] as { rootTabId?: string; rootPaneId?: string }[],
+  configError: null as string | null,
 }));
 
 vi.mock("../src/clients/herdr.ts", () => ({
@@ -18,7 +19,12 @@ vi.mock("../src/clients/herdr.ts", () => ({
   },
 }));
 vi.mock("../src/config-paths.ts", async (orig) => ({ ...(await orig<object>()), listConfiguredRepos: () => ["demo"] }));
-vi.mock("../src/config.ts", () => ({ loadConfig: () => ({ config: { repo: { path: "/repo" } } }) }));
+vi.mock("../src/config.ts", () => ({
+  loadConfig: () => {
+    if (h.configError) throw new Error(h.configError);
+    return { config: { repo: { path: "/repo" } } };
+  },
+}));
 vi.mock("../src/core/layout.ts", () => ({
   applyLayout: async (_deps: unknown, target: { rootTabId?: string; rootPaneId?: string }) => void h.applied.push(target),
 }));
@@ -39,7 +45,7 @@ vi.mock("../src/build-deps.ts", () => ({
   }),
 }));
 
-const { runLayoutHook } = await import("../src/core/layout-hook.ts");
+const { isDecided, lastHookLine, runLayoutHook } = await import("../src/core/layout-hook.ts");
 
 let stateDir = "";
 beforeEach(() => {
@@ -47,6 +53,7 @@ beforeEach(() => {
   process.env.HERDR_FACTORY_LAYOUT_STATE_DIR = stateDir;
   h.applied = [];
   h.ownerRun = undefined;
+  h.configError = null;
   // A fresh worktree workspace, plus a second pane the operator opened before the hook ran.
   h.info = { checkoutPath: stateDir, repoRoot: "/repo", isLinkedWorktree: true, tabCount: 1, paneCount: 2, activeTabId: "w1:t1" };
   h.panes = [
@@ -87,5 +94,26 @@ describe("runLayoutHook — a pane opened before the hook ran", () => {
     await runLayoutHook(focus);
     expect((await runLayoutHook(focus)).skipped).toBe("already decided");
     expect(h.applied).toHaveLength(1);
+  });
+});
+
+describe("runLayoutHook — a repo config that doesn't load (issue #95)", () => {
+  it("doesn't settle the workspace, so a focus after the fix builds it", async () => {
+    h.ownerRun = { id: 7, ticketKey: "GH-1", belt: "b" };
+    h.configError = 'invalid config for repo "demo":\n  evidence: Unrecognized key';
+    const res = await runLayoutHook(focus);
+    expect(res.skipped).toMatch(/^no factory repo config for \/repo \(repo "demo" config failed to load: .*Unrecognized key\)$/);
+    expect(isDecided("w1")).toBe(false);
+    expect(lastHookLine("w1")).toBe(res.skipped);
+
+    h.configError = null;
+    expect(await runLayoutHook(focus)).toEqual({ applied: "web" });
+    expect(isDecided("w1")).toBe(true);
+    expect(lastHookLine("w1")).toBe('built "web"');
+  });
+  it("a workspace no configured repo owns is still settled", async () => {
+    h.info = { ...h.info, repoRoot: "/elsewhere" };
+    await runLayoutHook(focus);
+    expect(isDecided("w1")).toBe(true);
   });
 });
