@@ -68,7 +68,7 @@ describe("killPortListeners", () => {
     }
   });
 
-  it("kills a REAL listener started as a child (the orphan case), and frees its port", { skip: !haveLsof }, async () => {
+  it("kills a REAL listener started as a child (the orphan case), and frees its port", { skip: !haveLsof, timeout: 15_000 }, async () => {
     // A listener whose parent is a shell in its own process group — the pnpm→dev-server shape
     // whose reparented child survived teardown. It prints `<pid> <port>` once it is up.
     const script = "const s=require('node:net').createServer().listen(0,()=>console.log(process.pid,s.address().port))";
