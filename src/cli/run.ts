@@ -27,6 +27,7 @@ const EVENT_LABEL: Record<string, string> = {
   step_spawned: "▶ step started",
   step_done: "✓ step done",
   layout_wait_retry: "waiting for layout pane",
+  pane_relaunched: "↻ undetected agent relaunched",
   idle_nudge: "↯ idle agent nudged",
   bounced: "↩ bounced back",
   rework: "↩ operator rework",

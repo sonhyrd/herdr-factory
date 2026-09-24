@@ -216,6 +216,12 @@ export class HerdrClient {
     return a?.agentStatus ?? "gone";
   }
 
+  /** The agent herdr DETECTED in a pane (`agent list`'s `agent` field), or null when the pane is not
+   *  listed or herdr lists it without one — an agent running there that herdr never recognised. */
+  async paneAgentLabel(paneId: string, opts: LivenessOpts = {}): Promise<string | null> {
+    return (await this.agents(opts)).find((x) => x.paneId === paneId)?.agent || null;
+  }
+
   /** The claude session id herdr tracks for a pane (on-demand cross-agent query handle). */
   async agentSessionId(paneId: string): Promise<string | null> {
     return (await this.agents()).find((x) => x.paneId === paneId)?.sessionId ?? null;
