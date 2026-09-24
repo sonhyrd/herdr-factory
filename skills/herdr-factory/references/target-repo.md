@@ -79,7 +79,8 @@ echo "$PORT" > "$(git rev-parse --absolute-git-dir)/hf-port"
 
 Teardown reads it **before** it removes anything and, once the workspace is closed, kills the
 listener's process group on that port (never a pattern kill — only the pid(s) on this run's own
-port). No file, an unreadable one, or a dead server: teardown logs one line and carries on, and the
+port, and only a listener whose **cwd is inside the run's worktree**: start the server from the
+checkout, or it is left running as "not this run"). No file, an unreadable one, or a dead server: teardown logs one line and carries on, and the
 server leaks exactly as it did before. The same kill also runs **at every step change** (step-done,
 bounce, rework) **and every park** (attention, ask-human), so a server the work step started does
 not hold its port and memory through evidence or a park — the next step starts its own

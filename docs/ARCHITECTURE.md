@@ -1968,8 +1968,19 @@ the group kill reaps the `esbuild`/cli helpers too (never our own group). And it
 pattern kill**: no `pkill -f`, no `killall`, or a host running three or four runs would lose its
 siblings' servers. Only the pid(s) holding this run's own port.
 
+And the port alone is **not proof of ownership**: concurrent runs have shared one, and a teardown
+killed a sibling's server. Before any signal, each listener's cwd is read (`lsof -a -p <pid> -d cwd
+-Fn`, Linux's ` (deleted)` suffix stripped) and the listener is signalled only when that cwd is
+inside this run's worktree — a realpath prefix match, resolved through the deepest existing ancestor
+because teardown reaps after the worktree is removed. Any other cwd, or one that can't be read, is
+**left running** and logged as `<key>: dev server port N (<why>) — pid P belongs to <cwd>, not this
+run; left running` (warn). The `SIGKILL` sweep re-applies the same check.
+
 A missing, unreadable or implausible `hf-port`, and a port nothing is listening on, are each **one
-log line and carry on** — teardown must never fail because a server was already gone.
+log line and carry on** — teardown must never fail because a server was already gone. The kill line
+carries each pid's RSS (read before the `SIGTERM`) and cwd — `killed pid(s) P (N MB RSS, cwd <dir>)`
+— and the empty case names the `lsof` command it ran, so a v6-only or respawned listener can be told
+apart from a true "nothing".
 
 **Not only at teardown — at every step change and park** (`stopDevServer` in `core/reconcile.ts`).
 A work step's `pnpm dev` otherwise keeps its port and its RSS through evidence, review and any park

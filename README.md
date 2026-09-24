@@ -1494,7 +1494,9 @@ edits, and it survives until teardown clears the dir. At teardown the factory re
 **before** removing anything, and once the workspace is closed kills whatever still LISTENs on that
 port (the listener's process group — pnpm is the parent and the server its child — so helpers go
 with it). It is never a pattern kill (`pkill`/`killall` would take out other runs' servers on the
-same host), and never fatal: no file, an unreadable one, or a port nothing is listening on is one
+same host), and it only signals a listener whose **cwd is inside this run's worktree** — one on the
+same port from anywhere else (a sibling run that picked the same port), or whose cwd can't be read,
+is left running and logged as `pid P belongs to <cwd>, not this run; left running`. Never fatal: no file, an unreadable one, or a port nothing is listening on is one
 log line and teardown carries on.
 
 The same kill runs **at every step change and every park**, not only at teardown: on a step-done
@@ -1503,7 +1505,7 @@ an `ask-human`. A dev server the work step started would otherwise hold its port
 through evidence, review and any park — memory the gate counts as free. The next step starts
 whatever server it needs itself (the work prompt also tells the agent to stop its own server before
 `step-done`; the engine kill is the guarantee). Each kill is a `dev_server_stopped` event in
-`timeline` with the port, pid(s), RSS and why. A run with no `hf-port` transitions exactly as before.
+`timeline` with the port, pid(s), RSS and why; the log line carries each pid's RSS and cwd. A run with no `hf-port` transitions exactly as before.
 A layout `command:` pane running the dev server is killed too, and is not restarted — start it from
 the step that needs it.
 
