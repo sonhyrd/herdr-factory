@@ -396,9 +396,11 @@ export class Store {
   /** Every live run's checkout path, across ALL repos. "Does a live run still own this worktree?"
    *  is not a per-repo question — the doctor's orphaned-listener check compares a listener's cwd
    *  against every factory run on the box. */
-  activeWorktreePaths(): string[] {
+  /** Worktrees of runs that are live AND not parked — a parked (attention / waiting_for_human) run's
+   *  dev server was stopped when it parked, so a listener still in its worktree is an orphan. */
+  workingWorktreePaths(): string[] {
     const rows = this.db
-      .prepare(`SELECT DISTINCT worktree_path AS p FROM runs WHERE ended_at IS NULL AND worktree_path IS NOT NULL`)
+      .prepare(`SELECT DISTINCT worktree_path AS p FROM runs WHERE ended_at IS NULL AND worktree_path IS NOT NULL AND phase NOT IN ('attention', 'waiting_for_human')`)
       .all() as { p: string }[];
     return rows.map((r) => r.p);
   }

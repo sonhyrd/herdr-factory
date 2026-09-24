@@ -48,6 +48,7 @@ const EVENT_LABEL: Record<string, string> = {
   belt_reassigned: "belt renamed",
   belt_deleted: "belt deleted",
   attention: "⚠ needs attention",
+  dev_server_stopped: "dev server stopped",
   resumed: "resumed",
   error: "error",
 };
@@ -103,6 +104,10 @@ export function followEventExtra(type: string, detail: string | null): string {
       return str(d, "outcome") ?? "";
     case "attention":
       return str(d, "reason") ?? "";
+    case "dev_server_stopped": {
+      const rss = num(d, "rssKb");
+      return `:${num(d, "port") ?? "?"} pid ${Array.isArray(d.pids) ? d.pids.join(",") : "?"}${rss != null ? ` · ${Math.round(rss / 1024)} MB` : ""} (${str(d, "why") ?? "?"})`;
+    }
     case "pr_green": {
       const head = str(d, "head");
       return `#${num(d, "number") ?? "?"} green${head ? ` @ ${head.slice(0, 7)}` : ""}`;

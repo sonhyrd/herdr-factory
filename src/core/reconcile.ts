@@ -1246,6 +1246,29 @@ async function showRunPaneOwner(deps: Deps, run: Run, state: PaneRunState, fallb
   await showRunPane(deps, run.paneId, { key: run.ticketKey, step: owner ?? fallback ?? run.step, state });
 }
 
+/** Stop the run's own dev server — whatever LISTENs on its hf-port — and record what that gave
+ *  back. Runs at every step change (advance, bounce, rework), every park (attention,
+ *  waiting_for_human) and at teardown: a server the work step started must not hold its port and
+ *  its RSS through the next step or a park — capacity the memory gate counts as free. The next step
+ *  starts whatever server it needs itself. No hf-port ⇒ a no-op; never fatal; never a pattern kill.
+ *  `port` is passed by teardown, which must read it before the checkout (and its git dir) goes. */
+async function stopDevServer(deps: Deps, run: Run, why: string, port = run.worktreePath ? readRunPort(run.worktreePath) : null): Promise<void> {
+  if (port == null) return;
+  try {
+    const killed = await (deps.killPortListeners ?? killPortListeners)(port);
+    if (killed.length === 0) {
+      deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — nothing was listening`);
+      return;
+    }
+    const pids = killed.map((k) => k.pid);
+    const rssKb = killed.some((k) => k.rssKb != null) ? killed.reduce((n, k) => n + (k.rssKb ?? 0), 0) : null;
+    deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "dev_server_stopped", detail: { port, pids, rssKb, why, step: run.step } });
+    deps.log("info", `${run.ticketKey}: dev server port ${port} (${why}) — killed pid(s) ${pids.join(", ")}${rssKb != null ? ` (${Math.round(rssKb / 1024)} MB RSS)` : ""}`);
+  } catch (e) {
+    deps.log("warn", `${run.ticketKey}: could not stop the dev server on port ${port} (${why}) — ${err(e)}`);
+  }
+}
+
 /** Park a run for human attention: flip phase, record the reason, fire a notification, and put
  *  the reason where the humans already look. WHERE depends on what broke: a mechanical failure
  *  (the factory's own workings) reports into the run's agent pane; an error about the designated
@@ -1264,6 +1287,7 @@ async function escalateAttention(
     type: "attention",
     detail: { reason: opts.reason, ...(opts.detail ?? {}) },
   });
+  await stopDevServer(deps, run, "parked");
   // Make it obvious in herdr: flag the active pane. herdr won't let us set agent_status to
   // "blocked" (that's owned by the agent's own lifecycle hook), so a glaring pane TITLE is the
   // most visible persistent cue — unlike the one-shot notification, it stays in the tab/pane list
@@ -1336,6 +1360,7 @@ export async function requestHumanInput(
   });
 
   deps.store.updateRun(run.id, { phase: "waiting_for_human", step, attentionReason: null });
+  await stopDevServer(deps, run, "waiting for a human");
   let posted = q.externalId !== null;
   let message: string | undefined;
   try {
@@ -1566,6 +1591,7 @@ export async function bounceStep(
   }
 
   releaseStepLocks(deps, run, from); // bouncing away from this step → free any exclusive_resource it held
+  await stopDevServer(deps, run, operator ? "rework" : "bounce");
 
   // (1) Clear done + reset heartbeat clocks for the TARGET *and every completed step between it and
   //     the bouncer* — those intermediate steps must actually re-run on the forward pass, not be
@@ -2332,6 +2358,7 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
       // effect, the pass bump): a park here leaves the run on the step that just finished, so the
       // resume re-runs this same advance once the tree is clean.
       if (await parkIfTreeDirty(deps, run, next)) return;
+      await stopDevServer(deps, run, "step-done");
       deps.store.updateRun(run.id, { phase: "running", step: next.name });
       // enter(next) effect: a belt may move the source status on entering a step (e.g. entering the
       // QA/review step). No engine default for a non-first step, so it fires only if configured.
@@ -2374,7 +2401,10 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
       // Hand off to the human-review watch, but only with a real PR. If the agent signalled done
       // before a PR is visible (push lag / never opened), fall through to the watchdog rather than
       // wedging in `reviewing` with no PR to watch.
-      if (livePr) return enterReviewing(deps, run, belt, src, livePr.number);
+      if (livePr) {
+        await stopDevServer(deps, run, "step-done");
+        return enterReviewing(deps, run, belt, src, livePr.number);
+      }
     } else {
       // A non-PR belt is complete the moment its last step signals done.
       deps.log("info", `${run.ticketKey}: ${step.name} done — belt ${belt.name} complete`);
@@ -2979,14 +3009,7 @@ export async function removeRunWorktree(deps: Deps, run: Run): Promise<void> {
   // The workspace is closed, so any dev server the layout started has just been reparented —
   // kill the listener on the run's own port (never a pattern kill) before the dir goes. Teardown
   // must never fail because a server was already gone: every outcome here is one log line.
-  if (devPort != null) {
-    try {
-      const killed = await (deps.killPortListeners ?? killPortListeners)(devPort);
-      deps.log("info", `${run.ticketKey}: dev server port ${devPort} — ${killed.length > 0 ? `killed pid(s) ${killed.join(", ")}` : "nothing was listening"}`);
-    } catch (e) {
-      deps.log("warn", `${run.ticketKey}: could not reap the dev server on port ${devPort} — ${err(e)}`);
-    }
-  }
+  await stopDevServer(deps, run, "teardown", devPort);
   // The checkout dir can survive a partial remove. It's always a linked worktree under
   // herdr's worktrees dir, never the main checkout — guard anyway, then prune the now-stale
   // git registration so a re-claim of the same ticket starts clean.

@@ -535,3 +535,20 @@ describe("Store — the problem ledger (v37): report / clear / list", () => {
     expect(store.listProblems("r").map((p) => p.key)).toEqual(["publisher:s3", "source:jira"]);
   });
 });
+
+describe("Store — workingWorktreePaths (doctor's orphaned-dev-server check)", () => {
+  it("omits parked and ended runs — a listener in their worktree is an orphan (#98)", () => {
+    const { store } = makeStore();
+    const wt = (key: string, phase: "running" | "attention" | "waiting_for_human" | "reviewing") => {
+      const r = store.createRun({ repo: "r", workSource: "jira", belt: "b", ticketKey: key });
+      store.updateRun(r.id, { phase, worktreePath: `/wt/${key}` });
+      return r;
+    };
+    wt("K-RUN", "running");
+    wt("K-REV", "reviewing");
+    wt("K-ATT", "attention");
+    wt("K-HUM", "waiting_for_human");
+    store.endRun(wt("K-END", "running").id, "merged");
+    expect(store.workingWorktreePaths().sort()).toEqual(["/wt/K-REV", "/wt/K-RUN"]);
+  });
+});

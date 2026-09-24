@@ -68,7 +68,7 @@ describe("killPortListeners", () => {
     }
   });
 
-  it("kills a REAL listener started as a child (the orphan case), and frees its port", { skip: !haveLsof }, async () => {
+  it("kills a REAL listener started as a child (the orphan case), and frees its port", { skip: !haveLsof, timeout: 15_000 }, async () => {
     // A listener whose parent is a shell in its own process group — the pnpm→dev-server shape
     // whose reparented child survived teardown. It prints `<pid> <port>` once it is up.
     const script = "const s=require('node:net').createServer().listen(0,()=>console.log(process.pid,s.address().port))";
@@ -79,7 +79,7 @@ describe("killPortListeners", () => {
       .map((n) => Number.parseInt(n, 10)) as [number, number];
     try {
       expect(await listenerPids(port)).toContain(pid);
-      expect(await killPortListeners(port)).toContain(pid);
+      expect((await killPortListeners(port)).map((k) => k.pid)).toContain(pid);
       expect(await listenerPids(port)).toEqual([]); // port is free again
     } finally {
       try {

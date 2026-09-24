@@ -103,8 +103,8 @@ export function checkoutSyncCheck(state: Record<string, CheckoutSync> = readChec
   return stale.length > 0 ? { name, ok: true, warn: true, detail } : { name, ok: true, detail };
 }
 
-/** Dev servers that outlived their run: a LISTENing process whose cwd is inside herdr's worktrees
- *  dir with no live run owning that worktree. They keep a port (so the next run's server silently
+/** Dev servers that outlived their run (or its park): a LISTENing process whose cwd is inside
+ *  herdr's worktrees dir with no live, unparked run owning that worktree. They keep a port (so the next run's server silently
  *  moves up its range and an evidence pass can film a stale server) and their whole RSS — capacity
  *  the scheduler believes it has and does not. Amber, never a ✗, and REPORT ONLY: doctor never
  *  kills; teardown is the only thing that kills, and only its own run's port. Deep-only (it runs
@@ -119,14 +119,14 @@ export async function orphanListenerCheck(): Promise<DoctorCheck> {
     const db = openDb(dbPath);
     let live: string[];
     try {
-      live = new Store(db, systemClock).activeWorktreePaths();
+      live = new Store(db, systemClock).workingWorktreePaths();
     } finally {
       db.close();
     }
     const orphans = await orphanWorktreeListeners(live);
-    if (orphans.length === 0) return { name, ok: true, detail: `none — every listener under ${worktreesRoot()} belongs to a live run` };
-    const detail = orphans.map((o) => `${o.command} pid ${o.pid} on :${o.port} in ${o.cwd}`).join(" · ");
-    return { name, ok: true, warn: true, detail: `${orphans.length} listener(s) outlived their run — ${detail}. Kill them by hand (doctor never kills)` };
+    if (orphans.length === 0) return { name, ok: true, detail: `none — every listener under ${worktreesRoot()} belongs to a working run` };
+    const detail = orphans.map((o) => `${o.command} pid ${o.pid} on :${o.port}${o.rssKb != null ? ` (${Math.round(o.rssKb / 1024)} MB)` : ""} in ${o.cwd}`).join(" · ");
+    return { name, ok: true, warn: true, detail: `${orphans.length} listener(s) outlived their run or its park — ${detail}. Kill them by hand (doctor never kills)` };
   } catch (e) {
     return { name, ok: true, warn: true, detail: `could not check — ${e instanceof Error ? e.message : String(e)}` };
   }
