@@ -356,7 +356,7 @@ function build(opts: { multi?: boolean } = {}) {
     uid: () => `u${++uidN}`,
     sleep: async () => {},
     rmrf: async (p) => { calls.rmrf.push(p); },
-    killPortListeners: async (port) => { calls.killPort.push(port); return [4242]; },
+    killPortListeners: async (port) => { calls.killPort.push(port); return [{ pid: 4242, rssKb: 2_400_000 }]; },
   };
   return { deps, store, state, calls, config, setNow: (n: number) => { now = n; }, worktree, shipBelt, lmBelt, sources };
 }
@@ -2428,6 +2428,56 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
       expect(store.getRun(run.id)!.phase).toBe("done"); // teardown still completed
       expect(calls.worktreeRemove).toContain("w1");
     }
+  });
+
+  // ISSUE #98: a work step's dev server must not outlive the STEP — nor hold its port and RSS
+  // through a park. The same hf-port reap as teardown, at every step change and every park.
+  const reservePort = (worktree: string, port: string) => {
+    const gitDir = mkdtempSync(join(tmpdir(), "cats-gitdir-"));
+    tmps.push(gitDir);
+    writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    writeFileSync(join(gitDir, "hf-port"), port);
+  };
+  const stopped = (store: Store, key: string) => store.timeline("demo", key).filter((e) => e.type === "dev_server_stopped").map((e) => JSON.parse(e.detail!));
+
+  it("step-done kills the listener on the run's reserved port before the next step starts, and logs it", async () => {
+    const { deps, store, worktree, calls } = build();
+    reservePort(worktree, "4001\n");
+    const run = seed(store, worktree, "K-DS1", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    await applySignal(deps, "step-done", { key: "K-DS1", step: "review" });
+    expect(store.getRun(run.id)!.step).toBe("pr");
+    expect(calls.killPort).toEqual([4001]);
+    expect(stopped(store, "K-DS1")).toEqual([{ port: 4001, pids: [4242], rssKb: 2_400_000, why: "step-done", step: "review" }]);
+  });
+
+  it("a bounce and every park (attention, waiting_for_human) kill the reserved-port listener", async () => {
+    const { deps, store, worktree, calls } = build();
+    reservePort(worktree, "4001");
+    const run = seed(store, worktree, "K-DS2", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    await applySignal(deps, "bounce", { key: "K-DS2", toStep: "fix", reason: "regressed", step: "review", pass: 1 });
+    await requestHumanInput(deps, store.getRun(run.id)!, "fix", "which toast?");
+    expect(store.getRun(run.id)!.phase).toBe("waiting_for_human");
+    await bounceStep(deps, store.getRun(run.id)!, deps.belts[0]!, deps.resolveSource("jira")!, "fix", "take it again", { operator: true });
+    // A bounce over the cap parks for attention instead of rewinding.
+    const capped = seed(store, worktree, "K-DS3", "running", "review");
+    for (let i = 0; i < 3; i++) store.bumpGuardCounter(capped.id, "fix", "bounce_cap"); // limits.maxBounces is 3
+    await applySignal(deps, "bounce", { key: "K-DS3", toStep: "fix", reason: "again", step: "review", pass: 1 });
+    expect(store.getRun(capped.id)!.phase).toBe("attention");
+    expect(stopped(store, "K-DS2").map((d) => d.why)).toEqual(["bounce", "waiting for a human", "rework"]);
+    expect(stopped(store, "K-DS3").map((d) => d.why)).toEqual(["parked"]);
+    expect(calls.killPort).toEqual([4001, 4001, 4001, 4001]);
+  });
+
+  it("a run with no hf-port transitions exactly as before — no kill, no event", async () => {
+    const { deps, store, worktree, calls } = build();
+    const run = seed(store, worktree, "K-DS4", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    await applySignal(deps, "step-done", { key: "K-DS4", step: "review" });
+    expect(store.getRun(run.id)!.step).toBe("pr");
+    expect(calls.killPort).toEqual([]);
+    expect(stopped(store, "K-DS4")).toEqual([]);
   });
 
   it("teardown drops a still-pending evidence upload (best-effort — worktree about to be removed)", async () => {

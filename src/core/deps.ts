@@ -1,6 +1,7 @@
 import type { BeltConfig, Config } from "../config.ts";
 import type { Store } from "../db/store.ts";
 import type { MachineConfig } from "../machine.ts";
+import type { KilledListener } from "./dev-server.ts";
 import type {
   Agent,
   BeltMatch,
@@ -437,10 +438,10 @@ export interface Deps {
   /** The claim gate's "does the config file on disk still load?" (null = yes, else the error) —
    *  configLoadError() in production. Absent ⇒ no gate (tests whose config lives only in memory). */
   configCheck?: () => string | null;
-  /** Kill whatever LISTENs on a TCP port and return the pids that held it — teardown's dev-server
-   *  reap (hf-port handshake). Tests inject it so no test ever signals a real process.
-   *  Absent ⇒ killPortListeners() from core/dev-server.ts. */
-  killPortListeners?: (port: number) => Promise<number[]>;
+  /** Kill whatever LISTENs on a TCP port and return the listeners that held it — the dev-server
+   *  reap (hf-port handshake) at every step change, park and teardown. Tests inject it so no test
+   *  ever signals a real process. Absent ⇒ killPortListeners() from core/dev-server.ts. */
+  killPortListeners?: (port: number) => Promise<KilledListener[]>;
 }
 
 export type { Agent };

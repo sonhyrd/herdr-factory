@@ -79,7 +79,7 @@ describe("killPortListeners", () => {
       .map((n) => Number.parseInt(n, 10)) as [number, number];
     try {
       expect(await listenerPids(port)).toContain(pid);
-      expect(await killPortListeners(port)).toContain(pid);
+      expect((await killPortListeners(port)).map((k) => k.pid)).toContain(pid);
       expect(await listenerPids(port)).toEqual([]); // port is free again
     } finally {
       try {

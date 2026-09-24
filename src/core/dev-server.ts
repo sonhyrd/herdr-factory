@@ -1,4 +1,5 @@
-// The hf-port handshake: how a run's own dev server is found, and reaped at teardown.
+// The hf-port handshake: how a run's own dev server is found, and reaped at every step change,
+// park and teardown.
 //
 // A dev server started inside a layout pane is REPARENTED when the workspace closes, so it
 // outlives its worktree, keeps its port and keeps its RSS forever — capacity the scheduler
@@ -102,16 +103,31 @@ async function signalListener(pid: number, ownPgid: number | null, sig: "SIGTERM
   }
 }
 
+/** A process's resident set size in KiB (`ps -o rss=`), or null if it is already gone. */
+async function rssKbOf(pid: number): Promise<number | null> {
+  const r = await run("ps", ["-o", "rss=", "-p", String(pid)], { allowFail: true, timeoutMs: 5000 });
+  const kb = Number.parseInt(r.stdout.trim(), 10);
+  return Number.isInteger(kb) ? kb : null;
+}
+
+export interface KilledListener {
+  pid: number;
+  /** RSS read just before the SIGTERM — the memory the kill gave back. */
+  rssKb: number | null;
+}
+
 /** Kill whatever listens on `port`: group SIGTERM → grace → SIGKILL on whatever still listens.
- *  Returns the pids that were holding the port (empty ⇒ nothing was listening). */
-export async function killPortListeners(port: number, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<number[]> {
+ *  Returns the listeners that were holding the port (empty ⇒ nothing was listening). */
+export async function killPortListeners(port: number, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<KilledListener[]> {
   const pids = await listenerPids(port);
   if (pids.length === 0) return [];
+  const killed: KilledListener[] = [];
+  for (const pid of pids) killed.push({ pid, rssKb: await rssKbOf(pid) });
   const ownPgid = await pgidOf(process.pid);
   for (const pid of pids) await signalListener(pid, ownPgid, "SIGTERM");
   await sleep(GRACE_MS);
   for (const pid of await listenerPids(port)) await signalListener(pid, ownPgid, "SIGKILL");
-  return pids;
+  return killed;
 }
 
 export interface OrphanListener {
@@ -119,6 +135,7 @@ export interface OrphanListener {
   port: number;
   command: string;
   cwd: string;
+  rssKb: number | null;
 }
 
 /** Every LISTENing process on the host, as {pid, command, port}. The columnar output is parsed:
@@ -144,9 +161,9 @@ async function cwdOf(pid: number): Promise<string | null> {
   return /^n(.+)$/m.exec(out)?.[1]?.trim() ?? null;
 }
 
-/** Listeners running inside a factory worktree that NO live run owns any more — dev servers that
- *  outlived their teardown. REPORT ONLY: nothing here signals anything (teardown is the only
- *  thing that kills, and only its own run's port). */
+/** Listeners running inside a factory worktree that no WORKING run owns — dev servers that outlived
+ *  their teardown, or their step (a parked run's worktree is not in `liveWorktrees`). REPORT ONLY:
+ *  nothing here signals anything (the engine kills only its own run's port). */
 export async function orphanWorktreeListeners(liveWorktrees: string[]): Promise<OrphanListener[]> {
   const root = worktreesRoot();
   const orphans: OrphanListener[] = [];
@@ -157,7 +174,7 @@ export async function orphanWorktreeListeners(liveWorktrees: string[]): Promise<
     const cwd = await cwdOf(p.pid);
     if (!cwd || !cwd.startsWith(`${root}/`)) continue;
     if (liveWorktrees.some((wt) => cwd === wt || cwd.startsWith(`${wt}/`))) continue;
-    orphans.push({ ...p, cwd });
+    orphans.push({ ...p, cwd, rssKb: await rssKbOf(p.pid) });
   }
   return orphans;
 }
