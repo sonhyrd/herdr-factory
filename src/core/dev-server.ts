@@ -162,8 +162,9 @@ async function cwdOf(pid: number): Promise<string | null> {
 }
 
 /** Listeners running inside a factory worktree that no WORKING run owns — dev servers that outlived
- *  their teardown, or their step (a parked run's worktree is not in `liveWorktrees`). REPORT ONLY:
- *  nothing here signals anything (the engine kills only its own run's port). */
+ *  their run or its park (a parked run's worktree is not in `liveWorktrees`). REPORT ONLY: nothing
+ *  here signals anything. The engine's `stopDevServer` kills only its own run's port, at every step
+ *  change (advance, bounce, rework), every park (attention, waiting_for_human) and teardown. */
 export async function orphanWorktreeListeners(liveWorktrees: string[]): Promise<OrphanListener[]> {
   const root = worktreesRoot();
   const orphans: OrphanListener[] = [];
