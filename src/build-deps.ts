@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadConfig, type Config } from "./config.ts";
+import { configLoadError, loadConfig, type Config } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { Store } from "./db/store.ts";
 import { availableMemoryMb, loadMachineConfig } from "./machine.ts";
@@ -99,6 +99,7 @@ export async function buildDeps(repoName: string): Promise<Deps> {
       rmrf: (p) => rm(p, { recursive: true, force: true }),
       machine: loadMachineConfig(),
       availableMemoryMb,
+      configCheck: () => configLoadError(repoName),
     };
   });
 }

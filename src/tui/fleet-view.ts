@@ -226,7 +226,8 @@ export interface NeedsYouItem {
 /**
  * The board's first section: everything blocked on a person, across the whole fleet — a PR that is
  * green and waiting to be merged (the `pr_green` watch already knows), a run parked for `attention`,
- * a run that asked a human a question, and a machine that has stopped answering.
+ * a run that asked a human a question, a repo whose config file stopped loading (it claims nothing
+ * until fixed), and a machine that has stopped answering.
  *
  * Empty means the section is not drawn at all: a heading that is usually "nothing" teaches an
  * operator to skip the top of the screen, which is the one place this board cannot afford to lose.
@@ -238,6 +239,7 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
   const green: NeedsYouItem[] = [];
   const parked: NeedsYouItem[] = [];
   const asking: NeedsYouItem[] = [];
+  const broken: NeedsYouItem[] = [];
   const blind: NeedsYouItem[] = [];
   for (const m of machines) {
     // A silent machine is news when there are others still answering. On an install of ONE it is
@@ -247,8 +249,12 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
       blind.push({ text: `✗ ${m.name} unverifiable — ${m.detail ?? "no answer"}`, tone: "bad", machine: m.name, repo: "" });
     }
     for (const r of m.repos) {
+      const at = `${r.repo}${m.local ? "" : ` @${m.name}`}`;
+      // A repo whose config file no longer loads has stopped claiming — nothing moves until it's fixed.
+      for (const p of r.status?.problems ?? []) {
+        if (p.kind === "config") broken.push({ text: `✗ ${at}  ${p.detail}`, tone: "bad", machine: m.name, repo: r.repo, stale: m.stale });
+      }
       for (const run of r.status?.active ?? []) {
-        const at = `${r.repo}${m.local ? "" : ` @${m.name}`}`;
         const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, stale: m.stale };
         if (run.prGreen && run.prNumber != null) {
           green.push({ ...base, text: `✓ ${run.ticketKey}  PR #${run.prNumber} is green — ready to merge  (${at})`, tone: "good" });
@@ -264,7 +270,7 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
       }
     }
   }
-  return [...green, ...parked, ...asking, ...blind];
+  return [...green, ...parked, ...asking, ...broken, ...blind];
 }
 
 /** A run on an unverifiable machine: no card (a card would claim to be live), one line saying what

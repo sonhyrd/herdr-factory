@@ -9,7 +9,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEvidencePublisher, credsRefreshHint } from "./clients/evidence.ts";
 import { run } from "./clients/exec.ts";
-import { assertMainCheckout, globalDbPath, isManagedNode, loadConfig, type BeltConfig, type Config, type StepConfig } from "./config.ts";
+import { assertMainCheckout, configLoadError, globalDbPath, isManagedNode, loadConfig, type BeltConfig, type Config, type StepConfig } from "./config.ts";
 import { descriptorFor } from "./sources/registry.ts";
 import { orphanWorktreeListeners, worktreesRoot } from "./core/dev-server.ts";
 import { openDb } from "./db/index.ts";
@@ -519,6 +519,9 @@ export async function repoGroup(repo: string, deep = false): Promise<DoctorGroup
     // may throw on an unbuildable source (e.g. github_issues with no resolvable repo) even when
     // the YAML itself is schema-valid — the label must not send the operator to the config file.
     await attempt("config loads + sources buildable", async () => {
+      // Read with THIS code, like the server's claim gate: a file it can't load stops claims there.
+      const invalid = configLoadError(repo);
+      if (invalid) throw new Error(`config invalid: ${invalid} — the server claims nothing for this repo until it loads`);
       deps = await buildDeps(repo);
     }),
   );

@@ -1510,6 +1510,34 @@ function normalizeSplit(raw: "vertical" | "horizontal" | "right" | "down"): "rig
   return raw === "horizontal" || raw === "down" ? "down" : "right";
 }
 
+const configChecks = new Map<string, { mtimeMs: number; error: string | null }>();
+
+/** Does the repo's config.yml on disk still load with THIS running code? null = it does; otherwise
+ *  the load error, shortened to its issue lines. The resident server keeps its in-memory config, so
+ *  an edit the running code can't parse (a key a newer version added) goes unnoticed there while
+ *  every fresh process (the layout hook) fails on it — the claim gate asks this before each Phase B.
+ *  Re-loaded only when the file's mtime changes, so a steady tick costs one stat. */
+export function configLoadError(repoName: string): string | null {
+  const ymlPath = join(repoConfigDir(repoName), "config.yml");
+  let mtimeMs = -1;
+  try {
+    mtimeMs = statSync(ymlPath).mtimeMs;
+  } catch {
+    /* missing — loadConfig says so */
+  }
+  const hit = configChecks.get(repoName);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.error;
+  let error: string | null = null;
+  try {
+    loadConfig(repoName);
+  } catch (e) {
+    const lines = (e instanceof Error ? e.message : String(e)).split("\n");
+    error = lines.length > 1 ? lines.slice(1).map((l) => l.trim()).join("; ") : lines[0]!;
+  }
+  configChecks.set(repoName, { mtimeMs, error });
+  return error;
+}
+
 export function loadConfig(repoName: string): Loaded {
   const cfgDir = configDir();
   const repoDir = join(cfgDir, "repos", repoName);

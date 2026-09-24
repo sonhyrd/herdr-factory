@@ -19,6 +19,7 @@ import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCom
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
 import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
 import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
+import { buildLayoutInto, lastHookLine, recordHookLine, releaseApply } from "./layout-hook.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { checkStepTree, recordTreeRefusal } from "./tree-guard.ts";
 import { reportToPane, showRunPane, type PaneRunState } from "./pane-display.ts";
@@ -98,6 +99,8 @@ function noteSourceAuthRecovered(deps: Deps, source: string): void {
 /** The problem-ledger key for a source's rate-limit hold. Distinct from the auth gate's
  *  `source:<name>` so a backoff can never clear (or be cleared by) an auth problem. */
 const rateLimitProblemKey = (source: string): string => `source:${source}:rate-limit`;
+/** Problem-ledger key of the claim gate's "the config file on disk doesn't load" (Phase B). */
+export const CONFIG_PROBLEM_KEY = "config";
 
 /** Record + (throttled) notify that a work source is rate-limited until `resetAt`. */
 async function noteSourceRateLimited(deps: Deps, source: string, e: SourceRateLimitedError): Promise<void> {
@@ -600,6 +603,18 @@ async function reconcileRepoPhases(deps: Deps): Promise<void> {
   // happening — and with `max_active_workspaces` removed from machine.yml, nothing would ever
   // clear it again. Any exit added to Phase B has to keep this invariant.
   const notDeferred = () => void deps.store.recordClaimDeferral(repo, false);
+  // The config file on disk must still load with this running code. The in-memory config would
+  // claim happily, but every fresh process (the layout hook) reads the file — so a claim here would
+  // create a workspace nothing builds a layout into. Running work is untouched (Phase A ran).
+  const configError = deps.configCheck?.() ?? null;
+  if (configError) {
+    deps.store.reportProblem(repo, CONFIG_PROBLEM_KEY, "config", `config invalid: ${configError} — claims paused until the file loads`);
+    deps.log("warn", `config invalid: ${configError} — not claiming`);
+    notDeferred();
+    deps.store.touchTick(repo);
+    return;
+  }
+  if (deps.store.clearProblem(repo, CONFIG_PROBLEM_KEY)) deps.log("info", "config loads again — claims resume");
   const lowMemory = memoryGate(machine, deps.availableMemoryMb ?? availableMemoryMb);
   if (lowMemory) {
     // Admission only: running work is untouched — Phase A above already advanced it.
@@ -2063,10 +2078,13 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   const limit = guard?.autoRespawnLimit ?? 0;
   if (guard && deps.store.guardCounter(run.id, step.name, guard.kind) < limit) {
     const attempt = deps.store.bumpGuardCounter(run.id, step.name, guard.kind);
+    // The layout may never have been built at all (the hook failed while the repo's config file
+    // didn't load) — then build it now, from this engine's config; nothing else would.
+    const rebuilt = await rebuildMissingLayout(deps, run, belt);
     // The pane may be up with NO agent in it — the layout's `agent start` failed (a claude stopped at
     // the folder-trust prompt is the case this was built for). Re-arming alone would then wait out
     // every remaining window for an agent nothing is bringing up, so re-attempt the adoption first.
-    const restarted = await retryLayoutAgent(deps, run, belt, step);
+    const restarted = rebuilt ? false : await retryLayoutAgent(deps, run, belt, step);
     // Re-arm: each retry gets a FULL fresh window, so the budget bounds wall-clock at
     // (1 + limit) × layout_wait_seconds rather than being burned in `limit` consecutive ticks.
     deps.store.upsertRunStep(run.id, step.name, { startedAt: deps.now() });
@@ -2075,17 +2093,49 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
       repo: deps.config.repoName,
       ticketKey: run.ticketKey,
       type: "layout_wait_retry",
-      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit, agentRestarted: restarted },
+      detail: { step: step.name, tab: step.tab, pane: step.pane, attempt, limit, agentRestarted: restarted, ...(rebuilt ? { layoutRebuilt: rebuilt } : {}) },
     });
     deps.log("warn", `${run.ticketKey}: ${step.name} layout pane ${where} not up after ${waited}s — re-arming the wait (retry ${attempt}/${limit})`);
     return;
   }
+  // The hook's last word on this workspace is usually the real cause (`no factory repo config …`).
+  const hookLine = run.workspaceId ? lastHookLine(run.workspaceId) : null;
   await escalateAttention(deps, run, {
     reason: "layout_wait_timeout",
-    attentionReason: `${step.name}: layout pane ${where} never became available`,
+    attentionReason: `${step.name}: layout pane ${where} never became available${hookLine ? ` — layout hook: ${hookLine}` : ""}`,
     body: `${step.name} step (belt ${belt.name}): configured pane ${where} didn't come up with an idle agent within ${Math.round(deps.config.limits.layoutWaitSeconds / 60)}min${limit > 0 ? ` (${limit} automatic retries exhausted)` : ""} — is the herdr layout for this worktree running?`,
-    detail: { step: step.name, tab: step.tab, pane: step.pane, respawnsUsed: limit },
+    detail: { step: step.name, tab: step.tab, pane: step.pane, respawnsUsed: limit, ...(hookLine ? { hookLine } : {}) },
   });
+}
+
+/** Build the run's layout into its workspace when NONE of the layout's tabs is there — the hook
+ *  never built it (its config didn't load when the workspace was created, and a fixed file fires no
+ *  new event). A workspace with any of the layout's tabs is left alone: a half-built layout is the
+ *  agent-restart retry's business, and a duplicate tab set would be worse than the wait. An empty tab
+ *  list is herdr not answering (a workspace always has a tab), not "nothing built". Answers what the
+ *  build did (recorded as the hook's last line too), or null when it didn't run. Never throws. */
+async function rebuildMissingLayout(deps: Deps, run: Run, belt: BeltRuntime): Promise<string | null> {
+  if (!run.workspaceId || !deps.herdr.tabLabels) return null;
+  const resolved = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
+  if (!resolved) return null;
+  const { layout } = pruneLayoutToBelt(resolved, belt);
+  try {
+    const tabs = await deps.herdr.tabLabels(run.workspaceId);
+    if (tabs.length === 0 || layout.tabs.some((t) => t.title != null && tabs.includes(t.title))) return null;
+    const info = await deps.herdr.workspaceInfo(run.workspaceId);
+    if (!info?.checkoutPath) return null;
+    // Nothing of the layout survives here, so an old apply claim guards nothing — drop it.
+    releaseApply(info.checkoutPath);
+    deps.log("warn", `${run.ticketKey}: workspace ${run.workspaceId} has none of layout "${layout.id}"'s tabs — building it`);
+    const res = await buildLayoutInto(deps, deps.config.repoName, run.workspaceId, info);
+    const line = res.applied ? `built "${res.applied}" (engine rebuild)` : res.skipped!;
+    recordHookLine(run.workspaceId, line);
+    return res.applied ? line : null;
+  } catch (e) {
+    recordHookLine(run.workspaceId, err(e));
+    deps.log("warn", `${run.ticketKey}: layout rebuild failed — ${err(e)}`);
+    return null;
+  }
 }
 
 /** Clock slack when comparing GitHub's PR timestamp against the run's own start — the two clocks

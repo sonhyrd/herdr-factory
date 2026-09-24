@@ -120,11 +120,16 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
     case "layout_wait_timeout": {
       const g = ob.watches.guards.find((x) => x.kind === "layout_wait");
       const used = g ? `${g.facts.respawnsUsed} of ${g.facts.respawnLimit}` : "all";
+      // The park carries the layout hook's last line for the workspace when there was one — that,
+      // not the generic causes, is what to fix (e.g. `no factory repo config for …`).
+      const hook = reason.split(" — layout hook: ")[1];
       return {
         headline: `The run is parked: the ${step} step's pane never became available (${reason}).`,
         body: [
           `The engine already re-attempted the spawn on its own (${used} respawn windows used) — this park means the pane is genuinely not coming up.`,
-          "Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.",
+          hook
+            ? `The layout hook's last word on this workspace: ${hook}. Fix that first (a config that doesn't load: \`herdr-factory doctor\`).`
+            : "Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.",
         ],
         next: [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],
       };

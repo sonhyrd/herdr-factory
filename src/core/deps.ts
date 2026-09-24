@@ -103,6 +103,9 @@ export interface HerdrApi {
   firstPaneOfTab(workspaceId: string, tabId: string): Promise<string | null>;
   /** Every pane in a workspace with its label — the hook's freshness re-check ignores plugin panes. */
   listPanes(workspaceId: string): Promise<PaneSummary[]>;
+  /** Every tab label in a workspace ([] when herdr can't be asked) — the layout wait's "was the layout
+   *  ever built here?" check. Optional: absent ⇒ the wait never rebuilds a layout itself. */
+  tabLabels?(workspaceId: string): Promise<string[]>;
   /** Submit a prompt to a pane's agent (atomic: types + Enter). `confirm` waits for herdr to observe
    *  the agent react, falling back to the pane's `revision` when herdr's own state detection never
    *  flips (cursor-agent reports `idle` while it works), and returns false only when the pane showed
@@ -431,6 +434,9 @@ export interface Deps {
   machine?: MachineConfig;
   /** Available-memory reader (MB) for the machine memory gate; tests inject it. Absent ⇒ availableMemoryMb(). */
   availableMemoryMb?: () => number;
+  /** The claim gate's "does the config file on disk still load?" (null = yes, else the error) —
+   *  configLoadError() in production. Absent ⇒ no gate (tests whose config lives only in memory). */
+  configCheck?: () => string | null;
   /** Kill whatever LISTENs on a TCP port and return the pids that held it — teardown's dev-server
    *  reap (hf-port handshake). Tests inject it so no test ever signals a real process.
    *  Absent ⇒ killPortListeners() from core/dev-server.ts. */
