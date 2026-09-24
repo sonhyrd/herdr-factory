@@ -884,7 +884,7 @@ CREATE TABLE watch_state(                -- per-watch clocks/signatures (v34): o
   updated_at INTEGER NOT NULL,           -- HEAD + when; read_only: sig = the baseline, based_at =
   PRIMARY KEY (run_id, step, watch));    -- the freeze marker; pr_green (step 'pull_request'):
                                          -- sig = the head that is green now (cleared when it stops
-                                         -- being green), meta = the head the operator was told
+                                         -- being green), meta.toldHead = the head the operator was told
                                          -- about (kept across a flicker; a new head is a new
                                          -- green). A plugin watch stores state without a
                                          -- migration. Re-bases WRITE NULL ROWS, never delete — the
@@ -1340,12 +1340,12 @@ same `deps.herdr.notify` path as attention/auth escalations, with the key, PR ti
 It is a notification *only*: nothing in the engine merges, and `gh pr merge` appears nowhere in the
 codebase. The episode state is one row in `watch_state` (run, `'pull_request'`, `'pr_green'`):
 `sig` is the head that is green *now* (cleared when it stops being green — the dashboard's `prGreen`
-reads it) and `meta` is the "told them" mark — **the head commit SHA the operator was notified
+reads it) and `meta` (`{"toldHead": <sha>}`) is the "told them" mark — **the head commit SHA the operator was notified
 about** (issue #114). A red flicker clears `sig` but keeps `meta`, so the same head never notifies
 twice; only a **new head** that is green is news — a push is a new green even where there is no CI
 and the rollup never moves. A lookup with no head SHA marks `"green"` and degrades to once per
 green episode (that mark alone is cleared on not-green). A row written before `meta` carried the
-mark is read from `sig`.
+mark (its `meta` is the column default `{}`) is read from `sig`.
 
 **A conflicted PR wakes the resolver.** `baseMergeNeeded` is `conflicting` for `mergeable ===
 CONFLICTING`, `behind` for `mergeStateStatus === BEHIND` on a `strictBase`, else null — a BEHIND

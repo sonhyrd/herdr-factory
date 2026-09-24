@@ -6,7 +6,7 @@ import { createEvidencePublisher } from "../clients/evidence.ts";
 import { runEffect } from "../runtime/effect.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type SourceRuntime } from "./deps.ts";
 import type { LayoutAgent, StepConfig } from "../config.ts";
-import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, ReviewSig, Run, RunStep, Ticket, TransitionIntent, WorkState } from "../types.ts";
+import type { BeltEffectTrigger, GuardSpec, HumanQuestion, HumanReply, MatchItem, Outcome, PrInfo, PrSnapshot, ReviewSig, Run, RunStep, Ticket, TransitionIntent, WatchState, WorkState } from "../types.ts";
 import { EFFECT_PRODUCE_PRODUCTS, effectRank, isReadyForInput, outcomeToWorkState, StaleItemError, ticketOf, type TransitionContext } from "../types.ts";
 import { isUniqueViolation } from "../db/store.ts";
 import { availableMemoryMb, capacityGate, claimDeferralNote, memoryGate, noteMachineGate } from "../machine.ts";
@@ -2715,7 +2715,7 @@ async function enterReviewing(deps: Deps, run: Run, belt: BeltRuntime, src: Sour
 // 'pr_green') — no new run column — carries two things:
 //   * `sig`  — the head that is green RIGHT NOW (null while it isn't). The dashboard's prGreen reads
 //     it, so it is cleared the moment the PR stops being green; and
-//   * `meta` — the head the operator was last TOLD about. It survives a red flicker: a check that
+//   * `meta` — `{"toldHead": <sha>}`, the head the operator was last TOLD about. It survives a red flicker: a check that
 //     reruns, a thread opened and resolved, a conflict that comes and goes on the same head never
 //     re-notifies. Only a NEW head that is green is news — including on a repo with NO CI at all,
 //     where the rollup never moves and nothing but the head would change.
@@ -2748,6 +2748,18 @@ function baseMergeNeeded(pr: PrInfo): "conflicting" | "behind" | null {
   return null;
 }
 
+/** The head the operator was last told about: `meta.toldHead`. A row written before that key existed
+ *  (meta is the column default `{}`) carried the told head in `sig`, so read it from there. */
+function toldHead(st: WatchState | undefined): string | null {
+  let m: { toldHead?: string } = {};
+  try {
+    m = JSON.parse(st?.meta || "{}") as { toldHead?: string };
+  } catch {
+    /* not ours — fall back to sig */
+  }
+  return m.toldHead ?? st?.sig ?? null;
+}
+
 async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig, evidenceStale: boolean): Promise<void> {
   const st = deps.store.getWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch);
   // The PR-opening step may still be RUNNING: enterReviewing hands off the moment a review-ready PR
@@ -2763,27 +2775,28 @@ async function noteGreenPr(deps: Deps, run: Run, pr: PrInfo, sig: ReviewSig, evi
   const green =
     !stepRunning && !evidenceStale && pr.state === "OPEN" && !pr.isDraft && sig.unresolved === 0 && sig.failing === 0 && sig.pending === 0 &&
     pr.mergeable !== "UNKNOWN" && baseMergeNeeded(pr) == null;
-  // A row written before `meta` carried the told head has it only in `sig`.
-  const told = st?.meta || st?.sig;
+  const told = toldHead(st);
   if (!green) {
     // A lookup without a head SHA marks "green": it can't tell heads apart, so it degrades to once
     // per green episode — and only that mark ends on not-green. A head mark stands until a new head.
     if (st?.sig != null || told === "green") {
-      deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null, meta: told === "green" ? "" : (told ?? "") });
+      const keep = told && told !== "green" ? told : null;
+      deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: null, meta: JSON.stringify(keep ? { toldHead: keep } : {}) });
     }
     return;
   }
   const mark = pr.headOid || "green";
+  const meta = JSON.stringify({ toldHead: mark });
   if (told === mark) {
     // Already told the operator about THIS head — green again after a flicker is not news.
-    if (st?.sig !== mark) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta: mark });
+    if (st?.sig !== mark) deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta });
     return;
   }
 
   const title = pr.title ?? run.summary ?? "";
   const body = `${run.ticketKey} is ready to merge — PR #${pr.number}${title ? ` "${title}"` : ""} in ${deps.ghRepo} is green with no unresolved threads · ${pr.url}`;
   await deps.herdr.notify(`herdr-factory: ${run.ticketKey} ready to merge`, body).catch(() => {});
-  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta: mark });
+  deps.store.upsertWatchState(run.id, GREEN_WATCH.step, GREEN_WATCH.watch, { sig: mark, meta });
   deps.store.recordEvent({ runId: run.id, repo: deps.config.repoName, ticketKey: run.ticketKey, type: "pr_green", detail: { number: pr.number, head: pr.headOid } });
   deps.log("info", `${run.ticketKey}: PR #${pr.number} is green and mergeable — notified the operator (the factory never merges)`);
 }

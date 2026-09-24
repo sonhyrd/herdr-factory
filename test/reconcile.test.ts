@@ -2937,6 +2937,25 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(c2.agentSend).toHaveLength(1);
   });
 
+  it("reviewing + a pr_green row written before toldHead existed (mark only in sig) → the same head never re-notifies", async () => {
+    const { deps, store, state, worktree, calls } = build();
+    const run = seed(store, worktree, "K-LGCY", "reviewing", null, { prNumber: 32, lastThreadSig: "sig-red" });
+    store.upsertWatchState(run.id, "pull_request", "pr_green", { sig: "sha-1" }); // the pre-#114 write: meta stays '{}'
+    state.pr = { number: 32, state: "OPEN", url: "u", headOid: "sha-1" };
+    const green = { unresolved: 0, failing: 0, pending: 0, sig: "sig-green" };
+    state.sig = green;
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify, "already told about sha-1 before the upgrade").toBe(0);
+    for (const sig of [{ unresolved: 0, failing: 1, pending: 0, sig: "sig-red" }, green]) {
+      state.sig = sig;
+      await reconcileRun(deps, store.getRun(run.id)!);
+    }
+    expect(calls.notify, "…and a red flicker does not lose the mark").toBe(0);
+    state.pr = { ...state.pr, headOid: "sha-2" };
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.notify, "a new green head is still news").toBe(1);
+  });
+
   it("reviewing + mergeability still UNKNOWN → waits, then notifies once GitHub settles it", async () => {
     const { deps, store, state, worktree, calls } = build();
     const run = seed(store, worktree, "K-UNKN", "reviewing", null, { prNumber: 31, lastThreadSig: "s0" });
