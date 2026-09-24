@@ -361,7 +361,10 @@ function build(opts: { multi?: boolean } = {}) {
     uid: () => `u${++uidN}`,
     sleep: async () => {},
     rmrf: async (p) => { calls.rmrf.push(p); },
-    killPortListeners: async (port) => { calls.killPort.push(port); return [{ pid: 4242, rssKb: 2_400_000 }]; },
+    killPortListeners: async (port, wt) => {
+      calls.killPort.push(port);
+      return { killed: [{ pid: 4242, rssKb: 2_400_000, cwd: wt }], skipped: [], lsof: `lsof -nP -ti tcp:${port} -sTCP:LISTEN` };
+    },
   };
   return { deps, store, state, calls, config, setNow: (n: number) => { now = n; }, worktree, shipBelt, lmBelt, sources };
 }
@@ -2600,6 +2603,32 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(stopped(store, "K-DS2").map((d) => d.why)).toEqual(["bounce", "waiting for a human", "rework"]);
     expect(stopped(store, "K-DS3").map((d) => d.why)).toEqual(["parked"]);
     expect(calls.killPort).toEqual([4001, 4001, 4001, 4001]);
+  });
+
+  // ISSUE #108: the port is not proof of ownership. What was reaped (pid, RSS, cwd), what was left
+  // running and why, and the lsof behind a "nothing was listening" all land in the log.
+  it("logs each killed pid's RSS and cwd, each sibling listener left running, and the lsof behind an empty port", async () => {
+    const { deps, store, worktree } = build();
+    reservePort(worktree, "4001");
+    const logs: string[] = [];
+    deps.log = (level, msg) => { logs.push(`${level}: ${msg}`); };
+    const results = [
+      { killed: [{ pid: 4242, rssKb: 2_400_000, cwd: worktree }], skipped: [{ pid: 7, cwd: "/wt/sibling" }, { pid: 8, cwd: null }], lsof: "lsof A" },
+      { killed: [], skipped: [], lsof: "lsof -nP -ti tcp:4001 -sTCP:LISTEN" },
+    ];
+    deps.killPortListeners = async () => results.shift()!;
+    const run = seed(store, worktree, "K-DS5", "running", "review");
+    store.upsertRunStep(run.id, "fix", { done: true });
+    await applySignal(deps, "step-done", { key: "K-DS5", step: "review" });
+    await requestHumanInput(deps, store.getRun(run.id)!, "pr", "which toast?");
+    const dev = logs.filter((l) => l.includes("dev server port 4001"));
+    expect(dev).toEqual([
+      "warn: K-DS5: dev server port 4001 (step-done) — pid 7 belongs to /wt/sibling, not this run; left running",
+      "warn: K-DS5: dev server port 4001 (step-done) — pid 8 belongs to an unreadable cwd, not this run; left running",
+      `info: K-DS5: dev server port 4001 (step-done) — killed pid(s) 4242 (2344 MB RSS, cwd ${worktree})`,
+      "info: K-DS5: dev server port 4001 (waiting for a human) — nothing was listening (lsof -nP -ti tcp:4001 -sTCP:LISTEN)",
+    ]);
+    expect(stopped(store, "K-DS5").map((d) => d.pids)).toEqual([[4242]]); // a skip-only / empty reap records no event
   });
 
   it("a run with no hf-port transitions exactly as before — no kill, no event", async () => {

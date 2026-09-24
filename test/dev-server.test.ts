@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/clients/exec.ts";
-import { gitDir, killPortListeners, listenerPids, readRunPort } from "../src/core/dev-server.ts";
+import { gitDir, killPortListeners, listenerPids, readRunPort, type ReapIO } from "../src/core/dev-server.ts";
 
 const tmps: string[] = [];
 afterEach(() => {
@@ -53,7 +53,7 @@ describe("hf-port handshake", () => {
 
 describe("killPortListeners", () => {
   it("returns empty for a port nothing is listening on", { skip: !haveLsof }, async () => {
-    expect(await killPortListeners(1)).toEqual([]);
+    expect(await killPortListeners(1, tmp("hf-wt-"))).toEqual({ killed: [], skipped: [], lsof: "lsof -nP -ti tcp:1 -sTCP:LISTEN" });
   });
 
   it("throws rather than reporting an empty port when lsof is missing", async () => {
@@ -72,14 +72,20 @@ describe("killPortListeners", () => {
     // A listener whose parent is a shell in its own process group — the pnpm→dev-server shape
     // whose reparented child survived teardown. It prints `<pid> <port>` once it is up.
     const script = "const s=require('node:net').createServer().listen(0,()=>console.log(process.pid,s.address().port))";
-    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"], detached: true });
+    const wt = tmp("hf-wt-");
+    const child = spawn(process.execPath, ["-e", script], { cwd: wt, stdio: ["ignore", "pipe", "ignore"], detached: true });
     const [pid, port] = (await new Promise<string>((resolve) => child.stdout!.once("data", (b) => resolve(String(b)))))
       .trim()
       .split(/\s+/)
       .map((n) => Number.parseInt(n, 10)) as [number, number];
     try {
       expect(await listenerPids(port)).toContain(pid);
-      expect((await killPortListeners(port)).map((k) => k.pid)).toContain(pid);
+      // Not ours from a sibling worktree: left running, port still held.
+      expect(await killPortListeners(port, tmp("hf-sibling-"))).toMatchObject({ killed: [], skipped: [{ pid }] });
+      expect(await listenerPids(port)).toContain(pid);
+      const { killed } = await killPortListeners(port, wt);
+      expect(killed.map((k) => k.pid)).toContain(pid);
+      expect(killed[0]!.rssKb).toBeGreaterThan(0);
       expect(await listenerPids(port)).toEqual([]); // port is free again
     } finally {
       try {
@@ -88,5 +94,63 @@ describe("killPortListeners", () => {
         /* already reaped by the code under test — that is the point */
       }
     }
+  });
+});
+
+describe("killPortListeners — ownership (injected io, no real processes)", () => {
+  /** A fake host: pid → cwd (null = unreadable, "throw" = lsof failed), every signal recorded. */
+  function fakeIO(cwds: Record<number, string | null | "throw">) {
+    const signals: string[] = [];
+    const listening = new Set(Object.keys(cwds).map(Number));
+    const io: ReapIO = {
+      listenerPids: async () => [...listening],
+      cwdOf: async (pid) => {
+        const c = cwds[pid];
+        if (c === "throw") throw new Error("lsof: permission denied");
+        return c ?? null;
+      },
+      rssKbOf: async (pid) => pid * 1000,
+      signal: async (pid, sig) => {
+        signals.push(`${sig} ${pid}`);
+        if (sig === "SIGTERM" && pid !== 12) listening.delete(pid); // 12 ignores TERM
+      },
+      sleep: async () => {},
+    };
+    return { io, signals };
+  }
+
+  it("kills a listener whose cwd is inside the worktree, with its RSS and cwd", async () => {
+    const wt = tmp("hf-wt-");
+    const { io, signals } = fakeIO({ 11: join(wt, "apps/web"), 12: wt });
+    const r = await killPortListeners(4100, wt, io);
+    expect(r.killed).toEqual([{ pid: 11, rssKb: 11_000, cwd: join(wt, "apps/web") }, { pid: 12, rssKb: 12_000, cwd: wt }]);
+    expect(r.skipped).toEqual([]);
+    expect(signals).toEqual(["SIGTERM 11", "SIGTERM 12", "SIGKILL 12"]); // the sweep hits only what still listens
+  });
+
+  it("leaves a sibling worktree's listener running — a shared prefix is not inside", async () => {
+    const wt = tmp("hf-wt-");
+    const { io, signals } = fakeIO({ 21: `${wt}-sibling`, 22: "/somewhere/else" });
+    const r = await killPortListeners(4100, wt, io);
+    expect(r).toMatchObject({ killed: [], skipped: [{ pid: 21, cwd: `${wt}-sibling` }, { pid: 22, cwd: "/somewhere/else" }] });
+    expect(signals).toEqual([]);
+  });
+
+  it("never signals a listener whose cwd can't be read", async () => {
+    const wt = tmp("hf-wt-");
+    const { io, signals } = fakeIO({ 31: null, 32: "throw" });
+    expect((await killPortListeners(4100, wt, io)).skipped).toEqual([{ pid: 31, cwd: null }, { pid: 32, cwd: null }]);
+    expect(signals).toEqual([]);
+  });
+
+  it("matches through symlinks, and still matches once teardown has removed the worktree", async () => {
+    const real = tmp("hf-real-");
+    const link = join(tmp("hf-link-"), "wt");
+    symlinkSync(real, link);
+    const { io } = fakeIO({ 41: real });
+    expect((await killPortListeners(4100, link, io)).killed.map((k) => k.pid)).toEqual([41]);
+    const gone = join(real, "removed-worktree"); // never created: the dir teardown already destroyed
+    const { io: io2 } = fakeIO({ 42: join(gone, "src") });
+    expect((await killPortListeners(4100, gone, io2)).killed.map((k) => k.pid)).toEqual([42]);
   });
 });

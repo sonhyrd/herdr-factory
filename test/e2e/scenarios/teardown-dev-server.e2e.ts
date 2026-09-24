@@ -121,7 +121,7 @@ scenario(
     expect(listener.child.exitCode ?? listener.child.signalCode, `pid ${listener.pid} exited`).not.toBeNull();
     expect(existsSync(worktree), "the worktree is gone").toBe(false);
     expect(w.factory.repoLog(400), "teardown says which port it reaped").toMatch(
-      new RegExp(`dev server port ${listener.port} — killed pid\\(s\\) [0-9, ]*${listener.pid}`),
+      new RegExp(`dev server port ${listener.port} \\(teardown\\) — killed pid\\(s\\) [0-9, ]*${listener.pid}`),
     );
 
     // ── criterion 4: no hf-port is not a teardown failure ─────────────────────────────────────
