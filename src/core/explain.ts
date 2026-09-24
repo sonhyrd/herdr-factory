@@ -139,7 +139,9 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
             ? `The layout build failed for this workspace: ${hook}. Fix that first${configLine ? " (a config that doesn't load: `herdr-factory doctor` names it)" : ""}.`
             : "Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.",
         ],
-        next: [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],
+        next: undetected
+          ? [resumeCmd + "   # refunds the respawn budget and the one relaunch"]
+          : [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],
       };
     }
     case "bounce_limit": {

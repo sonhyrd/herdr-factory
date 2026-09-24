@@ -427,7 +427,9 @@ export class World {
     // `cursor` rides along as a third kind so a scenario can put a CURSOR agent in a layout pane —
     // the harness whose status herdr cannot read on Linux (issue #80), and the only way to prove the
     // dispatch gate against the kind the failure was actually reported for.
-    for (const kind of ["claude", "opencode", "cursor"]) {
+    // `cursor-agent` is Cursor's own CLI name — what the engine TYPES when it relaunches a cursor pane
+    // herdr never detected (issue #99), where `agent start --kind cursor` goes through `cursor`.
+    for (const kind of ["claude", "opencode", "cursor", "cursor-agent"]) {
       // The ds4 tier replaces ONE of them with the real model CLI: `opencode` becomes a wrapper that
       // records the argv herdr built (the interesting part — how a prompt reaches that kind is herdr's
       // manifest's business) and execs the real binary. `claude` stays scripted, so a ds4 scenario can
@@ -641,7 +643,7 @@ export class World {
       // No server and no plugin host: `start()` only prepares the state the shim serves. A fake-lane
       // scenario therefore never gets a layout (`worktree.created` has nothing to fire it), which is
       // why layout coverage is real-lane only.
-      if (this.spec.config && JSON.stringify(this.spec.config(this.paths)).includes('"layouts"')) {
+      if (!this.spec.fakeLaneLayouts && this.spec.config && JSON.stringify(this.spec.config(this.paths)).includes('"layouts"')) {
         throw new Error(`scenario "${this.spec.name}" declares layouts on the fake lane — no plugin host exists there, so no layout would ever be built`);
       }
       await this.herdr.start();

@@ -267,6 +267,7 @@ describe("explainRun — attention parks", () => {
     expect(text).toContain("re-type its command at the shell prompt");
     expect(text).not.toContain("Common causes");
     expect(text).not.toContain("genuinely not coming up");
+    expect(text).not.toContain("plugin");
   });
 
   it("bounce_limit: shows the counters and both human options", () => {
