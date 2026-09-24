@@ -23,6 +23,9 @@ export interface AgentBehaviour {
   /** Sit doing nothing instead of signalling: a number of ms, or "forever" (until the pane dies).
    *  This is how budget/stall parks are provoked. */
   hangMs?: number | "forever";
+  /** With a numeric `hangMs`: print a character every this many ms while hanging, so the pane's
+   *  output keeps changing (a busy agent whose status herdr cannot read). */
+  chatterMs?: number;
   /** Hold `working` for this long BEFORE doing anything else (committing, capturing, signalling).
    *  Some watches only arm once the engine has OBSERVED the agent working — the read-only baseline
    *  tracks HEAD until then, so a gate that commits within milliseconds of starting is indistinguish-

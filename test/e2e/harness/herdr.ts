@@ -81,6 +81,8 @@ export interface Agent {
   agent_status: string;
   name?: string;
   cwd?: string;
+  /** herdr's terminal-content counter — bumped whenever the pane's screen changes. */
+  revision?: number;
 }
 
 export interface Workspace {
