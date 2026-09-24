@@ -261,6 +261,15 @@ describe("explainRun — attention parks", () => {
     expect(text).not.toContain("layout build failed");
   });
 
+  it("layout_wait_timeout: an agent herdr never detected is named, not blamed on plugin links or tab names (issue #99)", () => {
+    const text = joined(parked("layout_wait_timeout", "work: agent in pane w1:p3 was never detected by Herdr (status unknown)"));
+    expect(text).toContain("Herdr never detected the work step's agent");
+    expect(text).toContain("re-type its command at the shell prompt");
+    expect(text).not.toContain("Common causes");
+    expect(text).not.toContain("genuinely not coming up");
+    expect(text).not.toContain("plugin");
+  });
+
   it("bounce_limit: shows the counters and both human options", () => {
     const text = joined(
       parked("bounce_limit", "bounced to work 6× (max 6)", {

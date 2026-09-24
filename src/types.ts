@@ -92,6 +92,7 @@ export type EventType =
   | "step_done"
   | "step_timing" // per-step wall / shell / model split, exported into the timeline at step-done
   | "layout_wait_retry" // a layout-pane wait window expired; the engine re-armed it (bounded respawn budget)
+  | "pane_relaunched" // a layout pane's agent herdr never detected was quit and its command retyped (once per step)
   | "idle_nudge" // a running step's pane sat idle past limits.idle_nudge_seconds; it was re-prompted once
   | "bounced"
   | "rework" // an OPERATOR sent a live run back to an earlier step for another pass (herdr-factory rework)

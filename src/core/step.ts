@@ -7,7 +7,7 @@ import type { AgentConfig, Run, RunStep, SourceType } from "../types.ts";
 import { DEFAULT_AGENT_CONFIG, mayAcceptDispatch } from "../types.ts";
 import { renderWorkVars } from "./branch.ts";
 import { productActiveFor, type PromptStepContext, stripInactiveProductBlocks, validatePromptBody } from "../prompts/contract.ts";
-import { guardsResetOn } from "../steps/guards.ts";
+import { guardsResetOn, PANE_RELAUNCH_COUNTER } from "../steps/guards.ts";
 import { awaitShellPrompt } from "./layout.ts";
 import { isClaudeAgent, trustWorktreeInClaude } from "./claude-trust.ts";
 import { showRunPane } from "./pane-display.ts";
@@ -784,6 +784,7 @@ async function spawnStepImpl(
   // layout-wait respawn budget), so a FUTURE wait by this step (a re-entry after a bounce, a crash
   // respawn) starts with its full bounded-retry allowance. Derived from GuardSpec.resetOn.
   for (const g of guardsResetOn(step.guards, "dispatch")) deps.store.resetGuardCounter(run.id, stepName, g.kind);
+  deps.store.resetGuardCounter(run.id, stepName, PANE_RELAUNCH_COUNTER); // …and the one undetected-agent relaunch
   // read_only enforcement baseline: capture HEAD before the agent runs, so a later commit (a
   // read-only-contract violation) is detectable as HEAD movement in the watch harness. Starts
   // UNFROZEN (basedAt null): it tracks live HEAD — absorbing the prior step's trailing handoff

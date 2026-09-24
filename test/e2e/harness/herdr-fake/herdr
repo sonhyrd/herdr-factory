@@ -162,7 +162,19 @@ function injection() {
     stall: list(j.promptStall != null ? j.promptStall : process.env.HF_HERDR_PROMPT_STALL),
     sleepMs: Number(j.sleepMs != null ? j.sleepMs : (process.env.HF_HERDR_SLEEP_MS ?? 0)) || 0,
     sleep: list(j.sleep != null ? j.sleep : process.env.HF_HERDR_SLEEP),
+    undetected: list(j.undetected != null ? j.undetected : process.env.HF_HERDR_UNDETECTED),
   };
+}
+
+/** `HF_HERDR_UNDETECTED=<ticket>[=sticky][,…]` — issue #99: herdr lists the pane's LIVE agent as
+ *  `unknown` with NO `agent` label, and `agent prompt` cannot reach it (seen with cursor-agent after a
+ *  self-update). `<ticket>` holds until the agent is relaunched by typing its command (`pane run`),
+ *  which herdr then detects; `<ticket>=sticky` never lets it be detected. Keyed on the pane's
+ *  HERDR_FACTORY_TICKET, so one scenario can drive both shapes. */
+function undetected(pane, spec) {
+  const ticket = pane.env?.HERDR_FACTORY_TICKET;
+  if (!ticket || !pane.agent) return false;
+  return spec.includes(`${ticket}=sticky`) || (spec.includes(ticket) && !pane.agent.typed);
 }
 
 /** `*` matches everything; otherwise an exact match against the classification / pane id. */
@@ -323,13 +335,14 @@ function liveAgentPanes(s) {
     .filter((p) => !matches(hidden, p.pane_id));
 }
 
-function agentJson(pane) {
-  const status = agentStatus(pane.pane_id);
+function agentJson(pane, undetectedSpec = []) {
+  const blind = undetected(pane, undetectedSpec);
+  const status = blind ? "unknown" : agentStatus(pane.pane_id);
   return {
     pane_id: pane.pane_id,
     workspace_id: pane.workspace_id,
     tab_id: pane.tab_id,
-    agent: pane.agent.kind,
+    ...(blind ? {} : { agent: pane.agent.kind }),
     name: pane.agent.name,
     agent_status: status,
     interactive_ready: status === "idle" || status === "done",
@@ -881,6 +894,14 @@ function handlePane(argv) {
     const command = argv[3] ?? "";
     const pane = s.panes[paneId];
     if (!pane) return fail(`pane_not_found: ${paneId}`);
+    // A TUI agent's own `/quit` typed into it: the agent exits and the pane is back at its shell.
+    if (command === "/quit" && pane.agent && alive(pane.agent.pid)) {
+      killPid(pane.agent.pid);
+      return mutate((st) => {
+        delete st.panes[paneId]?.agent;
+        return ok({ type: "pane_run", pane_id: paneId });
+      });
+    }
     if (livePaneProcess(pane)) return fail(`pane_busy: ${paneId} already has a live process`);
     if (!command) return fail("pane_run_invalid_args: a command is required");
     const pid = launch(pane, "/bin/sh", ["-c", command]);
@@ -890,7 +911,7 @@ function handlePane(argv) {
     return mutate((st) => {
       const p = st.panes[paneId];
       if (!p) return fail(`pane_not_found: ${paneId}`);
-      if (kind) p.agent = { name: kind, kind, pid, session_id: sessionId(), started_at: Date.now() };
+      if (kind) p.agent = { name: kind, kind, pid, session_id: sessionId(), started_at: Date.now(), typed: true };
       else p.command = { pid, command };
       return ok({ type: "pane_run", pane_id: paneId, pid });
     });
@@ -958,6 +979,7 @@ function autodetectKind(command) {
   // with its single quotes stripped.
   const first = (command.trim().match(/^'([^']*)'|^(\S+)/) || [])[1] ?? (command.trim().split(/\s+/)[0] || "");
   const base = P.basename(first.replace(/^'|'$/g, ""));
+  if (base === "cursor-agent") return "cursor"; // Cursor's CLI, detected as herdr kind `cursor`
   return AUTODETECT_KINDS.includes(base) ? base : null;
 }
 
@@ -985,7 +1007,7 @@ function handleAgent(argv) {
   const s = readState();
 
   if (verb === "list") {
-    return ok({ type: "agent_list", agents: liveAgentPanes(s).map((p) => agentJson(p)) });
+    return ok({ type: "agent_list", agents: liveAgentPanes(s).map((p) => agentJson(p, injection().undetected)) });
   }
 
   if (verb === "start") {
@@ -1039,6 +1061,7 @@ function handleAgent(argv) {
     const pane = liveAgentPanes(s).find((p) => p.pane_id === target || p.agent.name === target);
     if (!pane) return fail(`agent_not_found: ${target}`);
     const inject = injection();
+    if (undetected(pane, inject.undetected)) return fail(`agent_not_found: ${target} (HF_HERDR_UNDETECTED)`);
     // A DROPPED submission: herdr typed the text and observed no state change. Modelled by not
     // delivering at all — the engine must treat the dispatch as not having happened.
     if (matches(inject.stall, pane.pane_id) || matches(inject.stall, target)) {

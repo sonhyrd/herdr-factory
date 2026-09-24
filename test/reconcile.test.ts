@@ -92,6 +92,8 @@ interface FakeState {
    *  What the layout wait's agent-restart keys on (issue #44). */
   atShellPrompt: boolean;
   adoptFails: boolean; // `agent start` refuses (herdr's agent_not_ready / a pane it can't adopt)
+  agentLabel: string | null; // the agent herdr DETECTED in the pane (`agent list`'s `agent`) — null ⇒ never detected (#99)
+  adoptError?: string; // herdr's lastAgentError after a refused `agent start`
 }
 
 /** A resolved belt step for the fakes. Budgets/heartbeat/opensPr mirror what config.ts derives for
@@ -146,7 +148,7 @@ function build(opts: { multi?: boolean } = {}) {
   let now = 1000;
   let uidN = 0; // deterministic per-claim branch suffix (u1, u2, …) so re-claims get distinct branches
   const store = new Store(openDb(":memory:"), () => now);
-  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, changedFiles: [], mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false };
+  const state: FakeState = { eligible: [], eligible2: [], pr: null, sig: { unresolved: 0, failing: 0, pending: 0, sig: "s0" }, paneState: "idle", deadPanes: new Set(), tabPane: "w1:p1", tabPaneByName: {}, headSha: "sha0", dirtyStat: null, changedFiles: [], mainBranch: "master", existingBranches: new Set(), pushedBranches: new Set(), renameOk: true, renamed: [], sessionId: "sess-1", workspaceExists: false, focusedPane: { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", label: "agent" }, humanReply: null, herdrUnreachable: false, failTransitions: false, failTransitionStates: new Set(), staleTransitionStates: new Set(), humanPollError: null, humanAskError: null, failEligible: false, authFail: false, rateLimitedUntilMs: null, itemLabels: {}, promptStalls: false, fetchOk: true, tabPanes: {}, atShellPrompt: true, adoptFails: false, agentLabel: "claude" };
   const calls = {
     transitions: [] as [string, WorkState][],
     // Belt-effect deliveries: records the source-native statusOverride whenever one is passed.
@@ -159,6 +161,7 @@ function build(opts: { multi?: boolean } = {}) {
     // Layout agent adoptions the engine issued — [paneId, name, kind, args] (the layout wait's
     // restart). The NAME matters: herdr refuses one that a live agent already holds.
     agentAdopt: [] as [string, string, string, string][],
+    paneRun: [] as [string, string][], // text typed into a pane's shell (`pane run`)
     worktreeRemove: [] as string[],
     workspaceClose: [] as string[],
     rmrf: [] as string[],
@@ -263,7 +266,9 @@ function build(opts: { multi?: boolean } = {}) {
     tabPaneByLabel: async (_ws, tab, pane) =>
       pane === "agent" ? (Object.hasOwn(state.tabPanes, tab) ? state.tabPanes[tab]! : state.tabPane) : (state.tabPaneByName[pane] ?? null),
     agentStart: async () => { calls.agentStart += 1; return "w1:p2"; },
-    paneRun: async () => {},
+    paneRun: async (id, cmd) => { calls.paneRun.push([id, cmd]); },
+    paneAgentLabel: async () => state.agentLabel,
+    get lastAgentError() { return state.adoptError ?? null; },
     paneClose: async () => {},
     agentAdopt: async (paneId, o) => {
       calls.agentAdopt.push([paneId, o.name, o.kind, (o.args ?? []).join(" ")]);
@@ -1686,6 +1691,88 @@ describe("reconcile pipeline (work_to_pull_request belt)", () => {
     expect(calls.agentAdopt).toEqual([["w1:p1", "claude-w1", "claude", "--dangerously-skip-permissions"]]);
     expect(store.getRun(run.id)!.phase).toBe("claiming"); // still waiting, re-armed as before
     const retry = store.timeline("demo", "W-44").find((e) => e.type === "layout_wait_retry")!;
+    expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(true);
+  });
+
+  describe("a layout pane whose agent herdr never detected (#99)", () => {
+    // cursor-agent after a self-update: the pane sits at Cursor's prompt, but `herdr agent list` shows
+    // it `unknown` with NO agent label, so every dispatch goes unconfirmed. Only quitting it and typing
+    // its command again at the shell gets herdr to detect it.
+    const setup = (key: string) => {
+      const b = build();
+      b.deps.config.layouts.push({
+        id: "L",
+        tabs: [{ title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "cursor", args: ["--model", "m1"] } }] }],
+      });
+      b.shipBelt.defaultLayout = "L";
+      b.state.eligible = [ticket(key)];
+      b.state.paneState = "unknown";
+      b.state.agentLabel = null;
+      b.state.promptStalls = true; // no prompt lands in an undetected agent
+      b.state.atShellPrompt = false; // Cursor's TUI holds the foreground
+      return b;
+    };
+
+    it("relaunches it exactly once, and the next dispatch lands — no park", async () => {
+      const { deps, store, state, calls, setNow } = setup("W-99");
+      const realPaneRun = deps.herdr.paneRun;
+      deps.herdr.paneRun = async (id, cmd) => {
+        await realPaneRun(id, cmd);
+        if (cmd === "/quit") state.atShellPrompt = true;
+        else [state.agentLabel, state.paneState, state.promptStalls] = ["cursor", "idle", false]; // herdr detects the retyped agent
+      };
+      await reconcileRepo(deps); // waits: the prompt was not confirmed
+      const run = store.activeRunForTicket("demo", "jira", "W-99")!;
+      setNow(1100);
+      await reconcileRun(deps, store.getRun(run.id)!);
+      expect(calls.paneRun).toEqual([]); // not before ~2 min
+
+      setNow(1121);
+      await reconcileRun(deps, store.getRun(run.id)!);
+      expect(calls.paneRun).toEqual([["w1:p1", "/quit"], ["w1:p1", "'cursor-agent' '--model' 'm1'"]]);
+      expect(calls.agentAdopt).toEqual([]); // never `agent start` — herdr's stale registration refuses it
+      const ev = store.timeline("demo", "W-99").filter((e) => e.type === "pane_relaunched");
+      expect(ev.map((e) => JSON.parse(e.detail ?? "{}"))).toEqual([expect.objectContaining({ paneId: "w1:p1", command: "cursor-agent --model m1", detected: true })]);
+      expect(store.guardCounter(run.id, "fix", "layout_wait")).toBe(0); // no respawn window spent
+
+      setNow(1130);
+      await reconcileRun(deps, store.getRun(run.id)!);
+      expect(store.getRun(run.id)!.phase).toBe("running");
+      expect(store.getRunStep(run.id, "fix")!.dispatchedAt).toBe(1130);
+    });
+
+    it("a relaunch that does not take is not repeated, and the park names the detection failure", async () => {
+      const { deps, store, state, calls, setNow } = setup("W-98");
+      state.atShellPrompt = true; // the agent already exited to the shell
+      await reconcileRepo(deps);
+      const run = store.activeRunForTicket("demo", "jira", "W-98")!;
+      for (let t = 1121; store.getRun(run.id)!.phase === "claiming" && t < 20_000; t += 121) {
+        setNow(t);
+        await reconcileRun(deps, store.getRun(run.id)!);
+      }
+      expect(calls.paneRun).toEqual([["w1:p1", "'cursor-agent' '--model' 'm1'"]]); // once, straight to the retype
+      expect(store.getRun(run.id)!.phase).toBe("attention");
+      expect(store.getRun(run.id)!.attentionReason).toBe("fix: agent in pane w1:p1 was never detected by Herdr (status unknown)");
+    });
+  });
+
+  it("a stale herdr registration refusing the re-adopt gets the layout's command typed instead (#99)", async () => {
+    const { deps, store, state, calls, setNow, shipBelt } = build();
+    deps.config.layouts.push({
+      id: "L",
+      tabs: [{ title: "fix", panes: [{ title: "agent", persist: true, env: {}, setup: false, agent: { kind: "cursor", args: [] } }] }],
+    });
+    shipBelt.defaultLayout = "L";
+    state.eligible = [ticket("W-97")];
+    state.paneState = "working";
+    state.adoptFails = true;
+    state.adoptError = "agent_name_taken: cursor-w1";
+    await reconcileRepo(deps);
+    const run = store.activeRunForTicket("demo", "jira", "W-97")!;
+    setNow(1601);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(calls.paneRun).toEqual([["w1:p1", "'cursor-agent'"]]);
+    const retry = store.timeline("demo", "W-97").find((e) => e.type === "layout_wait_retry")!;
     expect(JSON.parse(retry.detail ?? "{}").agentRestarted).toBe(true);
   });
 

@@ -17,7 +17,9 @@ import { killPortListeners, readRunPort } from "./dev-server.ts";
 import { protectedBranches, runBranchNames, syncRunBranch } from "./run-branch.ts";
 import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCommittedMemoryDir, spawnStep, stepByName } from "./step.ts";
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
-import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
+import { adoptLayoutAgent, awaitShellPrompt, deriveAgentName } from "./layout.ts";
+import { PANE_RELAUNCH_COUNTER } from "../steps/guards.ts";
+import { shellQuoteArgv } from "../clients/herdr.ts";
 import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { buildLayoutInto, lastHookFailure, noteHookFailure, releaseApply } from "./layout-hook.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
@@ -2043,9 +2045,81 @@ async function retryLayoutAgent(deps: Deps, run: Run, belt: BeltRuntime, step: S
       cwd: run.worktreePath ?? undefined,
       name: target.name,
     });
-    return name != null;
+    if (name != null) return true;
+    // A stale herdr registration still holding the name (or the pane) refuses `agent start` for good,
+    // and `agent rename --clear` cannot free it — typing the pane's own command at its shell is the
+    // start herdr still detects (issue #99).
+    if (!/agent_name_taken|agent_pane_busy/.test(deps.herdr.lastAgentError ?? "")) return false;
+    await deps.herdr.paneRun(paneId, shellQuoteArgv(layoutAgentArgv(target.agent)));
+    return true;
   } catch {
     return false; // herdr unreachable / a pane that vanished mid-check — the wait re-arms as before
+  }
+}
+
+/** How long a step waits on its layout pane before relaunching an agent herdr never detected. */
+const RELAUNCH_AFTER_SECONDS = 120;
+/** Polls (2s apart) for herdr to detect a relaunched agent before the wait moves on. */
+const RELAUNCH_DETECT_POLLS = 30;
+
+/** The command line a layout pane's agent runs: the kind's canonical executable plus the layout's
+ *  `args`. Only Cursor's executable differs from its herdr kind. */
+const layoutAgentArgv = (agent: LayoutAgent): string[] => [agent.kind === "cursor" ? "cursor-agent" : agent.kind, ...agent.args];
+
+/** The step's layout pane when herdr lists it `unknown` with NO detected agent — a harness running
+ *  there that herdr never recognised (issue #99: cursor-agent after a self-update). Distinct from
+ *  issue #80's `unknown` pane, which herdr DOES label (`cursor`) and which takes a dispatch fine.
+ *  null for anything else, or when herdr can't be asked. */
+async function undetectedLayoutPane(deps: Deps, run: Run, step: StepConfig): Promise<string | null> {
+  if (!run.workspaceId || !step.tab || !step.pane || !deps.herdr.paneAgentLabel) return null;
+  try {
+    const paneId = await deps.herdr.tabPaneByLabel(run.workspaceId, step.tab, step.pane);
+    if (!paneId || (await deps.herdr.paneState(paneId, { fresh: true })) !== "unknown") return null;
+    return (await deps.herdr.paneAgentLabel(paneId, { fresh: true })) ? null : paneId;
+  } catch {
+    return null;
+  }
+}
+
+/** Relaunch a layout pane's agent that herdr never detected — once per pane per step (refunded on
+ *  dispatch and resume). Every dispatch into such a pane goes unconfirmed, and waiting out the
+ *  respawn windows cannot help: nothing re-detects an agent that is already running. So quit it
+ *  (`/quit` — Cursor, Claude, Codex, OpenCode and Gemini all take it), wait for the shell, and type
+ *  the layout's command again — the one recovery that worked every time by hand. NOT `agent start`:
+ *  herdr's stale registration for the pane refuses it (`agent_name_taken` / `agent_pane_busy`).
+ *  Answers whether the command was retyped. Never throws. */
+async function relaunchUndetectedAgent(deps: Deps, run: Run, belt: BeltRuntime, step: StepConfig): Promise<boolean> {
+  if (deps.store.guardCounter(run.id, step.name, PANE_RELAUNCH_COUNTER) > 0) return false;
+  const paneId = await undetectedLayoutPane(deps, run, step);
+  const target = paneId ? layoutAgentForStep(deps, run, belt, step) : undefined;
+  if (!paneId || !target) return false;
+  deps.store.bumpGuardCounter(run.id, step.name, PANE_RELAUNCH_COUNTER);
+  const argv = layoutAgentArgv(target.agent);
+  deps.log("warn", `${run.ticketKey}: agent in pane ${paneId} was never detected by Herdr (status unknown) — relaunching ${argv[0]}`);
+  try {
+    if (!(await deps.herdr.paneAtShellPrompt(paneId))) {
+      await deps.herdr.paneRun(paneId, "/quit");
+      if (!(await awaitShellPrompt(deps, paneId))) {
+        deps.log("warn", `${run.ticketKey}: ${paneId} did not return to a shell prompt after /quit — not relaunching`);
+        return false;
+      }
+    }
+    await deps.herdr.paneRun(paneId, shellQuoteArgv(argv));
+    let detected = false;
+    for (let i = 0; i < RELAUNCH_DETECT_POLLS && !detected; i++) {
+      detected = (await deps.herdr.paneAgentLabel!(paneId, { fresh: true })) != null;
+      if (!detected) await deps.sleep(2000);
+    }
+    deps.store.recordEvent({
+      runId: run.id,
+      repo: deps.config.repoName,
+      ticketKey: run.ticketKey,
+      type: "pane_relaunched",
+      detail: { step: step.name, tab: step.tab, pane: step.pane, paneId, command: argv.join(" "), detected },
+    });
+    return true;
+  } catch {
+    return false; // herdr unreachable / the pane vanished — the wait carries on as before
   }
 }
 
@@ -2096,6 +2170,12 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   const where = `${step.tab}/${step.pane}`;
   const since = deps.store.getRunStep(run.id, step.name)?.startedAt ?? deps.now();
   const waited = deps.now() - since;
+  // An agent herdr never detected takes no dispatch however long we wait — relaunch it (once) before
+  // any respawn window is spent, and give the relaunched agent a fresh window.
+  if (waited > Math.min(RELAUNCH_AFTER_SECONDS, deps.config.limits.layoutWaitSeconds) && (await relaunchUndetectedAgent(deps, run, belt, step))) {
+    deps.store.upsertRunStep(run.id, step.name, { startedAt: deps.now() });
+    return;
+  }
   if (waited <= deps.config.limits.layoutWaitSeconds) {
     deps.log("info", `${run.ticketKey}: ${step.name} waiting for layout pane ${where} (${waited}s/${deps.config.limits.layoutWaitSeconds}s)`);
     return;
@@ -2127,11 +2207,14 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
   // A build the hook could NOT do is the real cause (`no factory repo config …`) — name it. A hook
   // that built (or deliberately skipped) records nothing, and the park reads as before.
   const hookLine = run.workspaceId ? lastHookFailure(run.workspaceId) : null;
+  // A pane that IS up, running an agent herdr never detected, is not a layout that failed to come up.
+  const undetected = await undetectedLayoutPane(deps, run, step);
+  const what = undetected ? `agent in pane ${undetected} was never detected by Herdr (status unknown)` : `layout pane ${where} never became available`;
   await escalateAttention(deps, run, {
     reason: "layout_wait_timeout",
-    attentionReason: `${step.name}: layout pane ${where} never became available${hookLine ? ` — layout hook: ${hookLine}` : ""}`,
+    attentionReason: `${step.name}: ${what}${hookLine ? ` — layout hook: ${hookLine}` : ""}`,
     body: `${step.name} step (belt ${belt.name}): configured pane ${where} didn't come up with an idle agent within ${Math.round(deps.config.limits.layoutWaitSeconds / 60)}min${limit > 0 ? ` (${limit} automatic retries exhausted)` : ""} — is the herdr layout for this worktree running?`,
-    detail: { step: step.name, tab: step.tab, pane: step.pane, respawnsUsed: limit, ...(hookLine ? { hookLine } : {}) },
+    detail: { step: step.name, tab: step.tab, pane: step.pane, respawnsUsed: limit, ...(hookLine ? { hookLine } : {}), ...(undetected ? { undetectedPane: undetected } : {}) },
   });
 }
 
@@ -2925,6 +3008,7 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
     deps.store.upsertRunStep(run.id, run.step, { startedAt: deps.now(), absentAt: null });
     applyWatchRebase(deps, run.id, step, "resume");
     for (const g of guardsResetOn(step.guards, "resume")) deps.store.resetGuardCounter(run.id, step.name, g.kind);
+    deps.store.resetGuardCounter(run.id, step.name, PANE_RELAUNCH_COUNTER);
     phase = "running";
   } else if (belt.watchPr && run.prNumber) {
     // Back to watching the PR: clear the handled-signature so the next actionable review state
@@ -2939,6 +3023,7 @@ export async function resumeRun(deps: Deps, run: Run): Promise<{ ok: boolean; ph
     deps.store.upsertRunStep(run.id, first.name, { startedAt: deps.now(), absentAt: null });
     applyWatchRebase(deps, run.id, first, "resume"); // fresh wait/budget window for the resumed claim
     for (const g of guardsResetOn(first.guards, "resume")) deps.store.resetGuardCounter(run.id, first.name, g.kind);
+    deps.store.resetGuardCounter(run.id, first.name, PANE_RELAUNCH_COUNTER);
     phase = "claiming";
   }
   deps.store.updateRun(run.id, { phase, attentionReason: null, focusPending: true });

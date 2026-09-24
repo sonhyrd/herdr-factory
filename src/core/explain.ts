@@ -124,15 +124,24 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
       // that, not the generic causes, is what to fix. Only a config-load line points at doctor.
       const hook = reason.split(" — layout hook: ")[1];
       const configLine = hook != null && /no factory repo config|config failed to load/.test(hook);
+      // The pane IS up, but herdr never detected the agent running in it — no plugin or tab-name fix
+      // applies, and the engine's one relaunch (quit + retype the layout's command) did not take.
+      const undetected = reason.includes("was never detected by Herdr");
       return {
-        headline: `The run is parked: the ${step} step's pane never became available (${reason}).`,
+        headline: undetected
+          ? `The run is parked: Herdr never detected the ${step} step's agent (${reason}).`
+          : `The run is parked: the ${step} step's pane never became available (${reason}).`,
         body: [
-          `The engine already re-attempted the spawn on its own (${used} respawn windows used) — this park means the pane is genuinely not coming up.`,
-          hook
+          `The engine already re-attempted the spawn on its own (${used} respawn windows used)${undetected ? "" : " — this park means the pane is genuinely not coming up"}.`,
+          undetected
+            ? "The agent is running in its pane, but `herdr agent list` shows it `unknown` with no agent label, so no prompt lands. The engine relaunched it once already. By hand: quit the agent in the pane, re-type its command at the shell prompt, and resume once herdr lists it."
+            : hook
             ? `The layout build failed for this workspace: ${hook}. Fix that first${configLine ? " (a config that doesn't load: `herdr-factory doctor` names it)" : ""}.`
             : "Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.",
         ],
-        next: [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],
+        next: undetected
+          ? [resumeCmd + "   # refunds the respawn budget and the one relaunch"]
+          : [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],
       };
     }
     case "bounce_limit": {

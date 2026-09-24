@@ -124,6 +124,10 @@ export interface ScenarioSpec {
    *  inherit the herdr server's env) the agents. E.g. `HF_AGENT_STARTUP_MS: "0"` for an agent that
    *  starts work the instant it is exec'd. */
   processEnv?: Record<string, string>;
+  /** Fake lane only: the config may declare `layouts` although nothing builds them — the scenario
+   *  builds the panes itself and wants the engine to READ the layout (e.g. the command a relaunch
+   *  types, issue #99). Without it a fake-lane layout is refused as a wiring mistake. */
+  fakeLaneLayouts?: boolean;
   /** Runs after the world's directories exist but BEFORE its `config.yml` is written and anything is
    *  started — where a scenario brings up a stub backend whose URL the config then references. */
   beforeStart?: (p: WorldPaths) => Promise<void> | void;

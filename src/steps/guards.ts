@@ -30,6 +30,9 @@ export const HEARTBEAT_GUARD: GuardSpec = { kind: "heartbeat", escalationReason:
 // (RWR-18204 — a genuine step-done un-parks and ADVANCES, clearing the enforcement baseline).
 export const READ_ONLY_GUARD: GuardSpec = { kind: "read_only", escalationReason: "read_only_violation", autoRescueOnDone: true, stage: "pre_advance", rebaseOn: ["entry", "resume"] };
 export const LAYOUT_WAIT_GUARD: GuardSpec = { kind: "layout_wait", escalationReason: "layout_wait_timeout", autoRescueOnDone: false, autoRespawnLimit: 3, attachWhen: "layoutTarget", resetOn: ["dispatch", "resume"] };
+/** The `guard_counters` key for the layout wait's one relaunch of an agent herdr never detected
+ *  (issue #99). Not a guard of its own — refunded wherever the layout-wait budget is. */
+export const PANE_RELAUNCH_COUNTER = "pane_relaunch";
 export const CAPTURE_CAP_GUARD: GuardSpec = { kind: "capture_cap", escalationReason: "capture_limit", autoRescueOnDone: true, resetOn: ["forward_entry", "resume"], cumulative: false, requiresProduct: "evidence", counterScope: "run+step+guard" };
 // A machine-global exclusive resource the step's agent holds while driving the app (the capture
 // mutex). NOT a watchdog (never parks/auto-rescues) and not a counter — its @@CAPTURE_LOCK_*_CMD@@

@@ -448,7 +448,7 @@ export function deriveAgentName(kind: string, workspaceId: string, taken: readon
  *  moment. Returns false on timeout — callers warn and try anyway, since herdr's own error is clearer
  *  than refusing to start. */
 export async function awaitShellPrompt(deps: Deps, paneId: string): Promise<boolean> {
-  const deadline = deps.now() * 1000 + SHELL_READY_TIMEOUT_MS;
+  const deadline = Date.now() + SHELL_READY_TIMEOUT_MS; // one clock: the loop below reads Date.now()
   // Two consecutive idle samples: a shell sourcing rc files drops in and out of having a child, so a
   // single sample can catch the gap between two of them and call the pane ready a moment early.
   let consecutive = 0;

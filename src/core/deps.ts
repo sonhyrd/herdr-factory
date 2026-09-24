@@ -62,6 +62,9 @@ export interface HerdrApi {
   /** THROWS HerdrUnreachableError when herdr can't be queried; false means confirmed absent. */
   paneAlive(paneId: string, opts?: LivenessOpts): Promise<boolean>;
   agentSessionId(paneId: string): Promise<string | null>;
+  /** The agent herdr DETECTED in a pane, or null (pane not listed, or listed with no agent label).
+   *  Optional: absent ⇒ the layout wait never relaunches an undetected agent. */
+  paneAgentLabel?(paneId: string, opts?: LivenessOpts): Promise<string | null>;
   tabPaneByLabel(workspaceId: string, tabLabel: string, paneLabel: string): Promise<string | null>;
   /** Create a pane and bring the harness up in it (herdr 0.7.5: WE create the pane, herdr adopts the
    *  agent into it — see the client's doc). null ⇒ it couldn't be brought up; nothing was left behind. */
