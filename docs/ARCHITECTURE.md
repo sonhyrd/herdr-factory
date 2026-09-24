@@ -312,6 +312,20 @@ while herdr was down, and clearing the "decided" cache, whose keys are workspace
 server recycles. Modules: `src/core/layout-match.ts` (pure matching), `layout.ts` (tree builder +
 runner), `layout-hook.ts` (the event + startup handlers).
 
+**A config that fails to load never settles a workspace.** When the hook can't find the owning repo
+AND some repo's config threw while it looked, it returns `no factory repo config for <root> (repo
+"<name>" config failed to load: …)` **without** the focus event's `decided` marker, so the next focus
+after the fix builds the layout (a plain "no repo owns this" still settles). Every non-short-circuited
+invocation also records its outcome line per workspace (`<state>/layout-hook/last/<workspaceId>`,
+cleared with `decided/` at `[[startup]]`) — `lastHookLine` is what a `layout_wait_timeout` park
+quotes. The body after repo resolution is `buildLayoutInto(deps, repo, workspaceId, info)`, which
+the reconciler also calls: at each layout-wait window expiry, a run whose workspace has **none** of
+its (pruned) layout's tab labels (`herdr.tabLabels`; an empty answer is herdr not answering, not
+"nothing built") gets the layout built from the server's own config, after dropping the stale
+per-path apply claim — a hook that failed on a broken config fires no new event once it's fixed.
+A workspace with any of the layout's tabs is left to the agent-restart retry: a second tab set
+would be worse than the wait.
+
 The freshness guard counts only the panes the user or an agent could have opened. A herdr PLUGIN that
 adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) puts a second pane in every
 brand-new workspace, which read as "arranged" and declined **every** layout build on such a host —
@@ -1011,7 +1025,8 @@ clear a persisted row); the **rate-limit gate** (`source:<n>:rate-limit`, kind `
 distinct key so a backoff can never clear, or be cleared by, an auth problem; it is also how the
 out-of-process `status`/`explain` commands see a hold that lives in the serve process's memory);
 the **ledger kernel** (an `auth`-classified retry outcome reports the row's
-`cause_scope`, a delivery clears it); the **evidence prePass probe** (above); and the server's
+`cause_scope`, a delivery clears it); the **evidence prePass probe** (above); the **config gate**
+(key `config`, kind `config` — Phase B, below); and the server's
 detail-view probes (`?refresh=1`), which write their fresh verdicts to the same keys so opening the
 detail syncs the row's light at once. `/status`'s `problems` array is this ledger plus two derived
 entries (runs parked for attention, suspended intents — already recorded state in their own tables).
@@ -1066,6 +1081,19 @@ GitHub GraphQL query** fetches state + review signature for every watched PR
 fallback (nudge callers, batch failure). Run resolution is unchanged: each run's
 `work_source`/`belt` resolve once at the top of `reconcileRun` (a run whose source/belt was
 removed escalates to `attention`; a `tearing_down` run still finishes local cleanup).
+**Config gate (before Phase B, issue #95).** The resident server keeps the config it built its
+`Deps` from, but every fresh process — the layout hook above all — reads `config.yml` from disk. An
+edit the running code can't load (a key a newer version added, written before this host updated)
+used to leave the server claiming on its in-memory copy into workspaces the hook then refused to
+build, each run parking ~45 min later. So Phase B first asks `deps.configCheck()` —
+`configLoadError(repo)` (`config.ts`: a full `loadConfig` of the file, cached by the file's mtime, so
+a steady tick costs one `stat`). A failure reports the problem-ledger row `config`
+(`config invalid: <issue lines> — claims paused until the file loads`), `touchTick`s and returns
+before the machine gate; the next pass that loads clears it and claims as normal — no restart, no
+`reload` (the in-memory config is unchanged; the file only has to load again). Admission only, per
+repo: Phase A has already run, other repos tick on. `doctor`'s `config loads + sources buildable`
+row asks the same function first, so it names the same error. The TUI's "needs you" lists every
+`config`-kind problem. Absent `configCheck` (tests with an in-memory config) ⇒ no gate.
 **Machine gate (before Phase B).** `<configDir>/machine.yml` (`src/machine.ts`; host-local, loaded into
 `deps.machine` by every `buildDeps`, so `reload` re-reads it) adds two host-wide admission checks, both
 skipped entirely when the file/key is absent. `min_free_memory_mb`: if available memory (Linux
@@ -1651,8 +1679,11 @@ step (`spawnStep`):
      agent-send question, or human-driven), rather than queueing the prompt into a foreign turn
      and starting the budget clock under someone else's work. An expired window is **re-armed in place** up to the layout-wait guard's
      `autoRespawnLimit` (3) — a transient herdr/layout race must be retried by the engine, not
-     handed to a human — and only once that budget is spent does the reconciler escalate to
-     `attention`; a run already parked with `layout_wait_timeout` is likewise auto-un-parked and
+     handed to a human; each expiry first builds the layout when the workspace has none of its
+     tabs (`buildLayoutInto`, §4) or else re-starts a layout agent sitting at a shell prompt — and
+     only once that budget is spent does the reconciler escalate to `attention`, the park's reason
+     suffixed `— layout hook: <its last line for the workspace>` when there is one (`explain` quotes
+     it instead of the generic causes); a run already parked with `layout_wait_timeout` is likewise auto-un-parked and
      re-dispatched while budget remains (see [§7](#7-the-reconciler--multi-agent-pipeline)), so
      such a park needs no `step-done` (its agent never existed) and no human `resume` unless the
      pane is genuinely never coming up. It **never** spawns
