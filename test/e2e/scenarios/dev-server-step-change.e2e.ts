@@ -103,7 +103,9 @@ scenario(
     await expectServerStopped(w, "port-brief", worktree, "step-done");
 
     // ── no hf-port: transitions exactly as before ─────────────────────────────────────────────
-    await w.waitFor(() => w.db.run("noport-brief")?.step === "pr", { label: "noport-brief: work → pr", timeoutMs: 120_000 });
+    // Its `pr` step row, not the live pointer: nothing holds this run on `pr`, so by now it may be
+    // watching its PR already.
+    await w.waitFor(() => !!w.db.step(w.db.run("noport-brief")!.id, "pr"), { label: "noport-brief: work → pr", timeoutMs: 120_000 });
     expect(existsSync(join(gitDirOf(bareWorktree, w.env), "hf-port")), "no hf-port for this run").toBe(false);
 
     for (const key of ["port-brief", "noport-brief"]) {
