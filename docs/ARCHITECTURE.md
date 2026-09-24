@@ -1743,7 +1743,7 @@ step (`spawnStep`):
    `@@STEP_DONE_CMD@@`/`@@BOUNCE_CMD@@`/`@@EVIDENCE_UPLOAD_CMD@@` — each carrying `--source` so
    the signal resolves unambiguously, …), appends `guidelines-prompt.md`, and appends the
    **handover scaffold**: where you are in the belt, the prior step's handoff + session pointer,
-   the ask-human protocol, the bounce protocol (when the step declares a bounce), and the
+   the keep-going / never-destroy rule (don't pause for confirmation; stop only via ask-human; no force-push, no deleting what you didn't create, nothing outside the worktree), the ask-human protocol, the bounce protocol (when the step declares a bounce), and the
    finish protocol — write your handoff note, then signal `step-done`. The rendered prompt is
    written to `.memory/herdr-factory/prompt-<step>.md`; the agent is told to read it.
    Two dataflow refinements keep a primitive honest in any belt (`productActiveFor` in `step.ts`,

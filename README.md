@@ -1566,7 +1566,7 @@ step's `prompt_file` at a copy to augment that step's shipped prompt with your e
 
 Around the body the engine always adds: a handover scaffold (which belt and step this is, the
 full step sequence, the prior step's handoff note and pane/session pointer for on-demand
-questions, the ask-human protocol, the bounce protocol where applicable, and the finish protocol —
+questions, the keep-going / never-destroy rule (don't pause for confirmation; stop only via ask-human; no force-push, no deleting what you didn't create, nothing outside the worktree), the ask-human protocol, the bounce protocol where applicable, and the finish protocol —
 write your handoff, then run step-done), your repo's `guidelines-prompt.md`, and token
 substitution. Universal tokens (always injected):
 
