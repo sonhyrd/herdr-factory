@@ -991,16 +991,16 @@ program
         console.log("evidence-upload: no files in the evidence dir — nothing to publish");
         return;
       }
-      // Key layout (uniform across publishers): herdr-factory / <github_username> / <key_prefix> /
+      // Key layout (uniform across publishers): <key_root> / <github_username> / <key_prefix> /
       // <ticketKey> / <runId>-<timestamp>. The per-user folder namespaces operators in a shared backend;
       // username = the config override, else the gh-authenticated login (best-effort). The run id +
       // timestamp mean a re-capture (e.g. after a bounce) never overwrites an earlier publish.
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const githubUsername = await resolveGithubUsername(ev, () => deps.github.currentLogin());
       if (!githubUsername) {
-        console.log("evidence-upload: could not resolve github_username (set evidence.github_username or authenticate gh) — publishing under herdr-factory/ with no per-user folder");
+        console.log(`evidence-upload: could not resolve github_username (set evidence.github_username or authenticate gh) — publishing under ${ev.keyRoot}/ with no per-user folder`);
       }
-      const prefix = evidenceKeyPrefix({ githubUsername, keyPrefix: ev.keyPrefix, ticketKey: activeRun.ticketKey, runId: activeRun.id, stamp });
+      const prefix = evidenceKeyPrefix({ keyRoot: ev.keyRoot, githubUsername, keyPrefix: ev.keyPrefix, ticketKey: activeRun.ticketKey, runId: activeRun.id, stamp });
       const publisher = createEvidencePublisher(ev, { currentLogin: () => deps.github.currentLogin() });
 
       // Enqueue the publish as a durable LEDGER intent (persisting `prefix` so retry URLs stay

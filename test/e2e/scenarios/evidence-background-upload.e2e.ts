@@ -7,7 +7,10 @@
 //
 // Two runs, one publisher script: it sleeps before "uploading" (a slow backend), and fails outright
 // for the `broken-backend` item (the key is in the prefix it receives).
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+//
+// The config renames the key root (`key_root: hf`, issue #92): the predicted links and the prefix the
+// publisher uploads under must both start with `hf/`, or every predicted link is a 404.
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { expectParked, expectTimeline, scenario } from "../harness/index.ts";
@@ -28,7 +31,7 @@ scenario(
         script,
         `#!/bin/sh
 case "$2" in *broken-backend*) echo "backend rejected the upload" >&2; exit 1;; esac
-touch "${p.home}/upload-started"
+echo "$2" > "${p.home}/upload-started"
 sleep ${SLOW_SECONDS}
 touch "${p.home}/upload-finished"
 for f in "$1"/*; do echo "https://evidence.example.test/$2/$(basename "$f")"; done
@@ -42,6 +45,7 @@ for f in "$1"/*; do echo "https://evidence.example.test/$2/$(basename "$f")"; do
         command: join(p.home, "publish-evidence.sh"),
         public_base_url: "https://evidence.example.test",
         timeout_seconds: 60,
+        key_root: "hf",
         key_prefix: "e2e",
       },
       work_sources: [{ type: "local_markdown", name: "briefs", local_markdown: { folder: p.briefs } }],
@@ -84,6 +88,12 @@ for f in "$1"/*; do echo "https://evidence.example.test/$2/$(basename "$f")"; do
 
     await w.waitFor(() => w.db.eventTypes(slow).includes("pr_opened"), { label: "the pr step opens the PR once the upload lands", timeoutMs: 120_000 });
     expectTimeline(w, slow, ["evidence_uploaded", "pr_opened"]);
+    // key_root: the publisher uploaded under hf/…, and the PR's predicted links point at the same keys.
+    const uploadedPrefix = readFileSync(started, "utf8").trim();
+    expect(uploadedPrefix).toMatch(/^hf\/.*slow-backend/);
+    const links = w.gh.pr(w.db.run(slow)!.pr_number!)!.body.match(/https:\/\/evidence\.example\.test\/\S+/g) ?? [];
+    expect(links.length, "the PR carries the predicted evidence links").toBeGreaterThan(0);
+    for (const link of links) expect(link.startsWith(`https://evidence.example.test/${uploadedPrefix}/`), link).toBe(true);
     expect(w.db.intents({ kind: "evidence_publish", runId: w.db.run(slow)!.id })[0]!.status).toBe("delivered");
 
     // The broken backend: every attempt fails. Skip the flat 30s retry clock the way an operator

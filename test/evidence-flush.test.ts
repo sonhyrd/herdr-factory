@@ -36,7 +36,7 @@ function setup() {
   const evidenceDir = mkdtempSync(join(tmpdir(), "ev-flush-"));
   writeFileSync(join(evidenceDir, "shot.png"), "x");
   const deps = {
-    config: { repoName: "r", evidence: { publisher: "s3", bucket: "b", region: "us-east-1", cloudfrontDomain: "d.cf.net", keyPrefix: "", profile: "prof" }, limits: { attentionRenotifySeconds: 3600 } },
+    config: { repoName: "r", evidence: { publisher: "s3", bucket: "b", region: "us-east-1", cloudfrontDomain: "d.cf.net", keyRoot: "herdr-factory", keyPrefix: "", profile: "prof" }, limits: { attentionRenotifySeconds: 3600 } },
     store,
     herdr: { notify },
     github: { currentLogin: async () => null },
