@@ -45,7 +45,7 @@ vi.mock("../src/build-deps.ts", () => ({
   }),
 }));
 
-const { isDecided, lastHookLine, runLayoutHook } = await import("../src/core/layout-hook.ts");
+const { isDecided, lastHookFailure, runLayoutHook } = await import("../src/core/layout-hook.ts");
 
 let stateDir = "";
 beforeEach(() => {
@@ -104,16 +104,17 @@ describe("runLayoutHook — a repo config that doesn't load (issue #95)", () => 
     const res = await runLayoutHook(focus);
     expect(res.skipped).toMatch(/^no factory repo config for \/repo \(repo "demo" config failed to load: .*Unrecognized key\)$/);
     expect(isDecided("w1")).toBe(false);
-    expect(lastHookLine("w1")).toBe(res.skipped);
+    expect(lastHookFailure("w1")).toBe(res.skipped);
 
     h.configError = null;
     expect(await runLayoutHook(focus)).toEqual({ applied: "web" });
     expect(isDecided("w1")).toBe(true);
-    expect(lastHookLine("w1")).toBe('built "web"');
+    expect(lastHookFailure("w1"), "a successful build clears the failure").toBeNull();
   });
   it("a workspace no configured repo owns is still settled", async () => {
     h.info = { ...h.info, repoRoot: "/elsewhere" };
     await runLayoutHook(focus);
     expect(isDecided("w1")).toBe(true);
+    expect(lastHookFailure("w1"), "a deliberate skip is not a failure").toBeNull();
   });
 });

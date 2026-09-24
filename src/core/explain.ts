@@ -120,15 +120,16 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
     case "layout_wait_timeout": {
       const g = ob.watches.guards.find((x) => x.kind === "layout_wait");
       const used = g ? `${g.facts.respawnsUsed} of ${g.facts.respawnLimit}` : "all";
-      // The park carries the layout hook's last line for the workspace when there was one — that,
-      // not the generic causes, is what to fix (e.g. `no factory repo config for …`).
+      // The park carries the layout hook's failure line for the workspace when the build failed —
+      // that, not the generic causes, is what to fix. Only a config-load line points at doctor.
       const hook = reason.split(" — layout hook: ")[1];
+      const configLine = hook != null && /no factory repo config|config failed to load/.test(hook);
       return {
         headline: `The run is parked: the ${step} step's pane never became available (${reason}).`,
         body: [
           `The engine already re-attempted the spawn on its own (${used} respawn windows used) — this park means the pane is genuinely not coming up.`,
           hook
-            ? `The layout hook's last word on this workspace: ${hook}. Fix that first (a config that doesn't load: \`herdr-factory doctor\`).`
+            ? `The layout build failed for this workspace: ${hook}. Fix that first${configLine ? " (a config that doesn't load: `herdr-factory doctor` names it)" : ""}.`
             : "Common causes: the factory isn't linked as a herdr plugin, or the step's tab/pane names don't match the layout's real titles.",
         ],
         next: [resumeCmd + "   # refunds the respawn budget", "herdr plugin link ~/.local/share/herdr-factory   # if the layout never builds at all"],

@@ -315,9 +315,11 @@ runner), `layout-hook.ts` (the event + startup handlers).
 **A config that fails to load never settles a workspace.** When the hook can't find the owning repo
 AND some repo's config threw while it looked, it returns `no factory repo config for <root> (repo
 "<name>" config failed to load: …)` **without** the focus event's `decided` marker, so the next focus
-after the fix builds the layout (a plain "no repo owns this" still settles). Every non-short-circuited
-invocation also records its outcome line per workspace (`<state>/layout-hook/last/<workspaceId>`,
-cleared with `decided/` at `[[startup]]`) — `lastHookLine` is what a `layout_wait_timeout` park
+after the fix builds the layout (a plain "no repo owns this" still settles). A
+FAILURE (that config-load skip, or a thrown apply error) is recorded per workspace
+(`<state>/layout-hook/failed/<workspaceId>`, cleared with `decided/` at `[[startup]]`), and every
+other outcome — a build, a deliberate skip — clears it, so only a build that genuinely failed can take
+the blame; `lastHookFailure` is what a `layout_wait_timeout` park
 quotes. The body after repo resolution is `buildLayoutInto(deps, repo, workspaceId, info)`, which
 the reconciler also calls: at each layout-wait window expiry, a run whose workspace has **none** of
 its (pruned) layout's tab labels (`herdr.tabLabels`; an empty answer is herdr not answering, not
@@ -1682,8 +1684,10 @@ step (`spawnStep`):
      handed to a human; each expiry first builds the layout when the workspace has none of its
      tabs (`buildLayoutInto`, §4) or else re-starts a layout agent sitting at a shell prompt — and
      only once that budget is spent does the reconciler escalate to `attention`, the park's reason
-     suffixed `— layout hook: <its last line for the workspace>` when there is one (`explain` quotes
-     it instead of the generic causes); a run already parked with `layout_wait_timeout` is likewise auto-un-parked and
+     suffixed `— layout hook: <its failure line for the workspace>` when the build failed (`explain`
+     quotes it instead of the generic causes, pointing at `doctor` only for a config-load line; a
+     successful or deliberately-skipped build leaves the reason and the generic causes as before; a
+     successful engine rebuild clears the line, a failed one records `engine rebuild failed: …`); a run already parked with `layout_wait_timeout` is likewise auto-un-parked and
      re-dispatched while budget remains (see [§7](#7-the-reconciler--multi-agent-pipeline)), so
      such a park needs no `step-done` (its agent never existed) and no human `resume` unless the
      pane is genuinely never coming up. It **never** spawns

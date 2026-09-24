@@ -1447,9 +1447,10 @@ run park for attention. Each expiry first **re-runs the layout's own `agent star
 starts a pane's agent once, so an agent that failed to come up would otherwise never be retried.
 When the workspace has **none** of the layout's tabs at all — the hook built nothing, e.g. because
 the repo's config didn't load when the workspace was created — the expiry builds the layout itself,
-from the running server's config (`layout_wait_retry` carries `layoutRebuilt`). A park names the
-layout hook's last line for that workspace (`… never became available — layout hook: no factory repo
-config for …`), and `explain` leads with it.
+from the running server's config (`layout_wait_retry` carries `layoutRebuilt`). When the hook's
+build FAILED for that workspace (a config that didn't load, an apply error), the park names it
+(`… never became available — layout hook: no factory repo config for …`) and `explain` leads with it;
+a layout the hook built, or skipped on purpose, leaves the park reason as it always was.
 Before any `claude` agent is started, in a layout pane or a dedicated one, the factory marks the
 worktree trusted in Claude Code's config (`projects[<worktree>].hasTrustDialogAccepted` in
 `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`, leaving every other key alone), so a fresh

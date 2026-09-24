@@ -245,8 +245,20 @@ describe("explainRun — attention parks", () => {
 
   it("layout_wait_timeout: names the layout hook's last line instead of the generic causes (issue #95)", () => {
     const text = joined(parked("layout_wait_timeout", "work: layout pane fix/work never became available — layout hook: no factory repo config for /repo"));
-    expect(text).toContain("The layout hook's last word on this workspace: no factory repo config for /repo.");
+    expect(text).toContain("The layout build failed for this workspace: no factory repo config for /repo. Fix that first (a config that doesn't load: `herdr-factory doctor` names it).");
     expect(text).not.toContain("Common causes");
+  });
+
+  it("layout_wait_timeout: a non-config hook failure is named without blaming the config", () => {
+    const text = joined(parked("layout_wait_timeout", "work: layout pane fix/work never became available — layout hook: engine rebuild failed: tab create timed out"));
+    expect(text).toContain("The layout build failed for this workspace: engine rebuild failed: tab create timed out. Fix that first.");
+    expect(text).not.toContain("doctor");
+  });
+
+  it("layout_wait_timeout: a plain park keeps the generic causes", () => {
+    const text = joined(parked("layout_wait_timeout", "work: layout pane fix/work never became available"));
+    expect(text).toContain("Common causes");
+    expect(text).not.toContain("layout build failed");
   });
 
   it("bounce_limit: shows the counters and both human options", () => {

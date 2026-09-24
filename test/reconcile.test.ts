@@ -4761,13 +4761,40 @@ describe("an invalid config on disk (issue #95)", () => {
       state.eligible = [ticket("L-3")];
       await reconcileRepo(deps);
       const run = store.activeRunForTicket("demo", "jira", "L-3")!;
-      const { recordHookLine } = await import("../src/core/layout-hook.ts");
-      recordHookLine("w1", "no factory repo config for /main-checkout");
+      const { noteHookFailure } = await import("../src/core/layout-hook.ts");
+      noteHookFailure("w1", "no factory repo config for /main-checkout");
       for (let t = 1601; store.getRun(run.id)!.phase !== "attention"; t += 601) {
         setNow(t);
         await reconcileRun(deps, store.getRun(run.id)!);
       }
       expect(store.getRun(run.id)!.attentionReason).toBe("fix: layout pane fix/agent never became available — layout hook: no factory repo config for /main-checkout");
+    });
+
+    it("a hook that BUILT the layout leaves the park reason as before", async () => {
+      const { deps, store, state, setNow } = waiting();
+      state.eligible = [ticket("L-4")];
+      await reconcileRepo(deps);
+      const run = store.activeRunForTicket("demo", "jira", "L-4")!;
+      const { noteHookFailure } = await import("../src/core/layout-hook.ts");
+      noteHookFailure("w1", "no factory repo config for /main-checkout");
+      noteHookFailure("w1", null); // …then the next focus built it
+      for (let t = 1601; store.getRun(run.id)!.phase !== "attention"; t += 601) {
+        setNow(t);
+        await reconcileRun(deps, store.getRun(run.id)!);
+      }
+      expect(store.getRun(run.id)!.attentionReason).toBe("fix: layout pane fix/agent never became available");
+    });
+
+    it("a successful engine rebuild clears the hook's failure line", async () => {
+      const { deps, store, state, setNow } = waiting();
+      deps.herdr.tabLabels = async () => ["shell"];
+      state.eligible = [ticket("L-5")];
+      await reconcileRepo(deps);
+      const { lastHookFailure, noteHookFailure } = await import("../src/core/layout-hook.ts");
+      noteHookFailure("w1", "no factory repo config for /main-checkout");
+      setNow(1601);
+      await reconcileRun(deps, store.getRun(store.activeRunForTicket("demo", "jira", "L-5")!.id)!);
+      expect(lastHookFailure("w1")).toBeNull();
     });
   });
 });

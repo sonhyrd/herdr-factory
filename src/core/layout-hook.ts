@@ -171,23 +171,30 @@ export function markDecided(workspaceId: string): void {
   }
 }
 
-// The hook runs headless, so what it decided for a workspace reaches only herdr's plugin log. Its
-// LAST line per workspace is kept here so a run that parks waiting for a layout can say why the
-// build never happened (`layout_wait_timeout`). Keyed by workspace id → session-scoped, like decided.
-function lastLineDir(): string {
-  return join(hookStateDir(), "last");
+// The hook runs headless, so a build it could NOT do reaches only herdr's plugin log. Its failure
+// line per workspace (a config that didn't load, an apply error) is kept here so a run that parks
+// waiting for a layout can name why the build never happened (`layout_wait_timeout`); any other
+// outcome clears it, so a successful or deliberately-skipped build never takes the blame. Keyed by
+// workspace id → session-scoped, like decided.
+function failureDir(): string {
+  return join(hookStateDir(), "failed");
 }
-export function recordHookLine(workspaceId: string, line: string): void {
+const failurePath = (workspaceId: string): string => join(failureDir(), workspaceId.replace(/[^A-Za-z0-9_.-]/g, "_"));
+/** Record the hook's failure line for a workspace, or clear it (`null`). Best effort. */
+export function noteHookFailure(workspaceId: string, line: string | null): void {
   try {
-    mkdirSync(lastLineDir(), { recursive: true });
-    writeFileSync(join(lastLineDir(), workspaceId.replace(/[^A-Za-z0-9_.-]/g, "_")), line);
+    if (line == null) rmSync(failurePath(workspaceId), { force: true });
+    else {
+      mkdirSync(failureDir(), { recursive: true });
+      writeFileSync(failurePath(workspaceId), line);
+    }
   } catch {
-    /* best effort — a park just names no hook line */
+    /* a park just names no hook line */
   }
 }
-export function lastHookLine(workspaceId: string): string | null {
+export function lastHookFailure(workspaceId: string): string | null {
   try {
-    return readFileSync(join(lastLineDir(), workspaceId.replace(/[^A-Za-z0-9_.-]/g, "_")), "utf8").trim() || null;
+    return readFileSync(failurePath(workspaceId), "utf8").trim() || null;
   } catch {
     return null;
   }
@@ -199,7 +206,7 @@ export function lastHookLine(workspaceId: string): string | null {
  *  layout it never actually applied. Returns whether anything was there. */
 export function clearDecided(): boolean {
   const dir = decidedDir();
-  rmSync(lastLineDir(), { recursive: true, force: true }); // same session scope
+  rmSync(failureDir(), { recursive: true, force: true }); // same session scope
   if (!existsSync(dir)) return false;
   try {
     rmSync(dir, { recursive: true, force: true });
@@ -293,10 +300,10 @@ export async function runLayoutHook(env: Record<string, string | undefined> = pr
     // A config that failed to load must not settle the workspace: once it's fixed, the next focus
     // (or the engine's layout wait) has to find it undecided and build.
     if (isFocus && !res.retry) markDecided(workspaceId);
-    recordHookLine(workspaceId, res.applied ? `built "${res.applied}"` : res.skipped!);
+    noteHookFailure(workspaceId, res.retry ? res.skipped! : null);
     return res.applied ? { applied: res.applied } : { skipped: res.skipped };
   } catch (e) {
-    recordHookLine(workspaceId, e instanceof Error ? e.message : String(e));
+    noteHookFailure(workspaceId, e instanceof Error ? e.message : String(e));
     throw e;
   }
 }

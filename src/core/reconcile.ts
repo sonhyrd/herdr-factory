@@ -19,7 +19,7 @@ import { firstStep, indexOfStep, materializeWork, MEMORY_DIR, nextStep, scrubCom
 import { BOUNCE_CAP, CAPTURE_CAP_GUARD, guardsResetOn, STEP_DESCRIPTORS } from "../steps/registry.ts";
 import { adoptLayoutAgent, deriveAgentName } from "./layout.ts";
 import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
-import { buildLayoutInto, lastHookLine, recordHookLine, releaseApply } from "./layout-hook.ts";
+import { buildLayoutInto, lastHookFailure, noteHookFailure, releaseApply } from "./layout-hook.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { checkStepTree, recordTreeRefusal } from "./tree-guard.ts";
 import { reportToPane, showRunPane, type PaneRunState } from "./pane-display.ts";
@@ -2098,8 +2098,9 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
     deps.log("warn", `${run.ticketKey}: ${step.name} layout pane ${where} not up after ${waited}s — re-arming the wait (retry ${attempt}/${limit})`);
     return;
   }
-  // The hook's last word on this workspace is usually the real cause (`no factory repo config …`).
-  const hookLine = run.workspaceId ? lastHookLine(run.workspaceId) : null;
+  // A build the hook could NOT do is the real cause (`no factory repo config …`) — name it. A hook
+  // that built (or deliberately skipped) records nothing, and the park reads as before.
+  const hookLine = run.workspaceId ? lastHookFailure(run.workspaceId) : null;
   await escalateAttention(deps, run, {
     reason: "layout_wait_timeout",
     attentionReason: `${step.name}: layout pane ${where} never became available${hookLine ? ` — layout hook: ${hookLine}` : ""}`,
@@ -2113,7 +2114,8 @@ async function handleLayoutWait(deps: Deps, run: Run, belt: BeltRuntime, step: S
  *  new event). A workspace with any of the layout's tabs is left alone: a half-built layout is the
  *  agent-restart retry's business, and a duplicate tab set would be worse than the wait. An empty tab
  *  list is herdr not answering (a workspace always has a tab), not "nothing built". Answers what the
- *  build did (recorded as the hook's last line too), or null when it didn't run. Never throws. */
+ *  build did, or null when it didn't build. A failure is recorded as the hook's failure line (so the
+ *  park names it); anything else clears it. Never throws. */
 async function rebuildMissingLayout(deps: Deps, run: Run, belt: BeltRuntime): Promise<string | null> {
   if (!run.workspaceId || !deps.herdr.tabLabels) return null;
   const resolved = resolveBeltLayout(belt, run.branch ?? undefined, deps.config.layouts);
@@ -2128,11 +2130,10 @@ async function rebuildMissingLayout(deps: Deps, run: Run, belt: BeltRuntime): Pr
     releaseApply(info.checkoutPath);
     deps.log("warn", `${run.ticketKey}: workspace ${run.workspaceId} has none of layout "${layout.id}"'s tabs — building it`);
     const res = await buildLayoutInto(deps, deps.config.repoName, run.workspaceId, info);
-    const line = res.applied ? `built "${res.applied}" (engine rebuild)` : res.skipped!;
-    recordHookLine(run.workspaceId, line);
-    return res.applied ? line : null;
+    noteHookFailure(run.workspaceId, null); // whatever the hook failed on, the engine got past it
+    return res.applied ? `built "${res.applied}" (engine rebuild)` : null;
   } catch (e) {
-    recordHookLine(run.workspaceId, err(e));
+    noteHookFailure(run.workspaceId, `engine rebuild failed: ${err(e)}`);
     deps.log("warn", `${run.ticketKey}: layout rebuild failed — ${err(e)}`);
     return null;
   }
