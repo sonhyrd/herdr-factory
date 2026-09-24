@@ -106,6 +106,7 @@ never reconstructs one. That makes the suite a live check of the agent-CLI contr
 | `bounce-cap` | rework bounces are counted, the oscillation parks at the cap, and `resume` refunds the budget |
 | `ask-human` | a blocked agent asks through the work source, frees its slot, and resumes on the answer |
 | `ask-human-self-resolved` | an agent that asks and then unblocks itself: its `step-done` un-parks the run and closes the moot question |
+| `ask-human-notify` | asking notifies once (first line of the question), an unanswered question renotifies once per `attention_renotify_seconds` and never inside it, and a teardown closes it as `abandoned` with its reply-poll clock |
 | `missing-api-key` | an uncredentialed source is never dialled and never claims, while its neighbour ships; credentials un-pause it |
 | `invalid-config-claims` | a `config.yml` the running code can't load stops claims — `/status` and `doctor` say `config invalid: …` — and restoring the file resumes claiming with no restart (issue #95) |
 | `evidence` | the opt-in evidence station captures, publishes through the `local` publisher, and the resident server serves the bytes |
