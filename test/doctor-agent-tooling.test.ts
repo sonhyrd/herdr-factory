@@ -123,7 +123,23 @@ describe("agentToolingChecks — gates and failures", () => {
     const c = byName(checks, "agent skills");
     expect(c.ok).toBe(false);
     expect(c.detail).toContain("pw-prove missing at ~/.cursor/skills/pw-prove/SKILL.md");
+    expect(c.detail).toContain("nor under ~/.claude/skills, ~/.agents/skills");
     expect(c.detail).not.toContain("pr-review missing");
+  });
+
+  it("deep: a Cursor skill only in ~/.claude/skills or ~/.agents/skills counts as present", async () => {
+    withSkills({ ".claude/skills": ["orca-cli"], ".agents/skills": ["pw-prove"] });
+    const skills = new Map([["cursor", new Set(["orca-cli", "pw-prove"])]]);
+    const c = byName(await agentToolingChecks(tooling({ skills }), true), "agent skills");
+    expect(c.ok).toBe(true);
+  });
+
+  it("deep: a Claude skill only in ~/.cursor/skills is still missing", async () => {
+    withSkills({ ".cursor/skills": ["to-spec"] });
+    const skills = new Map([["claude", new Set(["to-spec"])]]);
+    const c = byName(await agentToolingChecks(tooling({ skills }), true), "agent skills");
+    expect(c.ok).toBe(false);
+    expect(c.detail).toContain("to-spec missing at ~/.claude/skills/to-spec/SKILL.md —");
   });
 
   it("deep: every named skill present → ✓ listing them", async () => {
