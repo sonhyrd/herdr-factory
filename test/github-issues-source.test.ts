@@ -293,6 +293,20 @@ describe("GithubIssuesSource — human loop", () => {
     expect(reply!.author).toBe("operator");
   });
 
+  it("pollHumanReply with replyAuthors answers only from an allowlisted login (issue #123)", async () => {
+    fake = makeFakeGithub();
+    fake.addIssue(7);
+    const src = makeSource(fake, { replyAuthors: ["operator"] });
+    const q = await src.askHuman({ repo: "demo", runId: 4, questionId: 9, key: "7", step: "fix", question: "Which flag wins?" });
+    const ignored: { externalId: string; author: string | null }[] = [];
+    const input = { key: "7", questionId: 9, externalId: q.externalId, externalCreatedAt: q.externalCreatedAt, onIgnored: (c: { externalId: string; author: string | null }) => ignored.push(c) };
+    const qaId = fake.addComment(7, "Test Summary: PASS", "qa-bot");
+    expect(await src.pollHumanReply(input)).toBeNull();
+    expect(ignored).toEqual([{ externalId: String(qaId), author: "qa-bot" }]);
+    fake.addComment(7, "Use the new flag.", "Operator"); // logins compare case-insensitively
+    expect(await src.pollHumanReply(input)).toMatchObject({ body: "Use the new flag.", author: "Operator" });
+  });
+
   it("a configured brand marks new artifacts and still reads legacy ones (issue #70)", async () => {
     fake = makeFakeGithub();
     fake.addIssue(7);

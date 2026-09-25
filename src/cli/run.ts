@@ -41,6 +41,7 @@ const EVENT_LABEL: Record<string, string> = {
   human_question: "⏸ asked a human",
   human_question_moot: "question closed (step resolved it itself)",
   human_reply: "▶ human replied",
+  human_reply_ignored: "comment ignored (not a reply author)",
   pr_opened: "PR opened",
   resolver_woken: "resolver woken (review changed)",
   merged: "✓ merged",

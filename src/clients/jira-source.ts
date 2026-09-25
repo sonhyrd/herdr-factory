@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, isReplyAuthor, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import { HttpStatusError } from "./http.ts";
 import type { JiraAuth } from "../auth/jira-provider.ts";
 import type {
@@ -48,6 +48,8 @@ function goneReason(e: unknown): string | null {
  *  The pickup label is NOT here — it's per-belt and arrives as an argument to listEligible/health.
  *  Auth is api_token only; the built JiraApiTokenAuth provider is passed to the constructor separately. */
 export interface JiraSourceCfg {
+  /** `human_reply.authors`, lowercased; undefined ⇒ any author may answer a question (issue #123). */
+  replyAuthors?: string[];
   baseUrl: string;
   project: string;
   /** The Agile board id pickup pulls from (its saved filter scopes the query). */
@@ -287,11 +289,16 @@ export class JiraSource implements WorkSource {
       // a human reply that quotes the question must still be accepted as a reply.
       if (bearsHerdrMarker(text, this.brand)) continue;
       if (!text && !comment.body) continue;
+      const author = comment.author?.displayName ?? comment.author?.accountId ?? null;
+      if (!isReplyAuthor(this.cfg.replyAuthors, comment.author?.accountId, comment.author?.displayName)) {
+        input.onIgnored?.({ externalId: comment.id, author });
+        continue;
+      }
       return {
         body: text || "(Jira comment had no extractable text.)",
         externalId: comment.id,
         externalCreatedAt: comment.created ?? null,
-        author: comment.author?.displayName ?? comment.author?.accountId ?? null,
+        author,
       };
     }
     return null;

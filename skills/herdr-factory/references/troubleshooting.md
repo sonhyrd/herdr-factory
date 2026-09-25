@@ -246,7 +246,7 @@ signature differs from the recorded one.
 **Means**: a question is posted at the source and the reply poll hasn't found an answer.
 
 ```sh
-herdr-factory --repo <r> timeline <KEY> | grep -E 'human_question|human_reply'
+herdr-factory --repo <r> timeline <KEY> | grep -E 'human_question|human_reply'   # incl. human_reply_ignored
 curl -s '127.0.0.1:8765/repos/<r>/obligations?key=<KEY>' | jq '.intents.humanQuestion'
 herdr-factory --repo <r> logs 100 | grep 'waiting for human reply'
 ```
@@ -262,6 +262,7 @@ A question whose run ended is closed as `human_questions.status = 'abandoned'`, 
 |---|---|---|
 | Never posted | `human_questions.external_id IS NULL`; log `human question #N post deferred: …`, then `human question #N still not posted: …` each pass (`question recorded; posting deferred:` is the ask-human command's own output, not a log line) | The engine re-posts every pass. Fix source auth/permissions; the question text is in the DB and in `.memory/herdr-factory/human-question-<step>.md` |
 | Reply exists but wasn't seen | the poll matches on `externalId` + `externalCreatedAt` | Reply as a **new comment** on the item (not an edit of the question), then wait one poll window |
+| Reply was ignored | a `human_reply_ignored` event naming the author; `explain` says `N comments ignored (not a reply author …)` | The source sets `human_reply.authors` and the replier isn't on it — reply as a listed author, or add them (Jira: accountId or display name; GitHub: login) |
 | Parked `human_poll_failing` | 10 consecutive poll **throws** (auth failures don't count) | `doctor --deep` the source, then `resume` (fresh window, error run cleared) |
 | Parked `human_wait_missing_question` | phase says waiting, no pending question row | Fix `run.step` or `teardown` |
 | Pending question with **no** `human_reply_poll` intent (Q9 `poll_intent_id IS NULL`) | the clock's only home is missing: `nextPollAt` reads 0, so it polls every pass and the miss bookkeeping throws — you see a repeating `error` event `recordHumanPollMiss: question N has no poll clock` | A real human reply still lands and resolves it. Otherwise `teardown` and re-claim; `resume` cannot re-arm a missing clock |

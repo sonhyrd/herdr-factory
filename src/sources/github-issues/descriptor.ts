@@ -2,7 +2,7 @@ import { z } from "zod";
 import { GithubIssuesClient } from "../../clients/github-issues.ts";
 import { GithubIssuesSource, type GithubIssuesSourceCfg } from "../../clients/github-issues-source.ts";
 import type { SourceDescriptor } from "../registry.ts";
-import { claimGuardField, commonSourceFields } from "../common.ts";
+import { claimGuardField, commonSourceFields, humanReplyField, resolveReplyAuthors } from "../common.ts";
 
 // The github_issues source's where-to-poll block. `repo` is optional: it defaults to the repo
 // PRs are opened against (the resolved ghRepo), and create() THROWS when neither resolves —
@@ -61,7 +61,7 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
   type: "github_issues",
   pickupLabel: { noun: "trigger label" },
   configSchema: z
-    .object({ type: z.literal("github_issues"), ...commonSourceFields, ...claimGuardField, github_issues: GithubIssuesBlockSchema })
+    .object({ type: z.literal("github_issues"), ...commonSourceFields, ...claimGuardField, ...humanReplyField, github_issues: GithubIssuesBlockSchema })
     .strict(),
   resolveConfig(parsed) {
     const b = (parsed as unknown as GithubIssuesParsed).github_issues;
@@ -84,6 +84,7 @@ export const githubIssuesDescriptor: SourceDescriptor<ResolvedBlock> = {
       typeLabels: Object.fromEntries(Object.entries(b.type_labels).map(([k, v]) => [k.toLowerCase(), v])),
       defaultType: b.default_type,
       maxPages: b.max_pages,
+      replyAuthors: resolveReplyAuthors(parsed),
     };
   },
   supportsCustomStatuses: true,

@@ -1994,12 +1994,25 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
   if (deps.now() < q.nextPollAt) return;
 
   let reply: HumanReply | null;
+  const ignored = deps.store.ignoredReplyIds(run.id, q.id);
+  const onIgnored = (c: { externalId: string; author: string | null }): void => {
+    if (ignored.has(c.externalId)) return;
+    ignored.add(c.externalId);
+    deps.store.recordEvent({
+      runId: run.id,
+      repo: deps.config.repoName,
+      ticketKey: run.ticketKey,
+      type: "human_reply_ignored",
+      detail: { questionId: q.id, externalId: c.externalId, author: c.author },
+    });
+  };
   try {
     reply = await src.client.pollHumanReply({
       key: run.ticketKey,
       questionId: q.id,
       externalId,
       externalCreatedAt: q.externalCreatedAt,
+      onIgnored,
     });
   } catch (e) {
     // The item backing the question is gone → escalate now. Anything else is a poll ERROR:

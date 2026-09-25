@@ -53,6 +53,7 @@ work_sources:
 - **Strictness asymmetry.** The inner blocks of `jira`, `github_issues` and `sentry` are strict — an unknown key is a load error. **`local_markdown`'s inner block is not strict**: unknown keys there are silently dropped. The *outer* source object is strict for all four.
 - **Polling vs the tick.** A source is polled every tick when `poll_interval_seconds <= limits.tick_interval_seconds`. When the interval is *larger*, the poll (and therefore every claim from that source) is skipped until the interval elapses, with a tolerance of `min(tick/2, 5)` seconds so a "5 min" cadence doesn't slip a whole tick on jitter. Between polls the source contributes zero eligible items — so its backlog drains at most `limits.max_claims_per_tick` (default 10) per **poll window**. The poll timestamp is stamped on the *attempt*, so a failing or paused source also backs off to its interval.
 - **`claim_guard`** (`jira`, `github_issues` only) — see [Several factories on one source](#several-factories-on-one-source-claim_guard). Off by default.
+- **`human_reply`** (`jira`, `github_issues`, `sentry` only) — see [Who may answer a question](#who-may-answer-a-question-human_reply). Unset: anyone may answer.
 - **`max_active_workspaces`** caps occupying runs for this source across all belts. A belt whose source is at its cap is skipped *before* polling: `belt <b>: source "<s>" at its concurrency cap (<n>) — skipping`.
 - **Env file** is strictly per-repo: `<configDir>/repos/<name>/env`, written chmod 600, where `<configDir>` is `$HERDR_FACTORY_CONFIG_DIR` or `~/.config/herdr-factory`. Format is `KEY=value` per line; `#` comments and blank lines are skipped; both sides are trimmed. There is **no quote stripping and no escapes** — `TOKEN="abc"` yields the value `"abc"` *with* the quotes. There is no global/shared secrets file.
 - **Missing or rejected credentials pause the source; they are never a startup error.** Descriptors read env vars unconditionally, so config load and startup always succeed. The first call then throws, and the reconciler:
@@ -571,6 +572,18 @@ work_sources:
     name: briefs
     local_markdown: { folder: ~/dev/work-items }
 ```
+
+## Who may answer a question (`human_reply`)
+
+By default the first new non-marker comment after an ask-human question is the reply, whoever wrote it — so on a shared tracker a QA summary or a bot comment resumes the run. `human_reply.authors` restricts it:
+
+```yaml
+work_sources:
+  - type: jira
+    human_reply: { authors: [5b10ac8d82e05b22cc7d4ef5, "Pat Operator"] }
+```
+
+Matched case-insensitively against: Jira `accountId` or `displayName`; GitHub `login`; Sentry user `name` / `email` / `username` / `id`. A comment from an unlisted author is skipped and recorded **once** as a `human_reply_ignored` event (`{questionId, externalId, author}`) however many polls re-read it; `explain <KEY>` adds `N comments ignored (not a reply author …)`. Marker filtering (INV-6) still applies first — the allowlist picks humans, it is not the self-authorship guard (under gh-CLI auth the bot and the operator share a login, which is fine: the bot's comments carry the marker).
 
 ## Several factories on one source (`claim_guard`)
 

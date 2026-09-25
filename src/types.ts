@@ -110,6 +110,7 @@ export type EventType =
   | "human_question"
   | "human_question_moot" // the asking step reached a terminal itself; its pending question was closed unanswered
   | "human_reply"
+  | "human_reply_ignored" // a comment after a question whose author is not in the source's human_reply.authors (once per comment)
   | "focus_applied"
   | "merged"
   | "closed"
@@ -469,6 +470,9 @@ export interface HumanPollInput {
   questionId: number;
   externalId: string;
   externalCreatedAt?: string | null;
+  /** Called for each comment skipped because its author is not in the source's `human_reply.authors`
+   *  (issue #123). Every poll re-reports them — the engine dedupes before recording an event. */
+  onIgnored?: (c: { externalId: string; author: string | null }) => void;
 }
 
 /** An item's editable CONTENT at one moment (issue #97): the fields whose edit changes what the run

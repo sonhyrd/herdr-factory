@@ -144,6 +144,25 @@
                 },
                 "additionalProperties": false
               },
+              "human_reply": {
+                "description": "Restrict which comment authors count as a reply to an ask-human question. Unset: any new comment answers.",
+                "type": "object",
+                "properties": {
+                  "authors": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Who may answer a parked question: Jira accountId or display name, GitHub login, Sentry user name/email/username/id (case-insensitive). Other authors' comments are skipped and logged once as human_reply_ignored."
+                  }
+                },
+                "required": [
+                  "authors"
+                ],
+                "additionalProperties": false
+              },
               "jira": {
                 "type": "object",
                 "properties": {
@@ -292,6 +311,25 @@
                 },
                 "additionalProperties": false
               },
+              "human_reply": {
+                "description": "Restrict which comment authors count as a reply to an ask-human question. Unset: any new comment answers.",
+                "type": "object",
+                "properties": {
+                  "authors": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Who may answer a parked question: Jira accountId or display name, GitHub login, Sentry user name/email/username/id (case-insensitive). Other authors' comments are skipped and logged once as human_reply_ignored."
+                  }
+                },
+                "required": [
+                  "authors"
+                ],
+                "additionalProperties": false
+              },
               "github_issues": {
                 "type": "object",
                 "properties": {
@@ -410,6 +448,25 @@
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991
+              },
+              "human_reply": {
+                "description": "Restrict which comment authors count as a reply to an ask-human question. Unset: any new comment answers.",
+                "type": "object",
+                "properties": {
+                  "authors": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Who may answer a parked question: Jira accountId or display name, GitHub login, Sentry user name/email/username/id (case-insensitive). Other authors' comments are skipped and logged once as human_reply_ignored."
+                  }
+                },
+                "required": [
+                  "authors"
+                ],
+                "additionalProperties": false
               },
               "sentry": {
                 "type": "object",

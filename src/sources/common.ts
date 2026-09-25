@@ -37,3 +37,24 @@ export const claimGuardField = {
     .strict()
     .optional(),
 };
+
+/** `human_reply` — who may answer an ask-human question (issue #123). Spread into the descriptors of
+ *  sources that poll a shared comment thread (jira, github_issues, sentry). Unset ⇒ any non-marker
+ *  comment after the question is the reply, as before. */
+export const humanReplyField = {
+  human_reply: z
+    .object({
+      authors: z
+        .array(z.string().trim().min(1))
+        .min(1)
+        .describe("Who may answer a parked question: Jira accountId or display name, GitHub login, Sentry user name/email/username/id (case-insensitive). Other authors' comments are skipped and logged once as human_reply_ignored."),
+    })
+    .strict()
+    .optional()
+    .describe("Restrict which comment authors count as a reply to an ask-human question. Unset: any new comment answers."),
+};
+
+/** The resolved allowlist (lowercased) or undefined when anyone may answer. */
+export function resolveReplyAuthors(parsed: Record<string, unknown>): string[] | undefined {
+  return (parsed as { human_reply?: { authors: string[] } }).human_reply?.authors.map((a) => a.toLowerCase());
+}

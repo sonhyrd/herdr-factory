@@ -868,6 +868,7 @@ source may hold in flight at once, summed across every belt that pulls from it; 
 priority order and claiming stops once a source hits its cap, so `limits.max_active_workspaces` still
 caps the repo total but no single source can monopolize it), an optional `claim_guard` (`jira` and
 `github_issues` only — see [Several factories on one source](#several-factories-on-one-source-claim_guard)),
+an optional `human_reply` (`jira`, `github_issues`, `sentry` — see [Who may answer a question](#who-may-answer-a-question-human_reply)),
 and a type block:
 
 - **`jira`** — `base_url`, `project`, a required `board` (the Agile board id, e.g. `254`), and a
@@ -943,6 +944,24 @@ and a type block:
   leaves Sentry untouched. `materialize` writes the error's metadata + the latest event's
   stacktrace/breadcrumbs/request as `task.md` (raw payload in `issue.json`). Because Sentry rate-limits
   API polling, pair a `sentry` source with a higher `poll_interval_seconds`.
+
+#### Who may answer a question (`human_reply`)
+
+By default the first new comment after an ask-human question is the answer, whoever wrote it. On a
+shared tracker QA, PMs and bots comment too — a routine QA summary would resume the run. List who
+may answer:
+
+```yaml
+work_sources:
+  - type: jira
+    human_reply: { authors: [5b10ac8d82e05b22cc7d4ef5, "Pat Operator"] }   # accountId or display name
+```
+
+Match is case-insensitive against the Jira accountId or display name, the GitHub login, or the Sentry
+user's name / email / username / id. A comment from anyone else is skipped and recorded once as a
+`human_reply_ignored` event (author + comment id) — `timeline <KEY>` lists them and `explain <KEY>`
+says `N comments ignored (not a reply author)`. Unset: anyone may answer. `local_markdown` has no
+authors and does not accept the key.
 
 #### Several factories on one source (`claim_guard`)
 

@@ -25,7 +25,7 @@ export interface RunObligations {
     transitions: { toState: string; toStatus: string; attempts: number; nextAttemptAt: number; suspended: boolean; lastError: string | null; staleUnhandled: boolean }[];
     evidenceUploads: { keyPrefix: string; attempts: number; nextAttemptAt: number; suspended: boolean; errorKind: string | null; lastError: string | null }[];
     pendingSignal: { signal: string; step: string | null; toStep: string | null; createdAt: number } | null;
-    humanQuestion: { id: number; step: string | null; posted: boolean; pollAttempts: number; pollErrors: number; nextPollAt: number } | null;
+    humanQuestion: { id: number; step: string | null; posted: boolean; pollAttempts: number; pollErrors: number; nextPollAt: number; ignoredComments?: number } | null;
     /** Live ledger rows (pending/waiting) + resolved ones whose run reaction is still owed. */
     ledger: { id: number; kind: string; status: string; nextAttemptAt: number; suspended: boolean; deadlineAt: number | null; handoffOwed: boolean; lastError: string | null }[];
   };
