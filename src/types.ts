@@ -420,7 +420,8 @@ export interface SourceAuthToken {
   updatedAt: number;
 }
 
-export type HumanQuestionStatus = "pending" | "answered";
+// abandoned: the run ended (done / torn down) with the question still unanswered.
+export type HumanQuestionStatus = "pending" | "answered" | "abandoned";
 
 /** A source-agnostic human-in-the-loop question parked by an agent and resumed by the reconciler. */
 export interface HumanQuestion {

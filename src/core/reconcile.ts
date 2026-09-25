@@ -36,6 +36,7 @@ import { isSourceUnauthenticated, type SourceUnauthenticatedError } from "../aut
 import { getAuthFailure, markAuthNotified, recordAuthFailure, recordAuthOk } from "../auth/gate.ts";
 import { clearRateLimit, getRateLimit, isSourceRateLimited, markRateLimitNotified, recordRateLimited, type SourceRateLimitedError } from "./rate-limit-gate.ts";
 import { githubCallCounts } from "../clients/github-budget.ts";
+import { descriptorFor } from "../sources/registry.ts";
 
 function err(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -1333,7 +1334,25 @@ async function postHumanQuestion(deps: Deps, src: SourceRuntime, q: HumanQuestio
     question: q.question,
   });
   deps.store.updateHumanQuestion(q.id, { externalId: res.externalId, externalCreatedAt: res.externalCreatedAt ?? null });
+  // waiting_for_human holds no slot, so an unseen question is invisible in the fleet — notify the
+  // moment it lands where a human can answer it, and stamp the run's notify clock so the renotify
+  // in reconcileWaitingForHuman waits a full attention_renotify_seconds window.
+  deps.store.updateRun(q.runId, { attentionNotifiedAt: deps.now() });
+  await deps.herdr.notify(`herdr-factory: ${q.ticketKey} asks a human`, humanQuestionNotifyBody(deps, q)).catch(() => {});
   return deps.store.getHumanQuestion(q.id)!;
+}
+
+/** The question's first line + where to answer it (the item's web URL, from config alone). */
+function humanQuestionNotifyBody(deps: Deps, q: HumanQuestion): string {
+  const first = q.question.split("\n", 1)[0]!.trim();
+  const src = deps.config.sources.find((s) => s.name === q.workSource);
+  let url: string | null = null;
+  try {
+    url = src ? (descriptorFor(src.type).itemUrl?.(src.cfg, q.ticketKey, deps.ghRepo ?? "") ?? null) : null;
+  } catch {
+    /* a cosmetic link never blocks the notify */
+  }
+  return url ? `${first} · ${url}` : first;
 }
 
 /** Agent-facing pause primitive: persist a human question, post it through the run's source, and
@@ -1948,6 +1967,17 @@ async function reconcileWaitingForHuman(deps: Deps, run: Run, belt: BeltRuntime,
   }
   const externalId = q.externalId;
   if (!externalId) return;
+
+  // Re-notify while the question sits unanswered, on the attention park's throttle. Read the run
+  // fresh: a post on THIS pass (above) just stamped the clock, and the snapshot predates it.
+  const notifiedAt = deps.store.getRun(run.id)?.attentionNotifiedAt ?? null;
+  if (notifyDue(notifiedAt, deps.config.limits.attentionRenotifySeconds, deps.now())) {
+    deps.store.updateRun(run.id, { attentionNotifiedAt: deps.now() });
+    const waited = Math.round((deps.now() - q.createdAt) / 60);
+    await deps.herdr
+      .notify(`herdr-factory: ${run.ticketKey} still waiting for a human`, `${humanQuestionNotifyBody(deps, q)} (asked ~${waited}min ago)`)
+      .catch(() => {});
+  }
 
   // Poll cadence: a flat 30s clock (RETRY_INTERVAL_SECONDS), gated here so a waiting run isn't
   // polled hot on every event nudge between ticks.

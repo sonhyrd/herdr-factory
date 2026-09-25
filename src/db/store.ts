@@ -652,6 +652,9 @@ export class Store {
     this.db
       .prepare("UPDATE runs SET phase = 'done', outcome = ?, ended_at = ?, updated_at = ? WHERE id = ?")
       .run(outcome, t, t, id);
+    // A question can't outlive its run: close it, or it sits `pending` forever (and keeps its poll clock).
+    for (const { id: qid } of this.db.prepare("SELECT id FROM human_questions WHERE run_id = ? AND status = 'pending'").all(id) as { id: number }[])
+      this.updateHumanQuestion(qid, { status: "abandoned" });
     const run = this.getRun(id);
     telemetryEvent("store.run.end", { repo: run?.repo, "run.id": id, "work.key": run?.ticketKey, outcome });
   }
@@ -1898,9 +1901,9 @@ export class Store {
     if (sets.length === 0) return;
     set("updated_at", this.now());
     this.db.prepare(`UPDATE human_questions SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
-    // A question leaving `pending` (answered, or superseded-as-answered by a newer ask) ends its
+    // A question leaving `pending` (answered, superseded-as-answered by a newer ask, or abandoned with its run) ends its
     // poll obligation — close the ledger row so the clock can't outlive the question.
-    if (patch.status === "answered") {
+    if (patch.status !== undefined && patch.status !== "pending") {
       const q = this.db.prepare("SELECT * FROM human_questions WHERE id = ?").get(id) as HumanQuestionRow | undefined;
       if (q) {
         const intent = this.intentByKey("human_reply_poll", `run:${q.run_id}`, `q-${id}`);

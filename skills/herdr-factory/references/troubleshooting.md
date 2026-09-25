@@ -252,7 +252,11 @@ herdr-factory --repo <r> logs 100 | grep 'waiting for human reply'
 ```
 
 The poll runs on a flat 30-second cadence — log line
-`waiting for human reply to question #N (next poll in Xs)`.
+`waiting for human reply to question #N (next poll in Xs)`. The operator gets a notification
+`herdr-factory: <KEY> asks a human` when the question posts (its first line + the item URL), then
+`herdr-factory: <KEY> still waiting for a human` every `limits.attention_renotify_seconds` (default
+3600) until it is answered — the clock is `runs.attention_notified_at`, shared with the attention park.
+A question whose run ended is closed as `human_questions.status = 'abandoned'`, never left `pending`.
 
 | Branch | Signature | Fix |
 |---|---|---|

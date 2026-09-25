@@ -160,7 +160,7 @@ Every field is defaulted (the whole block has `.prefault({})`, so omitting it is
 | key | constraint | default | meaning |
 |---|---|---|---|
 | `max_active_workspaces` | positive | **3** | Repo-wide ceiling on claimed workspaces. |
-| `attention_renotify_seconds` | positive | **3600** | Re-notify interval for an item still needing attention. |
+| `attention_renotify_seconds` | positive | **3600** | Re-notify interval for an item still needing attention, and for an ask-human question still unanswered. |
 | `stall_seconds` | positive | **2700** | Heartbeat / commit-stall window before a step is declared stalled. |
 | `idle_nudge_seconds` | **non-negative** (0 legal) | **300** | How long a running step's pane may sit at its prompt before the engine re-prompts it **once** ("if the step is already complete, write your handoff and run step-done"). Sits in front of the watchdogs; `0` disables it. |
 | `max_bounces` | **non-negative** (0 legal) | **6** | Bounces before escalation; per-belt override. |

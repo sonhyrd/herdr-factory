@@ -916,6 +916,49 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE repos ADD COLUMN claim_deferrals INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 41,
+    // human_questions.status gains 'abandoned': a run that ends (done / torn down) closes its
+    // still-pending question (Store.endRun) instead of leaving it `pending` forever. SQLite can't
+    // ALTER a CHECK, so the table is rebuilt (copy → drop → rename, as v7 did for work_items);
+    // nothing REFERENCES human_questions, and its three indexes are recreated. Pending questions of
+    // runs that ALREADY ended are closed here, with their live poll-clock ledger rows.
+    sql: `
+      CREATE TABLE human_questions_v41 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES runs(id),
+        repo TEXT NOT NULL,
+        work_source TEXT NOT NULL,
+        ticket_key TEXT NOT NULL,
+        step TEXT,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','answered','abandoned')),
+        external_id TEXT,
+        external_created_at TEXT,
+        answer TEXT,
+        answer_external_id TEXT,
+        answer_author TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        answered_at INTEGER
+      );
+      INSERT INTO human_questions_v41 (id, run_id, repo, work_source, ticket_key, step, question, status, external_id,
+                                       external_created_at, answer, answer_external_id, answer_author, created_at, updated_at, answered_at)
+        SELECT id, run_id, repo, work_source, ticket_key, step, question, status, external_id,
+               external_created_at, answer, answer_external_id, answer_author, created_at, updated_at, answered_at
+          FROM human_questions;
+      DROP TABLE human_questions;
+      ALTER TABLE human_questions_v41 RENAME TO human_questions;
+      CREATE INDEX idx_human_questions_pending ON human_questions(repo, status);
+      CREATE INDEX idx_human_questions_run ON human_questions(run_id, status);
+      CREATE UNIQUE INDEX idx_human_questions_one_pending_run ON human_questions(run_id) WHERE status = 'pending';
+      UPDATE intents SET status = 'abandoned', resolved_at = unixepoch(), updated_at = unixepoch()
+       WHERE kind = 'human_reply_poll' AND status IN ('waiting','pending')
+         AND run_id IN (SELECT id FROM runs WHERE ended_at IS NOT NULL);
+      UPDATE human_questions SET status = 'abandoned', updated_at = unixepoch()
+       WHERE status = 'pending' AND run_id IN (SELECT id FROM runs WHERE ended_at IS NOT NULL);
+    `,
+  },
 ];
 
 /** Apply pending migrations in a transaction. Idempotent. */

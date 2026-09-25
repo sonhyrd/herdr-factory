@@ -832,7 +832,8 @@ CREATE TABLE human_questions(            -- ask-human park: one pending question
                                          -- dropped in v35 — the ledger is the clock's only home.
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL REFERENCES runs(id),
   repo TEXT NOT NULL, work_source TEXT NOT NULL, ticket_key TEXT NOT NULL, step TEXT,
-  question TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','answered')),
+  question TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN   -- 'abandoned' added v41 (rebuild):
+    ('pending','answered','abandoned')),                   -- Store.endRun closes a run's pending question
   external_id TEXT, external_created_at TEXT,              -- the source-native object (Jira/GitHub comment)
   answer TEXT, answer_external_id TEXT, answer_author TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, answered_at INTEGER);
@@ -1312,6 +1313,16 @@ recorded and every later tick went straight back to polling for a reply). The *m
 a reply landing on a step that has just recorded `done` — stays `resumeAfterHumanReply`'s: it clears
 the flag so the human's guidance wins, which still matters because `markStepDone` runs outside the run
 lock and can land concurrently with the pass that consumes a reply.
+
+**The wait is visible and bounded by the run.** `waiting_for_human` holds no slot, so a question
+nobody saw would leave the fleet looking healthy — `postHumanQuestion` therefore notifies on a
+successful post (first line of the question + the item's `itemUrl`) and stamps
+`runs.attention_notified_at`; `reconcileWaitingForHuman` re-notifies on that same clock every
+`attention_renotify_seconds` while the question is pending (reading the run fresh, so a post on the
+same pass never double-notifies). And a question never outlives its run: `Store.endRun` — the one
+place every run ends (teardown for merged / completed / abandoned / closed) — closes any pending
+question as `abandoned` and resolves its `human_reply_poll` ledger row; migration v41 did the same
+for questions already stranded on ended runs.
 
 A source-stale / PR-closed / bounce-limit / failing-reply-poll / config park stays put for a human. The `pr` step hands off to
 the `reviewing` human-review watch (watches the PR, wakes a resolver) **the moment it opens a
