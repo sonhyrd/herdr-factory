@@ -512,6 +512,24 @@ A **commit** from such a step is the separate, older read-only watch — it park
 away over misbehaviour on the way to it), so the tree guard stays out of it: refusing a step-done
 for a commit would wedge the run, because an agent cannot un-commit.
 
+### Required changes (`requires_changes`)
+
+A step can opt into a guard on what it must have changed. Set `requires_changes` on the step to a
+list of globs, and its `step-done` is **refused** — non-zero, on stderr, naming the globs and listing
+what the branch did change — unless `git diff --name-only <base_ref>...HEAD` touches at least one
+matching path:
+
+```yaml
+steps:
+  - { type: work, requires_changes: ["test/e2e/scenarios/**"] }
+  - { type: evidence }
+```
+
+The diff is against the base, so a file committed on pass 1 still counts on a bounce pass. Only
+commits count. Unset means no check. The refusal records a `step_done_refused` event, the same one
+the tree guard records. It catches a work step that skipped a required test at its own `step-done`,
+before a whole downstream step runs only to bounce it back.
+
 ### A work item edited after the claim
 
 The run materializes its work item once, at claim. If someone edits the ticket afterwards, every
@@ -1159,7 +1177,8 @@ targets the pane the belt's layout builds (see [Layouts](#layouts)), without the
 dedicated pane; `evidence` is **skipped**
 when it has no tab/pane), optional `budget_seconds` (else the primitive's default — `work` 5400 ·
 `evidence` 2400 · `review` 1800 · `pr` 3600 — else `limits.step_budget_seconds`), and `heartbeat`
-(commit-stall detection; on for `work`/`pr`, opt-in elsewhere).
+(commit-stall detection; on for `work`/`pr`, opt-in elsewhere), and `requires_changes` (globs its
+`step-done` needs the branch diff to touch — see [Required changes](#required-changes-requires_changes)).
 
 **A belt with a `default_layout` must give its FIRST step a `tab`/`pane`.** The claim creates the
 worktree and dispatches that step in the same pass, and a dedicated pane is a new herdr tab — which

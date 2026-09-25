@@ -191,6 +191,7 @@ herdr-factory --repo <r> logs 100
 | PR step, draft PR | `prReadyForReview` needs a **live non-draft** (or MERGED) PR at the belt's terminal PR-opening step | Mark the PR ready for review, or let the step's own `step-done` gate it |
 | Read-only step committed | parked `read_only_violation` at the `pre_advance` stage — the advance is blocked *before* it happens | §3 |
 | Dirty tree under a read-only step | `the <step> step cannot finish on this tree — the worktree has uncommitted changes. …` + the diff stat, **exit 1** (the tree guard) | Someone edited the worktree without committing — usually a previous step's agent prompted again after its `step-done`. Commit or revert it on the step that owns it, then re-run the step's own `step-done`. A `rework <KEY> <step> --note …` is the right move when the edit means the work must actually be redone |
+| Step has `requires_changes` | `the <step> step cannot finish yet — the branch changes no file matching requires_changes (<globs>). …` + what changed since the base, **exit 1** | Add or extend a file matching one of the globs, **commit** it (uncommitted files do not count), then re-run the same `step-done`. The check is `git diff --name-only <base_ref>...HEAD` |
 | One extra tick before the visible change | the last step of a non-`watch_pr` belt advances into `teardown("completed")`; a merged PR at the terminal step goes `running → reviewing → (next pass) teardown` | Normal |
 
 `resume` does **not** clear `run_steps.done` (only a human-reply resume does), so resuming a run

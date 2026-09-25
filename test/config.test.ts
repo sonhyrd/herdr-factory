@@ -652,7 +652,7 @@ describe("loadConfig — work sources + belts", () => {
     workspace_name: "research/{{work_id}}-{{work_slug}}"
     steps:
       - { type: custom, name: research, tab: research, pane: agent, prompt_file: research.md, prompt_file_source: config }
-      - { type: custom, name: create_jira_ticket, prompt_file: create.md, prompt_file_source: repo, budget_seconds: 1200, heartbeat: true }
+      - { type: custom, name: create_jira_ticket, prompt_file: create.md, prompt_file_source: repo, budget_seconds: 1200, heartbeat: true, requires_changes: ["test/e2e/scenarios/**"] }
 `),
       { prompts: { "research.md": "Do the research\n" } },
     );
@@ -674,6 +674,8 @@ describe("loadConfig — work sources + belts", () => {
     expect(create!.promptFileSource).toBe("repo"); // repo-sourced: not existence-checked at load
     expect(create!.budgetSeconds).toBe(1200); // per-step override
     expect(create!.heartbeat).toBe(true); // opted in
+    expect(create!.requiresChanges).toEqual(["test/e2e/scenarios/**"]); // step-done guard opt-in (#125)
+    expect(research!.requiresChanges).toBeUndefined(); // unset ⇒ no guard
     expect(create!.tab).toBeUndefined(); // no layout → spawns its own pane
   });
 

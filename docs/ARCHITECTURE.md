@@ -1475,6 +1475,14 @@ and the evidence step filmed a tree that was about to change.
   watch-phase rework — `by: "pr_watch"`, below — is the one path back from `reviewing`.) Unlike the agent
   signals it enqueues **no durable intent** — a person retries; an agent that has already stopped
   cannot.
+- **`requires_changes`** (`checkRequiredChanges`, `core/tree-guard.ts`) is an opt-in per-step
+  list of globs (`StepConfig.requiresChanges`). `applySignal`'s `step-done` checks it right after the
+  tree guard and refuses (`ok:false`, `step_done_refused` with `why` naming the globs, `stat` listing
+  the changed paths) unless `git diff --name-only <repo.base_ref>...HEAD` (`GitClient.changedSince`)
+  touches a matching path (`path.matchesGlob`). It is checked at `step-done` only, never at spawn.
+  The diff is against the base, not the pass, so a bounce pass is satisfied by an earlier pass's
+  file. It fails OPEN when git cannot diff against the base: an unresolvable base is nothing the agent
+  can fix, and a refusal it cannot clear would wedge the run.
 - **The tree guard** (`core/tree-guard.ts`) holds every step whose resolved `StepConfig.readOnly` is
   true to the tree it was handed. Each step is pinned to the HEAD it was spawned on
   (`step_spawned.detail.head`), and `checkStepTree` refuses on a DIRTY worktree (`git status

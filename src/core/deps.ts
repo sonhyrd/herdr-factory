@@ -432,6 +432,8 @@ export interface GitApi {
   dirtyStat(repoCwd: string): Promise<string | null>;
   /** Paths that differ between two commits; null ⇒ git couldn't diff them. */
   changedFiles(repoCwd: string, from: string, to: string): Promise<string[] | null>;
+  /** Paths HEAD changed since its merge-base with `baseRef` (`git diff --name-only base...HEAD`); null ⇒ git failed. */
+  changedSince(repoCwd: string, baseRef: string): Promise<string[] | null>;
 }
 
 export type Logger = (level: "info" | "warn" | "error", msg: string) => void;

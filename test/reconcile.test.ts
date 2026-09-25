@@ -340,6 +340,7 @@ function build(opts: { multi?: boolean } = {}) {
     dirtyStat: async () => state.dirtyStat,
     excludeMemoryDir: async () => {},
     changedFiles: async () => state.changedFiles,
+    changedSince: async () => state.changedFiles,
   };
   const env = { JIRA_EMAIL: "e", JIRA_API_TOKEN: "t" };
   const config: Config = {
@@ -5020,6 +5021,43 @@ describe("tree guard — a step that never commits must find the worktree clean"
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(store.getRun(run.id)!.attentionReasonCode).toBe("dirty_tree");
+  });
+});
+
+describe("requires_changes — a step that opts in cannot finish without touching a required path (#125)", () => {
+  const requireScenarios = (b: BeltRuntime) => { b.steps[0] = stepCfg("fix", { requiresChanges: ["test/e2e/scenarios/**"] }); };
+
+  it("refuses step-done when the branch diff touches no matching path, naming the globs", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    requireScenarios(shipBelt);
+    const run = seed(store, worktree, "K-RC1", "running", "fix");
+    state.changedFiles = ["src/App.vue"];
+    const res = await applySignal(deps, "step-done", { key: "K-RC1", step: "fix" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain("test/e2e/scenarios/**");
+    expect(res.message).toContain("src/App.vue"); // what the branch DID change
+    expect(store.getRunStep(run.id, "fix")!.done).toBe(false);
+    expect(store.getRun(run.id)!.step).toBe("fix");
+    const ev = store.timeline("demo", "K-RC1").find((e) => e.type === "step_done_refused");
+    expect(String(JSON.parse(ev!.detail!).why)).toContain("test/e2e/scenarios/**");
+  });
+
+  it("accepts step-done once a matching file is in the branch diff", async () => {
+    const { deps, store, state, worktree, shipBelt } = build();
+    requireScenarios(shipBelt);
+    const run = seed(store, worktree, "K-RC2", "running", "fix");
+    state.changedFiles = ["src/App.vue", "test/e2e/scenarios/new.e2e.ts"];
+    expect((await applySignal(deps, "step-done", { key: "K-RC2", step: "fix" })).ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("review");
+  });
+
+  it("is inert without the option — today's behaviour", async () => {
+    const { deps, store, state, worktree } = build();
+    const run = seed(store, worktree, "K-RC3", "running", "fix");
+    state.changedFiles = ["src/App.vue"];
+    expect((await applySignal(deps, "step-done", { key: "K-RC3", step: "fix" })).ok).toBe(true);
+    expect(store.getRun(run.id)!.step).toBe("review");
+    expect(store.timeline("demo", "K-RC3").some((e) => e.type === "step_done_refused")).toBe(false);
   });
 });
 
