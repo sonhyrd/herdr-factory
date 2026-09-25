@@ -96,7 +96,7 @@ export type EventType =
   | "idle_nudge" // a running step's pane sat idle past limits.idle_nudge_seconds (again at 2×); it was re-prompted
   | "bounced"
   | "rework" // an OPERATOR sent a live run back to an earlier step for another pass (herdr-factory rework)
-  | "step_done_refused" // a step-done was refused by the tree guard (a read-only step on a dirty worktree)
+  | "step_done_refused" // a step-done was refused by the tree guard (a read-only step on a dirty worktree) or a step's requires_changes (no matching path in the branch diff)
   | "signal_queued" // a durable bounce/ask-human intent couldn't apply immediately (run lock busy) — the tick consumes it
   | "signal_rejected" // a consumed bounce/ask-human intent was invalid by the time it applied (stale/misaddressed)
   | "capture_attempt" // an evidence agent signalled a capture attempt (flaky-capture cap)

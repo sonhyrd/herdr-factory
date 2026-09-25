@@ -146,6 +146,13 @@ export class GitClient {
     const r = await run("git", ["-C", repoCwd, "diff", "--name-only", from, to], { allowFail: true });
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : null;
   }
+
+  /** Paths HEAD changed since its merge-base with `baseRef` — the branch's own diff, whatever pass
+   *  added them. Null when git can't diff (an unresolvable base). The `requires_changes` guard. */
+  async changedSince(repoCwd: string, baseRef: string): Promise<string[] | null> {
+    const r = await run("git", ["-C", repoCwd, "diff", "--name-only", `${baseRef}...HEAD`], { allowFail: true });
+    return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : null;
+  }
 }
 
 /** owner/name from a git origin URL (ssh or https), or null. */

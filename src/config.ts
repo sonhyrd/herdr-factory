@@ -426,6 +426,10 @@ const BeltStepSchema = z
     ...capabilityFields,
     budget_seconds: z.coerce.number().int().positive().optional(),
     heartbeat: z.boolean().default(false),
+    // Opt-in: this step's step-done is refused unless the branch's diff against the base
+    // (`git diff --name-only <base_ref>...HEAD`) touches at least one path matching one of these
+    // globs (core/tree-guard.ts). Unset ⇒ no check.
+    requires_changes: z.array(z.string().trim().min(1)).min(1).optional(),
     // Per-step override of the agent harness this step's SPAWNED pane launches (a step targeting a
     // layout pane drives whatever that pane runs, so this only bites a no-tab/pane step). Resolved
     // step over belt over repo over DEFAULT_AGENT_CONFIG — see resolveAgent.
@@ -1163,6 +1167,8 @@ export interface StepConfig {
   guards: GuardSpec[]; // resolved watchdogs that actually attach to this step
   effects: EffectSpec[]; // declared source-lifecycle transitions
   posture: StepPosture; // read_only / requiresLayout flags
+  /** `requires_changes` globs: step-done is refused unless the branch diff against the base touches one. */
+  requiresChanges?: string[];
   /** The agent harness a SPAWNED pane for this step launches (command + flags), resolved step over
    *  belt over repo over DEFAULT_AGENT_CONFIG. loadConfig always sets it; optional so terse test
    *  literals fall back to DEFAULT_AGENT_CONFIG at the spawn site (step.ts). */
@@ -1601,7 +1607,7 @@ export function loadConfig(repoName: string): Loaded {
   const resolveStep = (
     beltName: string,
     sourceType: SourceType,
-    ref: { type: string; name?: string; tab?: string; pane?: string; prompt_file?: string; prompt_file_source?: "config" | "repo"; prompt_mode?: "augment" | "replace"; budget_seconds?: number; heartbeat: boolean; agent?: ParsedAgentBlock } & CapabilityRef,
+    ref: { type: string; name?: string; tab?: string; pane?: string; prompt_file?: string; prompt_file_source?: "config" | "repo"; prompt_mode?: "augment" | "replace"; budget_seconds?: number; heartbeat: boolean; requires_changes?: string[]; agent?: ParsedAgentBlock } & CapabilityRef,
     kept: { type: string; name?: string }[],
     index: number,
     beltAgent: ParsedAgentBlock | undefined,
@@ -1655,6 +1661,7 @@ export function loadConfig(repoName: string): Loaded {
       guards,
       effects: [...d.effects],
       posture,
+      requiresChanges: ref.requires_changes,
       // The harness a SPAWNED pane for this step launches — step over belt over repo over the
       // default. Inert for a step that targets a layout pane (it drives that pane's own agent).
       agent: resolveAgent(parsed.agent, beltAgent, ref.agent),

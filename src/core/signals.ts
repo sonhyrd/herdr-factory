@@ -14,7 +14,7 @@ import { resolveActiveRun } from "../resolve.ts";
 import { stepByName } from "./step.ts";
 import { bounceStep, consumePendingSignal, reconcileRun, recordCaptureAttempt, withRunLock, withRunLockWaiting } from "./reconcile.ts";
 import { setRunBranch } from "./run-branch.ts";
-import { checkStepTree, recordTreeRefusal, treeRefusalMessage } from "./tree-guard.ts";
+import { checkRequiredChanges, checkStepTree, recordTreeRefusal, requiredChangesMessage, treeRefusalMessage } from "./tree-guard.ts";
 
 /** The parsed body an agent signal carries — a superset; each signal reads only the fields it needs.
  *  Structurally compatible with every run-scoped route's validated JSON body (StepDoneBody, …). */
@@ -144,6 +144,12 @@ export async function applySignal(deps: Deps, name: string, body: SignalBody): P
           deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done_refused", detail: { step, why: tree.why, stat: tree.stat } });
           deps.log("warn", `${body.key}: step-done for ${step} refused — ${tree.why}`);
           return { ok: false, message: treeRefusalMessage(step, tree) };
+        }
+        const req = await checkRequiredChanges(deps, run, cfg);
+        if (!req.ok) {
+          deps.store.recordEvent({ runId: run.id, repo, ticketKey: body.key, type: "step_done_refused", detail: { step, why: req.why, stat: req.stat, globs: cfg.requiresChanges } });
+          deps.log("warn", `${body.key}: step-done for ${step} refused — ${req.why}`);
+          return { ok: false, message: requiredChangesMessage(step, req) };
         }
       }
       deps.store.markStepDone(run.id, step);

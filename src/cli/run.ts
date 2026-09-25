@@ -31,7 +31,7 @@ const EVENT_LABEL: Record<string, string> = {
   idle_nudge: "↯ idle agent nudged",
   bounced: "↩ bounced back",
   rework: "↩ operator rework",
-  step_done_refused: "✗ step-done refused (tree guard)",
+  step_done_refused: "✗ step-done refused (tree guard / requires_changes)",
   signal_queued: "signal queued",
   signal_rejected: "signal rejected",
   capture_attempt: "evidence capture attempt",
