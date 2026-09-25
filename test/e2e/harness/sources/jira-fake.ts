@@ -296,6 +296,20 @@ export class JiraFake {
     return this.appendComment(issue, adfDoc(body), body, author).id;
   }
 
+  /** A human EDITS the description (issue #97's trigger): the text changes and `updated` bumps. */
+  setDescription(key: string, text: string): void {
+    const issue = this.must(key);
+    issue.description = text;
+    issue.updated = jiraTimestamp(Date.now());
+  }
+
+  /** A human adds a label: `updated` bumps, the content does not — which must NOT count as an edit. */
+  addLabel(key: string, label: string): void {
+    const issue = this.must(key);
+    issue.labels.push(label);
+    issue.updated = jiraTimestamp(Date.now());
+  }
+
   /** Requests seen so far, optionally filtered by a substring of `<METHOD> <path>` (e.g.
    *  `"/rest/agile/"`, `"POST /rest/api/3/issue/APP-1/transitions"`). */
   requests(match?: string): JiraFakeRequest[] {
@@ -341,7 +355,12 @@ export class JiraFake {
         return this.fail(res, this.isGone(key) ? this.goneStatus : 404, "Issue does not exist or you do not have permission to see it.");
       }
       const sub = issuePath[2];
-      if (!sub && method === "GET") return this.json(res, 200, this.issueJson(issue, this.fieldList(url)));
+      if (!sub && method === "GET") {
+        const json = this.issueJson(issue, this.fieldList(url));
+        // `expand=names` adds the field id → display name map (edit detection names fields by it).
+        const names = { summary: "Summary", description: "Description", issuetype: "Issue Type", status: "Status", labels: "Labels", created: "Created", updated: "Updated", attachment: "Attachment", comment: "Comment" };
+        return this.json(res, 200, (url.searchParams.get("expand") ?? "").split(",").includes("names") ? { ...json, names } : json);
+      }
       if (sub === "/comment" && method === "GET") return this.listComments(res, issue, url);
       if (sub === "/comment" && method === "POST") return this.postComment(res, issue, body);
       if (sub === "/transitions" && method === "GET") return this.json(res, 200, { expand: "transitions", transitions: this.transitionsFor(issue) });
