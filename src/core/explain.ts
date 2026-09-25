@@ -98,6 +98,15 @@ function attentionStory(ob: RunObligations, resumeCmd: string, teardownCmd: stri
           `${resumeCmd.replace(" resume ", " rework ")} <step> --note "…"   # if the work itself must be redone`,
         ],
       };
+    case "work_item_edited":
+      return {
+        headline: `The run is parked: the work item was edited after the claim (${reason}).`,
+        body: [
+          "The next step would have judged — or shipped — the work against the copy taken at claim. The work doc now holds the current text; the before/after of each edited field is in `.memory/herdr-factory/work-item-edits.md` in the worktree.",
+          "Pick one: rework re-runs the belt from the chosen step against the new text; resume ships the work as it is (the edit is acknowledged, so the same edit won't park it again).",
+        ],
+        next: [`${resumeCmd.replace(" resume ", " rework ")} <step> --note "work item edited — see work-item-edits.md"`, resumeCmd + "   # ship as is"],
+      };
     case "evidence_upload_failed":
       return {
         headline: `The run is parked: the PR-opening step can't start — its evidence upload never landed (${reason}).`,

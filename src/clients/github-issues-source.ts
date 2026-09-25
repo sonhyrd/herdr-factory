@@ -35,6 +35,7 @@ import {
   type MatchItem,
   type Ticket,
   type TransitionResult,
+  type WorkContent,
   type WorkDocInfo,
   type WorkState,
 } from "../types.ts";
@@ -438,6 +439,12 @@ export class GithubIssuesSource implements WorkSource {
       `- Draft: ${pull.draft ? "yes" : "no"}`,
       `- Checkout: \`gh pr checkout ${n}\``,
     ];
+  }
+
+  /** The body only: GitHub bumps `updated_at` on every label/assignee change, so it never decides. */
+  async workContent(key: string): Promise<WorkContent> {
+    const issue = await this.gh.getIssue(Number(key));
+    return { updated: typeof issue.updated_at === "string" ? issue.updated_at : null, fields: { Description: issue.body ?? "" } };
   }
 
   async workDoc(): Promise<WorkDocInfo> {

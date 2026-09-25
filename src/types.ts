@@ -471,6 +471,14 @@ export interface HumanPollInput {
   externalCreatedAt?: string | null;
 }
 
+/** An item's editable CONTENT at one moment (issue #97): the fields whose edit changes what the run
+ *  must build — description, acceptance criteria — keyed by a human-readable field name, plus the
+ *  backend's own last-updated time (informational: labels/status bump it too, so it never decides). */
+export interface WorkContent {
+  updated: string | null;
+  fields: Record<string, string>;
+}
+
 export interface HumanReply {
   body: string;
   externalId: string;

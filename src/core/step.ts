@@ -14,6 +14,7 @@ import { showRunPane } from "./pane-display.ts";
 import { signalCommand } from "../signals/registry.ts";
 import { REPO_PACK_SUBDIR, resolvePromptFile } from "../prompt-packs.ts";
 import { telemetrySpan } from "../telemetry/index.ts";
+import { recordClaimedContent } from "./work-edits.ts";
 
 // The prompt contract (token catalog, dataflow gating, user-prompt validation) lives in one leaf
 // module so the config loader and the renderer share it without a cycle. Re-exported here because
@@ -399,6 +400,7 @@ export async function materializeWork(deps: Deps, run: Run, src: SourceRuntime):
       } catch {
         deps.log("warn", `${run.ticketKey}: materialize had issues`);
       }
+      await recordClaimedContent(src, run.ticketKey, mem, deps.log);
     },
   );
 }

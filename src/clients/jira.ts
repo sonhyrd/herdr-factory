@@ -155,6 +155,12 @@ export class JiraClient {
     );
   }
 
+  /** Every field plus the id → display-name map — edit detection's read (the rich-text custom
+   *  fields, e.g. acceptance criteria, have per-site ids, so they can't be named in `fields=`). */
+  async getIssueAllFields(key: string): Promise<{ fields?: Record<string, unknown>; names?: Record<string, string> }> {
+    return this.getJson(`/rest/api/3/issue/${key}?fields=*all&expand=names`);
+  }
+
   async currentStatus(key: string): Promise<string> {
     return (await this.getIssue(key)).fields.status?.name ?? "";
   }

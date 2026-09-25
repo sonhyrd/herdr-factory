@@ -447,6 +447,19 @@ describe("explainRun — the tree guard", () => {
     expect(text).toContain("the evidence step never commits");
     expect(text).toContain(`herdr-factory --repo ${REPO} rework HF-1 <step>`);
   });
+
+  it("attention: a work_item_edited park names the edit and both choices (rework / resume)", () => {
+    const text = joined(
+      explainRun({
+        ob: ob({ run: { phase: "attention", step: "work", attentionReason: "ticket edited after claim: Acceptance criteria", attentionReasonCode: "work_item_edited" } }),
+        repoName: REPO,
+        now: NOW,
+      }),
+    );
+    expect(text).toContain("edited after the claim (ticket edited after claim: Acceptance criteria)");
+    expect(text).toContain(`herdr-factory --repo ${REPO} rework HF-1 <step>`);
+    expect(text).toContain(`herdr-factory --repo ${REPO} resume HF-1   # ship as is`);
+  });
 });
 
 describe("explainRun — shape", () => {
@@ -472,6 +485,7 @@ describe("explainRun — shape", () => {
       "step_stalled",
       "read_only_violation",
       "dirty_tree",
+      "work_item_edited",
       "capture_limit",
       "layout_wait_timeout",
       "bounce_limit",
