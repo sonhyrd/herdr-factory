@@ -10,6 +10,8 @@ describe("followEventExtra — the per-type trailer pulled from event detail", (
     expect(followEventExtra("step_spawned", JSON.stringify({ step: "work" }))).toBe("work");
     expect(followEventExtra("step_done", JSON.stringify({ step: "review", pass: 2 }))).toBe("review");
     expect(followEventExtra("bounced", JSON.stringify({ toStep: "work" }))).toBe("→ work");
+    expect(followEventExtra("bounced", JSON.stringify({ toStep: "work", reason: "\n tests fail \nmore" }))).toBe("→ work — tests fail");
+    expect(followEventExtra("rework", JSON.stringify({ fromStep: "pr", toStep: "work", pass: 2, reason: "CI red" }))).toBe("pr → work (pass 2) — CI red");
     expect(followEventExtra("transition", JSON.stringify({ to: "in_review" }))).toBe("in_review");
     expect(followEventExtra("pr_opened", JSON.stringify({ number: 42 }))).toBe("#42");
     expect(followEventExtra("torn_down", JSON.stringify({ outcome: "merged" }))).toBe("merged");

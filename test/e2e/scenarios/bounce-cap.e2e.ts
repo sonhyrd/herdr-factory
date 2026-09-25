@@ -7,6 +7,10 @@
 import { expect } from "vitest";
 import { expectParked, scenario } from "../harness/index.ts";
 
+// Multi-line and past the 500-char cap, so the event detail's truncation is pinned on the serve path.
+const FINDING = "The fix does not cover the acceptance criteria.";
+const REASON = `${FINDING}\n${"- the empty state still renders the stale list\n".repeat(20)}`;
+
 scenario(
   {
     name: "bounce-cap",
@@ -16,7 +20,7 @@ scenario(
       work_sources: [{ type: "local_markdown", name: "briefs", local_markdown: { folder: p.briefs } }],
       belt: [{ name: "loop", source: "briefs", workspace_name: "b/{{work_id}}", steps: [{ type: "work" }, { type: "review" }] }],
     }),
-    agent: { steps: { review: { commit: false, signal: "bounce", text: "The fix does not cover the acceptance criteria." } } },
+    agent: { steps: { review: { commit: false, signal: "bounce", text: REASON } } },
   },
   async (w) => {
     const key = "wont-settle";
@@ -27,6 +31,11 @@ scenario(
     // One bounce was allowed (the cap is 1); the second is what parked it.
     const run = w.db.run(key)!;
     expect(w.db.events(key).filter((e) => e.type === "bounced").length, "one bounce landed before the cap").toBe(1);
+    // The feedback note dies at teardown; the event keeps the reason's head, capped at 500 (#113).
+    const bounced = w.db.event(key, "bounced")!;
+    expect(String(bounced.data.reason), "the bounce event keeps the reason").toMatch(new RegExp(`^${FINDING}\n`));
+    expect(String(bounced.data.reason).length, "capped at 500 chars").toBe(500);
+    expect(w.factory.cli(["timeline", key]).stdout, "`timeline` shows the reason's first line").toContain(FINDING);
     expect(w.db.step(run.id, "work")!.pass, "the work step re-ran on a fresh pass").toBe(2);
     expect(w.db.guardCounter(run.id, "work", "bounce_cap"), "the cap counter is on the bounce TARGET").toBeGreaterThan(1);
 

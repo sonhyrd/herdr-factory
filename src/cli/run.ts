@@ -64,6 +64,12 @@ function num(d: Record<string, unknown>, k: string): number | undefined {
   return typeof d[k] === "number" ? (d[k] as number) : undefined;
 }
 
+/** ` — <first non-blank line of the bounce reason>`, or "" when the event carries none. */
+function reasonHead(d: Record<string, unknown>): string {
+  const line = str(d, "reason")?.split("\n").find((l) => l.trim());
+  return line ? ` — ${line.trim()}` : "";
+}
+
 /** A short, type-specific trailer for an event line, pulled from its `detail` JSON. Empty string
  *  when there's nothing worth showing (the label alone is enough). Never throws on odd detail. */
 export function followEventExtra(type: string, detail: string | null): string {
@@ -88,11 +94,11 @@ export function followEventExtra(type: string, detail: string | null): string {
       return str(d, "step") ?? "";
     case "bounced": {
       const to = str(d, "toStep");
-      return to ? `→ ${to}` : "";
+      return to ? `→ ${to}${reasonHead(d)}` : "";
     }
     case "rework": {
       const to = str(d, "toStep");
-      return to ? `${str(d, "fromStep") ?? "?"} → ${to} (pass ${num(d, "pass") ?? "?"})` : "";
+      return to ? `${str(d, "fromStep") ?? "?"} → ${to} (pass ${num(d, "pass") ?? "?"})${reasonHead(d)}` : "";
     }
     case "step_done_refused":
       return [str(d, "step"), str(d, "why")].filter(Boolean).join(" — ");
