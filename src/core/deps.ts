@@ -22,6 +22,7 @@ import type {
   Ticket,
   TransitionContext,
   TransitionResult,
+  WorkContent,
   WorkDocInfo,
   WorkspaceInfo,
   WorkState,
@@ -342,6 +343,11 @@ export interface WorkSource {
   /** The item's recent comments with their SERVER-ASSIGNED numeric ids (the ledger's tie-break).
    *  Must include the newest comments; ordering is irrelevant. */
   listClaimComments?(key: string): Promise<{ id: string; body: string }[]>;
+  /** OPTIONAL edit detection (issue #97): the item's content NOW (see WorkContent). The engine
+   *  records it at claim and re-reads it before a read-only or PR-opening step starts; any field
+   *  that differs parks the run. So `fields` MUST hold content only — status/label/assignee churn
+   *  is not an edit. MAY throw: the check is skipped for that advance. */
+  workContent?(key: string): Promise<WorkContent>;
 }
 
 /** A configured source's identity + its live client. Resolved from `run.workSource` (or a belt's

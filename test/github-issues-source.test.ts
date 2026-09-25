@@ -200,6 +200,20 @@ describe("GithubIssuesSource — transitions (GET → diff → apply)", () => {
   });
 });
 
+describe("GithubIssuesSource — workContent (issue #97)", () => {
+  it("is the body alone: a label change is not an edit, a body change is", async () => {
+    fake = makeFakeGithub();
+    const issue = fake.addIssue(7, { body: "Build the list." });
+    const src = makeSource(fake);
+    const before = await src.workContent!("7");
+    expect(before.fields).toEqual({ Description: "Build the list." });
+    issue.labels.add("bug");
+    expect((await src.workContent!("7")).fields).toEqual(before.fields);
+    issue.body = "Build the list and the messenger list.";
+    expect((await src.workContent!("7")).fields.Description).toContain("messenger");
+  });
+});
+
 describe("GithubIssuesSource — materialize", () => {
   it("renders task.md (header + closing reference + body + human comments), writes issue.json, idempotent", async () => {
     fake = makeFakeGithub();

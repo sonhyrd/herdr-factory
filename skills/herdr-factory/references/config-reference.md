@@ -473,7 +473,7 @@ stay. `reload` otherwise picks up edits.
 | `branch.prefixes` reserved key | `default` |
 | product vocabulary (not directly writable) | `work_spec`, `work_raw`, `commits`, `handoff`, `evidence`, `pull_request`, `bounce_feedback`, `human_reply`, `close_reference` |
 | guard kinds (seen in diagnostics) | `budget`, `heartbeat`, `read_only`, `capture_cap`, `layout_wait`, `exclusive_resource` |
-| escalation reasons (seen in diagnostics) | `step_budget`, `step_stalled`, `read_only_violation`, `dirty_tree`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit` |
+| escalation reasons (seen in diagnostics) | `step_budget`, `step_stalled`, `read_only_violation`, `dirty_tree`, `work_item_edited`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit` |
 
 ---
 

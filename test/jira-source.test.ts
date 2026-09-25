@@ -295,4 +295,23 @@ describe("JiraSource", () => {
     expect(reply).toMatchObject({ externalId: "a1", author: "Pat" });
     expect(reply!.body).toContain("Go with option B.");
   });
+
+  // Edit detection (issue #97): the description and every other rich-text field (acceptance criteria
+  // is a per-site custom field), named by the `names` map; status/labels/rank never count.
+  it("workContent returns the ADF fields by display name plus the updated time", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      fetchCalls.push({ url: String(url), method: "GET" });
+      const doc = (t: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: t }] }] });
+      const body = {
+        fields: { summary: "s", updated: "2026-09-24T10:45:00.000+0000", description: doc("Build it."), customfield_10050: doc("Shows 10 rows."), customfield_10019: "0|i00abc:", labels: ["agent"], status: { name: "To Do" } },
+        names: { description: "Description", customfield_10050: "Acceptance criteria", customfield_10019: "Rank" },
+      };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), headers: new Headers() } as Response;
+    }) as typeof fetch;
+    expect(await src().workContent("RWR-1")).toEqual({
+      updated: "2026-09-24T10:45:00.000+0000",
+      fields: { Description: "Build it.", "Acceptance criteria": "Shows 10 rows." },
+    });
+    expect(fetchCalls[0]!.url).toContain("fields=*all&expand=names");
+  });
 });

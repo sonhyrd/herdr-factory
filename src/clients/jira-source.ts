@@ -12,6 +12,7 @@ import type {
   MatchItem,
   Ticket,
   TransitionResult,
+  WorkContent,
   WorkDocInfo,
   WorkState,
 } from "../types.ts";
@@ -222,6 +223,17 @@ export class JiraSource implements WorkSource {
 
   async workDoc(): Promise<WorkDocInfo> {
     return { path: "ticket.json", kind: "Jira ticket (JSON)" };
+  }
+
+  /** The description and every other rich-text (ADF doc) field — acceptance criteria live in one
+   *  on most sites. Status, labels, assignee, rank are never docs, so their churn is not an edit. */
+  async workContent(key: string): Promise<WorkContent> {
+    const { fields = {}, names = {} } = await this.jira.getIssueAllFields(key);
+    const out: Record<string, string> = {};
+    for (const [id, v] of Object.entries(fields)) {
+      if (v && typeof v === "object" && (v as { type?: unknown }).type === "doc") out[names[id] ?? id] = bodyText(v).trim();
+    }
+    return { updated: typeof fields.updated === "string" ? fields.updated : null, fields: out };
   }
 
   async postNote(key: string, note: string): Promise<void> {

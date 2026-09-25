@@ -24,6 +24,7 @@ import { pruneLayoutToBelt, resolveBeltLayout } from "./layout-match.ts";
 import { buildLayoutInto, lastHookFailure, noteHookFailure, releaseApply } from "./layout-hook.ts";
 import { applyWatchRebase, evaluateStepWatches } from "./watches.ts";
 import { checkStepTree, recordTreeRefusal } from "./tree-guard.ts";
+import { detectWorkItemEdits, WORK_EDITS_FILE } from "./work-edits.ts";
 import { reportToPane, showRunPane, type PaneRunState } from "./pane-display.ts";
 import { PANE_ABSENCE_CONFIRM_SECONDS } from "../steps/engine-watches.ts";
 import { flushOutbox, type OutboxFlow } from "./outbox.ts";
@@ -1235,7 +1236,7 @@ function isPreDispatchClaim(deps: Deps, run: Run): boolean {
  *  comment about factory plumbing (a budget, a stalled pane, a failed login) is noise to them.
  *  Everything else — including plugin guard codes — is MECHANICAL and reports into the run's own
  *  agent pane instead (`reportToPane`), alongside the desktop notification. */
-const WORK_ERROR_REASONS = new Set(["bounce_limit", "pr_closed"]);
+const WORK_ERROR_REASONS = new Set(["bounce_limit", "pr_closed", "work_item_edited"]);
 
 /** Publish run state on `run.paneId` — the pane of whichever step DISPATCHED LAST, which is not
  *  necessarily `run.step`.
@@ -1631,8 +1632,10 @@ export async function bounceStep(
   //     the bouncer* — those intermediate steps must actually re-run on the forward pass, not be
   //     skipped on their stale done=true (e.g. a review→fix bounce must force the evidence step to
   //     re-capture the reworked change, not re-PR the pre-fix evidence). The bouncer (idxFrom) didn't
-  //     step-done, so it's excluded; its clocks reset when the forward pass respawns it.
-  for (let i = idxTo; i < idxFrom; i++) {
+  //     step-done, so it's excluded; its clocks reset when the forward pass respawns it — except when
+  //     it IS the target (an operator re-running it): a park at the advance (tree guard, work-item
+  //     edit) sits on a step that already signalled done, and a kept flag would advance it untouched.
+  for (let i = idxTo; i < Math.max(idxFrom, idxTo + 1); i++) {
     deps.store.upsertRunStep(run.id, belt.steps[i]!.name, { done: false });
     // A re-entry is opening for this step (now, for the target; at the forward re-advance, for an
     // intermediate) — its watch clocks must not survive the prior pass (RWR-18147).
@@ -2374,6 +2377,28 @@ async function parkIfTreeDirty(deps: Deps, run: Run, step: StepConfig): Promise<
   return true;
 }
 
+/** EDIT CHECK at the advance into a step that judges or ships the work (read-only / PR-opening):
+ *  a work item edited after the claim parks the run instead of letting the step run against the
+ *  stale copy (issue #97). Placed like the tree guard — before any entry bookkeeping — so `resume`
+ *  re-runs the advance, which then passes: the check already moved its baseline to the new text. */
+async function parkIfWorkItemEdited(deps: Deps, run: Run, belt: BeltRuntime, src: SourceRuntime, next: StepConfig): Promise<boolean> {
+  if (!run.worktreePath) return false;
+  const fields = await detectWorkItemEdits(src, run.ticketKey, join(run.worktreePath, MEMORY_DIR), deps.log);
+  if (!fields.length) return false;
+  const cli = `herdr-factory --repo ${deps.config.repoName}`;
+  await escalateAttention(deps, run, {
+    reason: "work_item_edited",
+    attentionReason: `ticket edited after claim: ${fields.join(", ")}`,
+    body:
+      `${run.ticketKey}: the work item was edited after the run claimed it (${fields.join(", ")}), so ${next.name} would run against a stale copy. ` +
+      `The work doc now holds the current text; the before/after is in ${MEMORY_DIR}/${WORK_EDITS_FILE}.\n\n` +
+      `Redo the work against it: ${cli} rework ${run.ticketKey} ${firstStep(belt).name} --note "work item edited — see ${WORK_EDITS_FILE}"\n` +
+      `Or ship as is: ${cli} resume ${run.ticketKey}`,
+    detail: { step: next.name, fields },
+  });
+  return true;
+}
+
 /** EVIDENCE GATE at the advance into a PR-opening step: the run's LATEST evidence publish must have
  *  landed (`evidence_uploaded`), or the PR ships dead links. Pending → hold (the advance re-runs each
  *  pass; the background upload / outbox retry is still working). Failed, or suspended after
@@ -2487,6 +2512,7 @@ async function reconcileStep(deps: Deps, run: Run, belt: BeltRuntime, src: Sourc
       // effect, the pass bump): a park here leaves the run on the step that just finished, so the
       // resume re-runs this same advance once the tree is clean.
       if (await parkIfTreeDirty(deps, run, next)) return;
+      if ((next.readOnly || next.opensPr) && (await parkIfWorkItemEdited(deps, run, belt, src, next))) return;
       await stopDevServer(deps, run, "step-done");
       deps.store.updateRun(run.id, { phase: "running", step: next.name });
       // enter(next) effect: a belt may move the source status on entering a step (e.g. entering the

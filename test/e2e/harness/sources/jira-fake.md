@@ -51,6 +51,8 @@ ticket?".
 | `statusHistory(key)` | every **applied** transition, in order — the ordering invariant. The seeded status is *not* included; the full trail is `[seedStatus, ...statusHistory(key)]` |
 | `comments(key)` | `{ id, body, author, created }[]`, oldest first, `body` flattened to the text the engine extracts from the ADF |
 | `addComment(key, body, author?)` | a **human** reply arriving (unmarked, so `pollHumanReply` takes it). Returns the comment id |
+| `setDescription(key, text)` | a human **edits** the description: the text changes and `updated` bumps (the `work-item-edited` trigger) |
+| `addLabel(key, label)` | a human adds a label: `updated` bumps, the content does not — must not count as an edit |
 | `requests(match?)` | `{ ts, method, path, body }[]`, filtered by a substring of `<METHOD> <path>`. `path` keeps the query string, so the JQL and the `fields` projection are assertable |
 | `reset()` | truncates the request log only (per-phase call budgets); issues and comments survive |
 | `statuses: Set<string>` | the reachable workflow. `add` one your belt configures, `delete` one to force the engine's "no transition" error |
@@ -71,6 +73,7 @@ and `src/clients/jira-source.ts`.
 |---|---|
 | `GET /rest/agile/1.0/board/<id>/issue?jql=…&fields=summary,issuetype,status,labels&maxResults=50` | `{startAt,maxResults,total,isLast,issues:[{id,key,self,fields}]}` — really filtered by the JQL, really projected to `fields`, really truncated to `maxResults`. A board id other than `boardId` ⇒ **404** |
 | `GET /rest/api/3/issue/<key>?fields=summary,description,issuetype,status,labels,attachment,comment` | the `JiraIssue` the materializer writes to `ticket.json`. Key lookup is case-insensitive (and accepts the numeric id) and the answer carries the **canonical** key |
+| `GET /rest/api/3/issue/<key>?fields=*all&expand=names` | edit detection's read: every field, plus a `names` map (`description` → `Description`, …) |
 | `GET /rest/api/3/issue/<key>/transitions` | `{transitions:[{id,name,to:{id,name,statusCategory}}]}` — one per reachable status |
 | `POST /rest/api/3/issue/<key>/transitions` `{"transition":{"id":"…"}}` | applies it, appends to `statusHistory`, answers **204 with an empty body** (the engine sends this one through `send()`, not a JSON-parsing helper — a JSON body here would hide a regression). An id that isn't currently offered ⇒ 400 |
 | `GET /rest/api/3/issue/<key>/comment?orderBy=created&startAt=0&maxResults=100` | `{startAt,maxResults,total,comments:[…]}`, oldest first (`orderBy=-created` reverses). **Paged**: the slice starts at `startAt`, so a >100-comment thread takes as many calls as the client walks |

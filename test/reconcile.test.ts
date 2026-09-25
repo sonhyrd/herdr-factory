@@ -7,7 +7,7 @@ import { Store } from "../src/db/store.ts";
 import { applyPendingFocus, BOUNCE_REASON_MAX, bounceStep, claimTicket, teardownTicket, flushTransitionOutbox, reconcileRepo, reconcileRun, recordCaptureAttempt, requestHumanInput, resumeRun, withRunLock, withRunLockWaiting, withTickLock } from "../src/core/reconcile.ts";
 import { applySignal } from "../src/core/signals.ts";
 import { createApp, type RepoRuntime, type ServerContext } from "../src/server/app.ts";
-import { MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
+import { materializeWork, MEMORY_DIR, renderStepPrompt } from "../src/core/step.ts";
 import { HerdrUnreachableError, type BeltRuntime, type Deps, type GitApi, type GitHubApi, type HerdrApi, type SourceRuntime, type WorkSource } from "../src/core/deps.ts";
 import { SourceUnauthenticatedError } from "../src/auth/errors.ts";
 import { getAuthFailure, resetAuthGate } from "../src/auth/gate.ts";
@@ -17,7 +17,7 @@ import type { Config, StepConfig } from "../src/config.ts";
 import { BUDGET_GUARD, HEARTBEAT_GUARD, LAYOUT_WAIT_GUARD, READ_ONLY_GUARD } from "../src/steps/guards.ts";
 import { applyWatchRebase, registerWatchEvaluator } from "../src/core/watches.ts";
 import { runObligations } from "../src/core/obligations.ts";
-import type { FocusedPane, HumanAskInput, HumanPollInput, HumanReply, JiraMatchItem, LayoutNode, LocalMarkdownMatchItem, Phase, PrInfo, PrSnapshot, ReviewSig, Ticket, WorkState } from "../src/types.ts";
+import type { FocusedPane, HumanAskInput, HumanPollInput, HumanReply, JiraMatchItem, LayoutNode, LocalMarkdownMatchItem, Phase, PrInfo, PrSnapshot, ReviewSig, Run, Ticket, WorkState } from "../src/types.ts";
 import { DEFAULT_AGENT_CONFIG, StaleItemError } from "../src/types.ts";
 
 const tmps: string[] = [];
@@ -4999,6 +4999,89 @@ describe("tree guard — a step that never commits must find the worktree clean"
     await reconcileRun(deps, store.getRun(run.id)!);
     expect(store.getRun(run.id)!.phase).toBe("attention");
     expect(store.getRun(run.id)!.attentionReasonCode).toBe("dirty_tree");
+  });
+});
+
+describe("work item edited after the claim (issue #97)", () => {
+  // The fake source's content is mutable: `content.fields` is what workContent() answers NOW, and
+  // materialize writes it into ticket.json, so a refresh is observable.
+  function edited(key: string) {
+    const b = build();
+    const content = { updated: "t0", fields: { Description: "Build the list.", "Acceptance criteria": "Shows 10 rows." } as Record<string, string> };
+    const client = b.sources[0]!.client;
+    client.workContent = async () => ({ updated: content.updated, fields: { ...content.fields } });
+    client.materialize = async (_k, memDir) => {
+      mkdirSync(memDir, { recursive: true });
+      if (!existsSync(join(memDir, "ticket.json"))) writeFileSync(join(memDir, "ticket.json"), JSON.stringify(content.fields));
+    };
+    b.shipBelt.steps[1] = stepCfg("review", { readOnly: true });
+    const run = seed(b.store, b.worktree, key, "running", "fix");
+    return { ...b, content, run, mem: join(b.worktree, MEMORY_DIR) };
+  }
+  const claim = (deps: Deps, run: Run, src: SourceRuntime) => materializeWork(deps, run, src);
+
+  it("a description edit between claim and review parks the run with the edited fields; resume ships as is", async () => {
+    const { deps, store, content, run, mem, sources, calls } = edited("K-ED1");
+    await claim(deps, run, sources[0]!);
+    expect(JSON.parse(readFileSync(join(mem, "work-content.json"), "utf8")).fields.Description).toBe("Build the list.");
+
+    content.updated = "t1";
+    content.fields["Acceptance criteria"] = "Shows 10 rows. Also the messenger list.";
+    const res = await applySignal(deps, "step-done", { key: "K-ED1", step: "fix" });
+    expect(res.ok).toBe(true);
+    const parked = store.getRun(run.id)!;
+    expect(parked.phase).toBe("attention");
+    expect(parked.attentionReasonCode).toBe("work_item_edited");
+    expect(parked.attentionReason).toBe("ticket edited after claim: Acceptance criteria");
+    expect(parked.step).toBe("fix"); // review never started: resume re-runs this advance
+    // the work doc is refreshed, the claim-time copy kept, the before/after written
+    expect(readFileSync(join(mem, "ticket.json"), "utf8")).toContain("messenger");
+    expect(readFileSync(join(mem, "ticket.claimed.json"), "utf8")).not.toContain("messenger");
+    const edits = readFileSync(join(mem, "work-item-edits.md"), "utf8");
+    expect(edits).toContain("## Acceptance criteria");
+    expect(edits).toContain("t0 → t1");
+    expect(edits).not.toContain("## Description");
+    // the operator (and whoever edited the ticket) is told the two choices on the item itself
+    expect(calls.postNotes.at(-1)![1]).toContain("rework K-ED1 fix");
+
+    expect((await resumeRun(deps, parked)).ok).toBe(true);
+    await reconcileRun(deps, store.getRun(run.id)!);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("review"); // the acknowledged edit does not park again
+  });
+
+  it("rework from the park re-runs the work step against the new text", async () => {
+    const { deps, store, content, run, sources } = edited("K-ED2");
+    await claim(deps, run, sources[0]!);
+    content.fields.Description = "Build the list and the applications list.";
+    await applySignal(deps, "step-done", { key: "K-ED2", step: "fix" });
+    expect(store.getRun(run.id)!.attentionReasonCode).toBe("work_item_edited");
+
+    const res = await applySignal(deps, "rework", { key: "K-ED2", toStep: "fix", reason: "work item edited — see work-item-edits.md" });
+    expect(res.ok).toBe(true);
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("fix");
+    expect(store.getRunStep(run.id, "fix")!.done).toBe(false);
+    await applySignal(deps, "step-done", { key: "K-ED2", step: "fix", pass: store.getRunStep(run.id, "fix")!.pass });
+    expect(store.getRun(run.id)!.step).toBe("review");
+  });
+
+  it("a label/status-only change (the updated time moves, the content doesn't) does not park", async () => {
+    const { deps, store, content, run, sources, mem } = edited("K-ED3");
+    await claim(deps, run, sources[0]!);
+    content.updated = "t9";
+    await applySignal(deps, "step-done", { key: "K-ED3", step: "fix" });
+    expect(store.getRun(run.id)!.phase).toBe("running");
+    expect(store.getRun(run.id)!.step).toBe("review");
+    expect(existsSync(join(mem, "work-item-edits.md"))).toBe(false);
+  });
+
+  it("a failed re-read never blocks the advance", async () => {
+    const { deps, store, run, sources } = edited("K-ED4");
+    await claim(deps, run, sources[0]!);
+    sources[0]!.client.workContent = async () => { throw new Error("jira is down (fake)"); };
+    await applySignal(deps, "step-done", { key: "K-ED4", step: "fix" });
+    expect(store.getRun(run.id)!.step).toBe("review");
   });
 });
 

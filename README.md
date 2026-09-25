@@ -512,6 +512,25 @@ A **commit** from such a step is the separate, older read-only watch — it park
 away over misbehaviour on the way to it), so the tree guard stays out of it: refusing a step-done
 for a commit would wedge the run, because an agent cannot un-commit.
 
+### A work item edited after the claim
+
+The run materializes its work item once, at claim. If someone edits the ticket afterwards, every
+step would otherwise keep building against the copy it took. So `jira` and `github_issues` sources
+also record the item's **content** at claim (`.memory/herdr-factory/work-content.json`: the
+description and, on Jira, every other rich-text field such as acceptance criteria, plus the item's
+own `updated` time). Before a step that judges or ships the work starts (a read-only step such as
+`evidence`/`review`, or the PR-opening step), the engine reads the item again. If a content field
+changed, the run parks for attention as `work_item_edited` (`ticket edited after claim: <fields>`),
+with a note on the item:
+
+- the work doc is refreshed, and the claim-time copy is kept as `ticket.claimed.json` /
+  `task.claimed.md`;
+- `.memory/herdr-factory/work-item-edits.md` holds the before/after of each edited field.
+
+Choose one: `rework <KEY> <step> --note …` re-runs the belt against the new text, or `resume` ships
+the work as is. Either way the edit counts as seen, so it does not park the run again. A change to
+labels, status or assignee is not an edit. If the item can't be read, the check is skipped.
+
 ### Gate receipts
 
 A **gate** is one verification command — lint, a type-check, a test suite. Without a shared record
