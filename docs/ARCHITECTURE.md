@@ -2410,6 +2410,9 @@ reports three groups: **managed** (node runtime ≥26 — vendored or ambient; *
 channel + its target, amber when the last attempt failed / was skipped for a dirty checkout / left
 the box behind its target (from `update-status.json`); **main checkouts up to date** — each repo's
 `repo.path` vs its base branch from `checkout-sync.json`, amber while one is skipped or failing;
+**live config up to date** — the config dir's HEAD vs `origin/main` plus tracked-file edits, amber
+when behind or dirty; `--deep` runs `git fetch origin` first (the shallow run compares against the
+last-fetched ref), and nothing ever pulls it — the operator rolls it out by hand;
 supervisor service loaded, server responding, DB present), **you-provide** (`git` / `herdr` /
 `gh` / `claude` on PATH; `--deep` exercises herdr and `gh auth status`), and — with `--repo` —
 **per-repo** (config loads + valid, main checkout, origin resolved, per-source `health()`, the

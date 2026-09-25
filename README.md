@@ -66,7 +66,9 @@ what's still on you (herdr, an agent CLI, `gh auth`) right away — the herdr ch
 herdr server speaks a protocol this herdr CLI can talk to. Run `herdr-factory doctor` (or
 `doctor --deep`) any time — it checks everything above, plus the supervisor, server, database, the
 last fast-forward of each repo's main checkout (amber while one is skipped — on another branch,
-dirty, or diverged), and each repo's config, sources, and evidence bucket.
+dirty, or diverged), whether the live config `~/.config/herdr-factory` is behind its `origin/main` or
+has local edits to tracked files (amber; `--deep` fetches first, and doctor never pulls — rollout
+there stays manual), and each repo's config, sources, and evidence bucket.
 
 With `--repo <name>`, `doctor` also checks the **agent tooling that repo's config actually asks
 for**, since that is the part nothing else fails loudly on: `cursor-agent` on PATH (and, on
