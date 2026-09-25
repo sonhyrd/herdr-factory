@@ -406,6 +406,8 @@ export interface GitApi {
   worktreePrune(repoCwd: string): Promise<void>;
   originUrl(repoCwd: string): Promise<string>;
   headSha(repoCwd: string): Promise<string | null>;
+  /** Append `.memory/` to the checkout's `info/exclude` unless already there. Never throws. */
+  excludeMemoryDir(repoCwd: string): Promise<void>;
   /** The worktree's uncommitted work as a diff stat (+ the porcelain listing, which is the only
    *  one that shows untracked files), or null when the tree is clean — the tree guard's input. */
   dirtyStat(repoCwd: string): Promise<string | null>;

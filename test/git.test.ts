@@ -1,7 +1,7 @@
 // GitClient.branchDelete robustness — the teardown branch-leak fix. Uses a REAL temp git repo so it
 // exercises actual `git branch -D` / `git worktree` semantics, not a fake.
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitClient } from "../src/clients/git.ts";
@@ -89,5 +89,27 @@ describe("GitClient.fetchRef — the base a worktree is cut from", () => {
     const dir = await tempRepo();
     expect(await git.refAge(dir, "HEAD")).toMatch(/ago|now/);
     expect(await git.refAge(dir, "origin/nope")).toBeNull();
+  });
+});
+
+describe("GitClient.excludeMemoryDir — the factory's memory dir never dirties a worktree (#110)", () => {
+  const git = new GitClient();
+
+  it("a worktree whose repo lacks a .memory/ ignore reads clean with a .memory/ file present, and the line is added once", async () => {
+    const dir = await tempRepo();
+    const wts = [1, 2].map(() => join(tmpdir(), `git-wt-${Math.random().toString(36).slice(2)}`));
+    tmps.push(...wts);
+    for (const [i, wt] of wts.entries()) {
+      await run("git", ["-C", dir, "worktree", "add", "-q", wt, "-b", `fix/mem-${i}`]);
+      mkdirSync(join(wt, ".memory", "herdr-factory"), { recursive: true });
+      writeFileSync(join(wt, ".memory", "herdr-factory", "task.md"), "x");
+      // info/exclude is shared by every worktree of the checkout: only the first starts dirty.
+      if (i === 0) expect(await git.dirtyStat(wt)).toContain(".memory/");
+      await git.excludeMemoryDir(wt);
+      await git.excludeMemoryDir(wt);
+      expect(await git.dirtyStat(wt)).toBeNull();
+    }
+    const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
+    expect(exclude.split("\n").filter((l) => l === ".memory/")).toHaveLength(1);
   });
 });

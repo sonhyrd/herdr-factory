@@ -1167,8 +1167,12 @@ async function reconcileClaiming(deps: Deps, run: Run, belt: BeltRuntime, src: S
     // committed task doc supplant this run's real work item. Never on the reopen path: a
     // re-attached worktree's memory dir is the run's own live state.
     if (!exists && scrubCommittedMemoryDir(wt.worktreePath)) {
-      deps.log("warn", `${run.ticketKey}: removed a committed ${MEMORY_DIR} from the fresh worktree — the repo should not track factory memory (add .memory/ to its .gitignore)`);
+      deps.log("warn", `${run.ticketKey}: removed a committed ${MEMORY_DIR} from the fresh worktree — the repo should not track factory memory`);
     }
+    // Keep the factory's own memory dir out of `git status` on BOTH paths (a re-opened branch — an
+    // old PR under review — is exactly the checkout whose .gitignore may predate .memory/), so a
+    // read-only step's tree guard never parks on `?? .memory/` (#110).
+    await deps.git.excludeMemoryDir(wt.worktreePath);
     deps.store.updateRun(run.id, { workspaceId: wt.workspaceId, worktreePath: wt.worktreePath });
     deps.store.recordEvent({ runId: run.id, repo, ticketKey: run.ticketKey, type: "worktree_created", detail: { workspaceId: wt.workspaceId } });
     run = deps.store.getRun(run.id)!;

@@ -443,7 +443,7 @@ herdr-factory reload     # only if Phase 0 found a resident server — it won't 
 
 The config can be perfect and the results still poor if the checkout gives the agents nothing to work with. Confirm, before the first run:
 
-- `.memory/` is in the repo's `.gitignore` (the factory writes `.memory/herdr-factory/` into every worktree; a committed one is scrubbed with a warning).
+- `.memory/` is not tracked by the repo (the factory writes `.memory/herdr-factory/` into every worktree and excludes it via the checkout's `info/exclude`, so no `.gitignore` line is needed; a committed one is scrubbed with a warning).
 - a `CLAUDE.md` / `AGENTS.md` exists and says how to build, test, and run the app — the shipped prompts defer to it over their own generic advice.
 - the skills the shipped prompts look for exist if you added an evidence step (browser-automation / dev-server).
 - `gh` is authenticated as an identity that may open PRs on the origin.

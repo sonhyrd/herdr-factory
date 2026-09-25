@@ -147,7 +147,9 @@ and source auth recover on their own.
   only through the CLI, which holds the right locks.
 - **Confirm before anything destructive**: `teardown`, deleting a belt with live work, `rm`-ing a
   worktree, or replacing an existing `config.yml` (`init --force`).
-- **Don't commit `.memory/`** in a target repo — add it to `.gitignore`. The engine scrubs a committed
+- **Don't commit `.memory/`** in a target repo. The engine adds `.memory/` to the checkout's
+  `info/exclude` on every worktree create/reopen, so it never dirties the tree (no `.gitignore` line
+  needed) — but an exclude doesn't untrack a committed copy. The engine scrubs a committed
   `.memory/herdr-factory` from every freshly *created* worktree and warns, but on the worktree-reopen
   path a committed copy shadows the run's real work doc (every source's materialize is skip-if-exists).
 

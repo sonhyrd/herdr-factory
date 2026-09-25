@@ -2736,7 +2736,12 @@ Hard-won from the bash prototype — encode as types/tests/asserts:
   run. `reconcileClaiming` therefore removes any committed memory dir right after
   `worktreeCreate` (`scrubCommittedMemoryDir`), before the first materialize — and NEVER on the
   `worktreeOpen` re-attach path, whose memory dir is the run's own live state (handoffs,
-  feedback, prompts).
+  feedback, prompts). On BOTH paths it then calls `git.excludeMemoryDir`, which appends `.memory/`
+  to `$(git rev-parse --git-path info/exclude)` unless the line is already there (every linked
+  worktree shares the main checkout's `info/exclude`, so the append is idempotent). Without it an
+  untracked `?? .memory/` trips the tree guard in any repo — or old branch, or `hf-review` checkout
+  of an old PR — whose `.gitignore` predates the dir; the exclude covers them all without touching
+  a tenant's `.gitignore`.
 - worktree-create / agent-list JSON shapes are typed once in `herdr.ts`.
 - attachment `content` is site-host → basic-auth download; image/* + size cap.
 - each step gates on its own **`step-done`** signal (the `run_steps.done` flag), not flappy
