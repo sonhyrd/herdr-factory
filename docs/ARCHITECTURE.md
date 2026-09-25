@@ -555,8 +555,13 @@ reverse-engineered during the bash prototype.
   the LEGACY `"[herdr-factory"` prefix too, so artifacts written before a brand switch are still
   recognised as ours — and is
   **blockquote-aware**, so a human quote-reply that embeds the question as `> ` lines still
-  counts as a reply (INV-6). Author-identity filtering is never load-bearing: under gh-CLI
-  auth the bot login IS the operator's login.
+  counts as a reply (INV-6). Author identity never decides self-authorship: under gh-CLI
+  auth the bot login IS the operator's login. The one author filter is the opt-in
+  `human_reply.authors` allowlist (jira / github_issues / sentry, `isReplyAuthor` in
+  `core/deps.ts`): a non-marker comment from an unlisted author is skipped and reported through
+  `HumanPollInput.onIgnored`; the reconciler records it once as `human_reply_ignored` (deduped per
+  question + comment id via `Store.ignoredReplyIds`, since every poll re-reads the thread), and
+  `explain` counts them.
   A `SourceRuntime` bundles a source's identity (`name`/`type`) with its live `client`;
   `resolveSource` maps a run's `work_source` back to its runtime. `Deps.belts` is the
   priority-ordered `BeltRuntime` list (a belt's resolved config — ordered `steps`, `watchPr` —
@@ -967,7 +972,7 @@ pile of runs waiting on humans must not starve the belt of new claims. History i
 **event types** (the `EventType` union in `src/types.ts`): `claimed · claimed_elsewhere · transition · worktree_created ·
 layout_applied · layout_apply_failed · step_spawned · step_done · step_done_refused · layout_wait_retry · pane_relaunched · idle_nudge · bounced · rework ·
 signal_queued · signal_rejected · capture_attempt · evidence_uploaded · evidence_upload_failed ·
-stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · focus_applied ·
+stale · intent_suspended · intent_fulfilled · intent_deadline · human_question · human_question_moot · human_reply · human_reply_ignored · focus_applied ·
 pr_opened · resolver_woken · pr_green · torn_down · branch_changed · belt_reassigned · belt_deleted · attention · dev_server_stopped · resumed ·
 error`. **`merged` and `closed` are declared but never recorded** — a merge appears as
 `transition {to:"merged"}` followed by `torn_down {outcome:"merged"}`, which is what a reader should
