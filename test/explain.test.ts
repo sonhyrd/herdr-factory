@@ -136,7 +136,7 @@ describe("explainRun — phases", () => {
     const lines = explainRun({
       ob: ob({
         run: { phase: "waiting_for_human" },
-        intents: { humanQuestion: { id: 3, step: "work", posted: false, pollAttempts: 9, pollErrors: 6, nextPollAt: NOW + 10 } },
+        intents: { humanQuestion: { id: 3, step: "work", posted: false, pollAttempts: 9, pollErrors: 6, nextPollAt: NOW + 10, ignoredComments: 2 } },
       }),
       repoName: REPO,
       now: NOW,
@@ -144,6 +144,7 @@ describe("explainRun — phases", () => {
     const text = joined(lines);
     expect(text).toContain("still queued to post to the source");
     expect(text).toContain("6 reply checks in a row have FAILED");
+    expect(text).toContain("2 comments ignored (not a reply author"); // issue #123
   });
 
   it("reviewing: idle watch names the wake condition and the slot behavior", () => {

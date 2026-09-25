@@ -309,6 +309,7 @@ function phaseStory(ob: RunObligations, input: ExplainInput, resumeCmd: string):
           : "The question is still queued to post to the source — the outbox retries it until it lands.",
         `Reply checks so far: ${q.pollAttempts}; the next check runs ${inAbout(now, q.nextPollAt)} (checks run every 30s).`,
       ];
+      if (q.ignoredComments) body.push(`${q.ignoredComments} comment${q.ignoredComments === 1 ? "" : "s"} ignored (not a reply author — see the source's human_reply.authors).`);
       if (q.pollErrors > 0) body.push(`⚠ ${q.pollErrors} reply checks in a row have FAILED — at 10 the run parks for attention. Check the source's credentials.`);
       body.push("The wait is not a trap: an agent that gets past the blocker and signals step-done (or bounces) resumes the run and closes the question.");
       return {

@@ -177,7 +177,7 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
       transitions,
       evidenceUploads,
       pendingSignal: sig ? { signal: sig.signal, step: sig.step, toStep: sig.toStep, createdAt: sig.createdAt } : null,
-      humanQuestion: q ? { id: q.id, step: q.step, posted: q.externalId !== null, pollAttempts: q.pollAttempts, pollErrors: q.pollErrors, nextPollAt: q.nextPollAt } : null,
+      humanQuestion: q ? { id: q.id, step: q.step, posted: q.externalId !== null, pollAttempts: q.pollAttempts, pollErrors: q.pollErrors, nextPollAt: q.nextPollAt, ignoredComments: deps.store.ignoredReplyIds(run.id, q.id).size } : null,
       ledger,
     },
     watches: { step: watched?.name ?? null, guards, engine, bounceCaps, idleNudge },

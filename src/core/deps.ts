@@ -214,6 +214,13 @@ export function bearsHerdrMarker(body: string, brand: string = DEFAULT_BRAND): b
     .some((line) => re.test(line));
 }
 
+/** `human_reply.authors` gate (issue #123): true when no allowlist is configured, or any of the
+ *  comment author's identities (login / accountId / display name / email …) is on it. `allow` is
+ *  already lowercased by the descriptor. */
+export function isReplyAuthor(allow: readonly string[] | undefined, ...ids: (string | null | undefined)[]): boolean {
+  return !allow || ids.some((id) => !!id && allow.includes(id.toLowerCase()));
+}
+
 /**
  * A polymorphic source of work (Jira board, folder of markdown, GitHub issues, …). The reconciler
  * speaks ONLY this interface + the canonical WorkState lifecycle (types.ts) — each implementation
@@ -245,9 +252,10 @@ export function bearsHerdrMarker(body: string, brand: string = DEFAULT_BRAND): b
  * INV-6  SELF-AUTHORSHIP: every artifact the source writes to the reply channel (questions, notes)
  *        MUST carry the visible HERDR_MARKER prefix, and pollHumanReply MUST skip marker-bearing
  *        artifacts (via bearsHerdrMarker — blockquote-aware, so a quote-reply that embeds the
- *        question still counts as a reply). Author-identity filtering is NEVER load-bearing: with
- *        shared credentials (gh CLI) the bot login IS the operator's login, and author filtering
- *        would silently swallow the operator's genuine replies.
+ *        question still counts as a reply). Author-identity filtering is NEVER the self-authorship
+ *        guard: with shared credentials (gh CLI) the bot login IS the operator's login. The only
+ *        author filter is the OPT-IN `human_reply.authors` allowlist (isReplyAuthor), which picks
+ *        which humans may answer — skipped comments are reported via HumanPollInput.onIgnored.
  * INV-7  KEYS are opaque, stable for the item's life, unique within the source, and safe as: a
  *        single unquoted shell token (step-done ${key}), a git ref segment (branch.ts does NOT
  *        strip '#'/'/'), and a URL path segment (evidence S3 key). Sources enforce this at

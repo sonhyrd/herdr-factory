@@ -3825,6 +3825,27 @@ describe("stale write-backs — two-phase policy (lock-free stamp, run-locked re
 });
 
 describe("human-loop resilience — poll errors back off; a gone item escalates", () => {
+  it("a comment from a non-reply author is recorded as human_reply_ignored exactly once across polls (issue #123)", async () => {
+    const { deps, store, worktree, setNow, sources } = build();
+    const run = seed(store, worktree, "K-H0", "running", "fix");
+    const asked = await requestHumanInput(deps, run, "fix", "Which flag wins?");
+    // The source reports the same skipped QA comment on EVERY poll (it re-reads the thread).
+    sources[0]!.client.pollHumanReply = async (input: HumanPollInput) => {
+      input.onIgnored?.({ externalId: "qa-1", author: "QA Bot" });
+      return null;
+    };
+    for (let i = 0; i < 3; i++) {
+      await reconcileRun(deps, store.getRun(run.id)!);
+      setNow(store.getHumanQuestion(asked.questionId)!.nextPollAt + 1);
+    }
+    expect(store.getHumanQuestion(asked.questionId)!.pollAttempts).toBeGreaterThanOrEqual(3);
+    const ignored = store.timeline("demo", "K-H0").filter((e) => e.type === "human_reply_ignored");
+    expect(ignored).toHaveLength(1);
+    expect(JSON.parse(ignored[0]!.detail!)).toMatchObject({ questionId: asked.questionId, externalId: "qa-1", author: "QA Bot" });
+    expect(store.getRun(run.id)!.phase).toBe("waiting_for_human");
+    expect(runObligations(deps, store.getRun(run.id)!).intents.humanQuestion?.ignoredComments).toBe(1);
+  });
+
   it("a generic pollHumanReply throw is a backoff'd poll error, not a run error (and recovery works)", async () => {
     const { deps, store, state, worktree, setNow } = build();
     const run = seed(store, worktree, "K-H1", "running", "fix");

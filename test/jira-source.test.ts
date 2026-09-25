@@ -296,6 +296,31 @@ describe("JiraSource", () => {
     expect(reply!.body).toContain("Go with option B.");
   });
 
+  // Issue #123: with human_reply.authors set, only an allowlisted author answers; the rest are reported once per poll.
+  it("pollHumanReply with replyAuthors skips non-allowlisted authors and reports them via onIgnored", async () => {
+    const adf = (text: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+    const comments = [
+      { id: "q1", created: "2026-06-28T00:00:00.000+0000", body: adf("[herdr-factory question: demo/7/3]") },
+      { id: "qa1", created: "2026-06-28T00:01:00.000+0000", author: { displayName: "QA Bot", accountId: "acc-qa" }, body: adf("Test Summary: PASS") },
+    ];
+    globalThis.fetch = (async () =>
+      ({ ok: true, status: 200, text: async () => JSON.stringify({ comments }), headers: new Headers() }) as Response) as typeof fetch;
+    const gated = new JiraSource({ ...CFG, replyAuthors: ["acc-op"] }, new JiraApiTokenAuth(CFG.baseUrl, "me@x.com", "tok"));
+    const ignored: { externalId: string; author: string | null }[] = [];
+    const poll = { key: "RWR-1", questionId: 3, externalId: "q1", externalCreatedAt: "2026-06-28T00:00:00.000+0000", onIgnored: (c: { externalId: string; author: string | null }) => ignored.push(c) };
+
+    expect(await gated.pollHumanReply(poll)).toBeNull();
+    expect(ignored).toEqual([{ externalId: "qa1", author: "QA Bot" }]);
+
+    comments.push({ id: "a1", created: "2026-06-28T00:02:00.000+0000", author: { displayName: "Operator", accountId: "acc-op" }, body: adf("Go ahead.") });
+    expect(await gated.pollHumanReply(poll)).toMatchObject({ externalId: "a1", body: "Go ahead.", author: "Operator" });
+    // Display name matches too, case-insensitively.
+    const byName = new JiraSource({ ...CFG, replyAuthors: ["operator"] }, new JiraApiTokenAuth(CFG.baseUrl, "me@x.com", "tok"));
+    expect(await byName.pollHumanReply(poll)).toMatchObject({ externalId: "a1" });
+    // Unset ⇒ anyone answers (today's behavior): the QA comment wins.
+    expect(await src().pollHumanReply(poll)).toMatchObject({ externalId: "qa1" });
+  });
+
   // Edit detection (issue #97): the description and every other rich-text field (acceptance criteria
   // is a per-site custom field), named by the `names` map; status/labels/rank never count.
   it("workContent returns the ADF fields by display name plus the updated time", async () => {

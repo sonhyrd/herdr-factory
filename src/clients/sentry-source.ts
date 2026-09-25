@@ -18,7 +18,7 @@
 // active run) are filtered out — the internal ledger is what satisfies INV-1 re-claim convergence.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, isReplyAuthor, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import type { Store } from "../db/store.ts";
 import {
   StaleItemError,
@@ -39,6 +39,8 @@ import { isSentryNotFound, type SentryClient, type SentryEvent, type SentryIssue
 /** Resolved sentry-source config (the descriptor maps YAML onto it). `projects`/`environment` are
  *  [] when unset (all projects / all environments); `query` defaults to `is:unresolved`. */
 export interface SentrySourceCfg {
+  /** `human_reply.authors`, lowercased; undefined ⇒ any author may answer a question (issue #123). */
+  replyAuthors?: string[];
   baseUrl: string;
   organization: string;
   projects: string[]; // project slugs; [] = all accessible projects
@@ -389,11 +391,16 @@ export class SentrySource implements WorkSource {
         .sort((a, b) => (a.dateCreated ?? "").localeCompare(b.dateCreated ?? "")); // earliest reply first
       for (const c of candidates) {
         const text = c.data?.text ?? "";
-        // INV-6: skip our own artifacts (questions AND marked notes), blockquote-aware. NO author
-        // filtering — an operator using their own token IS the token's user; the marker is what disambiguates.
+        // INV-6: skip our own artifacts (questions AND marked notes), blockquote-aware — the marker,
+        // not the author, disambiguates: an operator using their own token IS the token's user.
         if (bearsHerdrMarker(text, this.brand)) continue;
         if (!text.trim()) continue;
-        return { body: text, externalId: String(c.id), externalCreatedAt: c.dateCreated ?? null, author: c.user?.name ?? c.user?.email ?? c.user?.username ?? null };
+        const author = c.user?.name ?? c.user?.email ?? c.user?.username ?? null;
+        if (!isReplyAuthor(this.cfg.replyAuthors, c.user?.name, c.user?.email, c.user?.username, c.user?.id)) {
+          input.onIgnored?.({ externalId: String(c.id), author });
+          continue;
+        }
+        return { body: text, externalId: String(c.id), externalCreatedAt: c.dateCreated ?? null, author };
       }
       return null;
     } catch (e) {

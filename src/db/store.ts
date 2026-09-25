@@ -787,6 +787,15 @@ export class Store {
     }[];
   }
 
+  /** Comment ids already recorded as `human_reply_ignored` for a question — the once-per-comment
+   *  dedupe (issue #123): every poll re-reports the same non-author comments. */
+  ignoredReplyIds(runId: number, questionId: number): Set<string> {
+    const rows = this.db
+      .prepare("SELECT json_extract(detail, '$.externalId') AS id FROM events WHERE run_id = ? AND type = 'human_reply_ignored' AND json_extract(detail, '$.questionId') = ?")
+      .all(runId, questionId) as { id: string }[];
+    return new Set(rows.map((r) => String(r.id)));
+  }
+
   /** The current max event id for a repo — the seed for the foreground `run --follow` feed, so it
    *  streams only events created after it started rather than replaying the whole history. 0 when
    *  the repo has no events yet. */

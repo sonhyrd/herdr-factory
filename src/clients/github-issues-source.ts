@@ -23,7 +23,7 @@
 // are "the item is no longer ours", where retrying cannot help.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bearsHerdrMarker, DEFAULT_BRAND, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
+import { bearsHerdrMarker, DEFAULT_BRAND, isReplyAuthor, markerPrefix, markerPrefixes, type Logger, type SourceAuthStatus, type WorkSource, type WorkSourceSpec } from "../core/deps.ts";
 import { isSourceUnauthenticated } from "../auth/errors.ts";
 import {
   StaleItemError,
@@ -45,6 +45,8 @@ import { classifyGone, GithubIssuesClient, labelNames, type GhComment, type GhIs
  *  onto it). The trigger (pickup) label is NOT here — it's per-belt and arrives as an argument to
  *  listEligible/transition/health. */
 export interface GithubIssuesSourceCfg {
+  /** `human_reply.authors`, lowercased; undefined ⇒ any author may answer a question (issue #123). */
+  replyAuthors?: string[];
   repo: string; // "owner/name" the issues live in
   /** What the trigger label is read off: the repo's issues (default) or its pull requests. */
   kind: "issues" | "pull_requests";
@@ -488,10 +490,14 @@ export class GithubIssuesSource implements WorkSource {
         if (Number.isFinite(cutoff) && Date.parse(c.created_at) <= cutoff) continue;
         const text = c.body ?? "";
         // INV-6: skip every herdr-authored artifact (questions AND marked notes) — but a human
-        // QUOTE-REPLY that embeds the question as `> …` blockquote lines IS a reply. NO author
-        // filtering: under gh-CLI auth the bot login IS the operator's login.
+        // QUOTE-REPLY that embeds the question as `> …` blockquote lines IS a reply. The marker, not
+        // the author, identifies our own artifacts: under gh-CLI auth the bot login IS the operator's.
         if (bearsHerdrMarker(text, this.brand)) continue;
         if (!text.trim()) continue;
+        if (!isReplyAuthor(this.cfg.replyAuthors, c.user?.login)) {
+          input.onIgnored?.({ externalId: String(c.id), author: c.user?.login ?? null });
+          continue;
+        }
         return { body: text, externalId: String(c.id), externalCreatedAt: c.created_at, author: c.user?.login ?? null };
       }
       return null;

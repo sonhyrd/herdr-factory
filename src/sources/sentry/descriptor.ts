@@ -2,7 +2,7 @@ import { z } from "zod";
 import { SentryClient } from "../../clients/sentry.ts";
 import { SentrySource, type SentrySourceCfg } from "../../clients/sentry-source.ts";
 import type { SourceDescriptor } from "../registry.ts";
-import { commonSourceFields } from "../common.ts";
+import { commonSourceFields, humanReplyField, resolveReplyAuthors } from "../common.ts";
 
 // The sentry source's where-to-poll block. Auth is a single env token (SENTRY_AUTH_TOKEN) — there is
 // NO OAuth here (Bearer token only). The eligibility filter (organization + projects + environment +
@@ -52,7 +52,7 @@ interface SentryParsed {
 export const sentryDescriptor: SourceDescriptor<SentrySourceCfg> = {
   type: "sentry",
   // No pickupLabel: sentry picks up by its config query, not a per-belt label (like local_markdown).
-  configSchema: z.object({ type: z.literal("sentry"), ...commonSourceFields, sentry: SentryBlockSchema }).strict(),
+  configSchema: z.object({ type: z.literal("sentry"), ...commonSourceFields, ...humanReplyField, sentry: SentryBlockSchema }).strict(),
   resolveConfig(parsed) {
     const b = (parsed as unknown as SentryParsed).sentry;
     return {
@@ -63,6 +63,7 @@ export const sentryDescriptor: SourceDescriptor<SentrySourceCfg> = {
       query: b.query,
       statsPeriod: b.stats_period,
       onMerge: b.on_merge,
+      replyAuthors: resolveReplyAuthors(parsed),
     };
   },
   itemUrl(cfg, key) {
