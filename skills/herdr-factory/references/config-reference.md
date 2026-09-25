@@ -107,7 +107,7 @@ belt![]                   { name! , source! , steps![] , priority=100 , active=t
                             workspace_name , match , max_bounces , default_layout , layout_matching=[] ,
                             pr , branch , agent , effects=[] }
   steps[]                 { type! , name=<type> , tab , pane , prompt_file , prompt_file_source="config" ,
-                            prompt_mode="augment" , budget_seconds , heartbeat=false , agent ,
+                            prompt_mode="augment" , budget_seconds , heartbeat=false , requires_changes , agent ,
                             consumes , produces , read_only , bounce }   # last four: custom only
   effects[]               { on! , to! , anchor , step|product|outcome! }
   pr                      { draft , title , labels[] , reviewers[] , assignees[] , automated_round_minutes }
@@ -255,6 +255,7 @@ convention itself — say it in the belt's `prompt_file`, where the repo's own r
 | `prompt_mode` | enum `augment` \| `replace` | no | **`"augment"`** | Likewise inert without a `prompt_file`. |
 | `budget_seconds` | int positive | no | the primitive's descriptor default → `limits.step_budget_seconds` | |
 | `heartbeat` | boolean | no | **false** | Enables the commit-stall guard; implies producing commits. |
+| `requires_changes` | `array(string)`, min 1, globs | no | — | `step-done` is refused (`step_done_refused`) unless `git diff --name-only <base_ref>...HEAD` touches a matching path. Any step type. |
 | `agent` | strict object | no | belt → repo → `DEFAULT_AGENT_CONFIG` | |
 | `consumes` | `array(enum["commits"])` | no | — | **`custom` only.** |
 | `produces` | `array(enum["commits"])` | no | — | **`custom` only.** |

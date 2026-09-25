@@ -107,6 +107,7 @@ Triage by symptom — each row has a full playbook in
 
 | Symptom | Most likely cause |
 |---|---|
+| `step-done` refused with `requires_changes (…)` | the step opted into `requires_changes`: commit a file matching one of the globs, then re-run the step-done |
 | a read-only step won't finish, or a run parked `dirty_tree` | the tree guard: an uncommitted edit (usually a previous step's agent prompted again after its `step-done`) — commit or revert it, then `resume` / re-run the step-done |
 | run parked `work_item_edited` | the ticket's description/acceptance criteria changed after the claim — read `.memory/herdr-factory/work-item-edits.md`, then `rework <KEY> <step>` against the new text or `resume` to ship as is |
 | nothing is claimed | server isn't ticking this repo · `config.yml` on disk no longer loads (`config invalid: …` in "needs you" / `doctor` — claims pause until it does) · belt `active: false` · at a concurrency cap · pickup label missing or already consumed · `match` rejecting it · source credentials paused · an undelivered write-back vetoing the item |

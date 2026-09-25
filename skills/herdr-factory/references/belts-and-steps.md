@@ -196,6 +196,11 @@ completed-but-violating step still parks, and a working agent that commits parks
 `step-done` un-parks and advances. If the HEAD read fails at spawn there is no baseline row and the guard
 is inert for that pass.
 
+**`requires_changes`** — an opt-in list of globs on any step. Its `step-done` is refused (exit 1,
+`step_done_refused`, naming the globs and listing what the branch changed) unless
+`git diff --name-only <base_ref>...HEAD` touches a matching path. The diff is against the base, so an
+earlier pass's file counts on a bounce pass. Only commits count.
+
 **The tree guard** (`core/tree-guard.ts`) covers the case HEAD movement cannot see — an edit nobody
 committed. For every step whose resolved posture is `read_only` (so `evidence` and a `custom`
 `read_only: true` step too):
