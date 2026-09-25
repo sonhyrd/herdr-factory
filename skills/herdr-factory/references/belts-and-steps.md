@@ -81,7 +81,7 @@ Notes that matter when composing:
   stall diagnosis wins a double-trip.
 - Escalation reason codes you will see in `status`, in the HTTP `obligations` endpoint
   (`GET /repos/<repo>/obligations?key=<KEY>`), and narrated by `explain <KEY>`: `step_budget`, `step_stalled`,
-  `read_only_violation`, `dirty_tree`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
+  `read_only_violation`, `dirty_tree`, `work_item_edited`, `evidence_upload_failed`, `layout_wait_timeout`, `capture_limit`, `capture_lock`, `bounce_limit`.
   Park texts and remediations → [troubleshooting.md](./troubleshooting.md).
 
 ---

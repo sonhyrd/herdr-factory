@@ -536,7 +536,7 @@ reverse-engineered during the bash prototype.
     switch that used to live in `step.ts`. Local-fs-only, never throws; async only because
     `instrumentObject` wraps every client method in an async telemetry proxy)
   - `postNote(key, note)` (source-native operator-facing note — a Jira/GitHub comment / local
-    marker file; used when a run parks for a WORK error (`bounce_limit`/`pr_closed` — mechanical
+    marker file; used when a run parks for a WORK error (`bounce_limit`/`pr_closed`/`work_item_edited` — mechanical
     parks report into the run's pane instead) and for the moot-question closer; **marker-tagged**,
     see below)
   - `askHuman(input)` / `pollHumanReply(input)` (the ask-human park: post a source-native
@@ -545,6 +545,10 @@ reverse-engineered during the bash prototype.
     `StaleItemError` when the item is gone, escalating the run instead of polling a nonexistent
     item forever)
   - `health()` (throws if misconfigured/unreachable — the `doctor` per-source check)
+  - `workContent?(key) → WorkContent` (OPTIONAL, `jira`/`github_issues`: the item's editable content
+    — `{updated, fields}`, fields keyed by display name: Jira's description + every other ADF
+    rich-text field, GitHub's body — for edit detection, `core/work-edits.ts`; see *Operator rework*
+    in §7. Status/label/assignee churn must never appear in `fields`)
   Every artifact a source writes to its reply channel carries the exported **marker prefix**
   (`markerPrefix(brand)` — `"[herdr-factory"` by default, `"[hf"` under `source_comments.brand: hf`),
   and reply polling drops marker-bearing comments via `bearsHerdrMarker(body, brand)` — which accepts
@@ -1490,6 +1494,32 @@ and the evidence step filmed a tree that was about to change.
   and trivially actionable.
   Every step prompt's finish protocol now requires the handoff note to open with `sha: <commit>`.
 
+#### Work item edited after the claim (`core/work-edits.ts`, issue #97)
+
+A run snapshots its work item once, at claim, and every step builds against that copy. If the ticket
+is edited later (a real run: new surfaces and a new instruction added after the PR opened), the PR
+reaches the operator missing requirements none of its steps saw. For a source that implements
+`workContent`, `materializeWork` also writes `work-content.json` next to the work doc (idempotent,
+best-effort). The forward advance into a step that is `readOnly` or `opensPr` then calls
+`parkIfWorkItemEdited`, right after `parkIfTreeDirty` and at the same seam (before any entry
+bookkeeping). It reads the content again and compares it **field by field**. `updated` is only
+informational, because labels and status bump it too. On a difference it:
+
+1. moves the work doc aside and re-runs `materialize` (it is skip-if-exists). The first claim-time
+   copy is kept as `<doc>.claimed<ext>`, and a failed refresh restores the old doc;
+2. writes the before/after of each changed field to `work-item-edits.md`;
+3. moves the baseline to the new content;
+4. parks `work_item_edited` (`ticket edited after claim: <fields>`). This is a WORK_ERROR reason, so
+   the note goes on the item.
+
+Because of step 3, `resume` re-runs the advance and passes ("ship as is"), and `rework <KEY> <step>`
+re-runs the work against the refreshed doc. `bounceStep` clears the target's `done` even when the
+target is the step the run sits on. Without that, an operator re-run of a step parked at its advance
+would advance again untouched. A failed read, or a run claimed before this existed (it takes its
+baseline at the first check), never blocks the advance. The park is `attention`, not
+`waiting_for_human`. `resume` only un-parks `attention`, and the human-park rescue would advance the
+completed step at once.
+
 #### Gate receipts (`core/gate-receipts.ts`) and the per-step timing export
 
 A belt re-derives the same fact once per step unless something records it. On the run this came from
@@ -1916,7 +1946,7 @@ metadata so the pane's real label, which a step's `pane:` target resolves by, is
 watchdog and plumbing code (budgets, stalls, layout waits, capture caps, poll failures, config
 drift, plugin guards) — is reported into the run's own agent pane (`reportToPane`, a framed
 `agentSend`; a ticket comment about factory plumbing is noise to whoever reads the ticket), while an
-error about the *designated work itself* (`bounce_limit`, `pr_closed`) is **posted on the work item**
+error about the *designated work itself* (`bounce_limit`, `pr_closed`, `work_item_edited`) is **posted on the work item**
 (`postNote` — including the ready-made `resume` and `triage` commands) — except on a source whose
 `spec.replyChannel` is `"file"` (local_markdown: its notes are hidden files nobody watches), where it
 goes to the pane too. While

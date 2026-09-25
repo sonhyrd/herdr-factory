@@ -144,6 +144,8 @@ Other writes: notes are comments prefixed `[herdr-factory] `; ask-human posts a 
 
 `ticket.json` is the idempotency guard, so a failed fetch (`<key>: could not save ticket.json`) simply retries next tick.
 
+- `.memory/herdr-factory/work-content.json` — edit detection's baseline: the description and every other rich-text field (acceptance criteria), by display name, plus `updated` (`GET …/issue/<key>?fields=*all&expand=names`). If it differs before a read-only or PR-opening step, the run parks `work_item_edited`: `ticket.json` is refreshed, the claim-time copy is kept as `ticket.claimed.json`, and `work-item-edits.md` holds the before/after ([troubleshooting.md](./troubleshooting.md)).
+
 ### Polling and rate limits
 
 One token bucket per client: 5 req/s sustained, burst 10, shared by every Jira call. 30 s timeout for JSON, 120 s for media. Reads retry 3×; writes retry once (a timed-out write may have landed). A claim costs roughly 5 calls; parked runs additionally poll comments. Raise `poll_interval_seconds` (300 is a good board-friendly value) to spare the board.
@@ -275,6 +277,8 @@ Human loop: notes are `[herdr-factory] <note>` comments; ask-human's first line 
 - `.memory/herdr-factory/task.md` (the idempotency guard, and `@@WORK_DOC@@`): `# Issue #<n>: <title>` (`# Pull request #<n>: …` under `kind: pull_requests`), then bullets `URL`, `Repo`, `Author`, `State`, `Labels`, and **`Closing reference: Fixes #<n>`** (or `Fixes owner/name#<n>` cross-repo — the shipped pr prompt requires the agent to copy this line into the PR body verbatim), then `## Description`, then one `## Comment by <login> (<date>)` per non-herdr comment.
 - `.memory/herdr-factory/issue.json` — raw `{issue, comments}`.
 - `.memory/herdr-factory/attachments/attachment-<k><ext>` — media downloaded and the markdown links rewritten to point at them. Caps: 12 attachments, 50 MB each. Both issue and comments are fetched as `full+json` because only the HTML body carries the signed URLs that resolve on private repos (and those signatures expire in minutes). Only these hosts are downloaded from: `private-user-images.githubusercontent.com`, `user-images.githubusercontent.com`, `camo.githubusercontent.com`, and `github.com/user-attachments/…`, https only — anything else is left as a link, with a footnote `> note: N attachment(s) could not be downloaded — follow the original links above.`
+
+- `.memory/herdr-factory/work-content.json` — edit detection's baseline (the body + `updated_at`). A changed body parks the run `work_item_edited` before a read-only or PR-opening step: `task.md` is refreshed, the claim-time copy is kept as `task.claimed.md`, and `work-item-edits.md` holds the before/after. A label change is not an edit.
 
 Titles, bodies and comments are sanitized (HTML comments and control/invisible/bidi characters stripped); the untouched payload stays in `issue.json`. If the issue fetch fails, `task.md` is **not** written (`<key>: could not fetch the issue for materialize: <msg>`) so the next tick retries.
 
