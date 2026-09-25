@@ -186,7 +186,8 @@ function prJson(pr, fields) {
     headRefName: pr.headRefName ?? "",
     headRefOid: pr.headRefOid ?? "",
     baseRefName: pr.base ?? "main",
-    mergeable: pr.state === "OPEN" ? "MERGEABLE" : "UNKNOWN",
+    mergeable: pr.mergeable ?? (pr.state === "OPEN" ? "MERGEABLE" : "UNKNOWN"),
+    mergeStateStatus: pr.mergeStateStatus ?? (pr.state === "OPEN" ? "CLEAN" : "UNKNOWN"),
     labels: (pr.labels ?? []).map((n) => ({ name: n })),
     statusCheckRollup: rollupJson(pr),
     reviewDecision: "",
@@ -242,6 +243,10 @@ function prGraphql(pr) {
     isDraft: !!pr.isDraft,
     title: pr.title ?? "",
     headRefOid: pr.headRefOid ?? "",
+    mergeable: pr.mergeable ?? (pr.state === "OPEN" ? "MERGEABLE" : "UNKNOWN"),
+    mergeStateStatus: pr.mergeStateStatus ?? (pr.state === "OPEN" ? "CLEAN" : "UNKNOWN"),
+    // null = no classic protection rule on the base (or no permission to read it), as on GitHub.
+    baseRef: { branchProtectionRule: pr.strictBase ? { requiresStrictStatusChecks: true } : null },
     reviewThreads: threadsGraphql(pr),
     commits: { nodes: [{ commit: { statusCheckRollup: rollupGraphql(pr) } }] },
   };

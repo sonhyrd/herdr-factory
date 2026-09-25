@@ -87,8 +87,9 @@ scenario(
     w.gh.resolveAllThreads(pr);
     await w.waitFor(() => w.db.run(key)?.resolver_active === 0, { label: "the resolver goes idle and releases its slot", timeoutMs: 120_000 });
 
-    // Green again after a non-green patch is a NEW green: told once more, not four times.
-    await w.waitFor(() => ready().length === 2, { label: "the second green notifies again (once)", timeoutMs: 120_000 });
+    // Green again on the SAME head is not news (issue #114): the operator was already told about it.
+    for (let i = 0; i < 4; i++) await w.tick();
+    expect(ready().length, "a non-green patch on the same head does not re-notify").toBe(1);
     expect(w.gh.pr(pr)?.state, "still not merged by the factory").toBe("OPEN");
 
     // ── a push is a new green ─────────────────────────────────────────────────────────────────
@@ -96,9 +97,9 @@ scenario(
     // and failing and pending all stay 0. Only the head commit changes. The operator must still be
     // told, because the thing they were told about is no longer what would be merged.
     w.gh.push(pr);
-    await w.waitFor(() => ready().length === 3, { label: "a new head commit is a new green", timeoutMs: 120_000 });
-    await w.waitFor(() => w.db.events(key).filter((e) => e.type === "pr_green").length === 3, { label: "…and it is recorded", timeoutMs: 30_000 });
-    expect(ready().length, "still one per green head, not one per tick").toBe(3);
+    await w.waitFor(() => ready().length === 2, { label: "a new head commit is a new green", timeoutMs: 120_000 });
+    await w.waitFor(() => w.db.events(key).filter((e) => e.type === "pr_green").length === 2, { label: "…and it is recorded", timeoutMs: 30_000 });
+    expect(ready().length, "still one per green head, not one per tick").toBe(2);
     expect(w.gh.pr(pr)?.state, "and STILL not merged by the factory").toBe("OPEN");
 
     // ── merged ────────────────────────────────────────────────────────────────────────────────

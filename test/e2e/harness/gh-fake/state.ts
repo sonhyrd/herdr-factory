@@ -39,6 +39,11 @@ export interface GhPr {
   /** The head commit SHA. The ready-to-merge watch keys its "already notified" mark on it, so a
    *  `push()` is a new green even here, where the fake repo has no checks at all. */
   headRefOid?: string;
+  /** GitHub's `mergeable` / `mergeStateStatus`. Absent ⇒ MERGEABLE / CLEAN while OPEN. */
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  mergeStateStatus?: string;
+  /** The base branch's protection requires up-to-date branches (`requiresStrictStatusChecks`). */
+  strictBase?: boolean;
   title: string;
   body: string;
   base: string;
@@ -156,6 +161,11 @@ export class GhFake {
     const next = oid ?? `sha${Date.now().toString(36)}`;
     this.patch((s) => void (this.must(s, n).headRefOid = next));
     return next;
+  }
+
+  /** Set what GitHub reports about merging the PR into its base (a conflict, BEHIND, a strict base). */
+  setMergeState(n: number, m: Pick<GhPr, "mergeable" | "mergeStateStatus" | "strictBase">): void {
+    this.patch((s) => void Object.assign(this.must(s, n), m));
   }
 
   markReady(n: number): void {

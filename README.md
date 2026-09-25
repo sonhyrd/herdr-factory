@@ -427,17 +427,20 @@ review }, { type: pr }]` — the engine ships each primitive's prompt:
 
 The run then enters the **reviewing watch**: one batched GitHub GraphQL query per tick covers
 every watched PR, and whenever the review signature changes — new unresolved threads, newly
-failing checks — a resolver agent is woken in the worktree to address them. The watch has **no time
+failing checks, or a **merge conflict** with the base (or a PR `BEHIND` a base that requires
+up-to-date branches) — a resolver agent is woken in the worktree to address them; for a conflict it
+merges the base in and pushes, and the new head goes back through the gates. The watch has **no time
 limit** — it rides until the PR merges or closes, however long review takes — and it holds a
 [`max_active_workspaces`](#limits-all-optional) slot **only while a resolver is actively working**,
 so an idle PR-in-review never starves the belt of new claims. When the PR goes **green and
-mergeable** — open, not a draft, no unresolved review threads, and every check *concluded*
-successfully (a check still running is not green) — you get **one desktop notification** naming the
+mergeable** — open, not a draft, no unresolved review threads, every check *concluded*
+successfully (a check still running is not green), and no conflict with the base (a `BEHIND` PR
+counts as green unless the base requires up-to-date branches) — you get **one desktop notification** naming the
 ticket, the PR, the repo and the URL, so you can merge from your phone instead of discovering it an
 hour later. It is a notification only: **the factory never merges** — you are the merge gate. Once
-per green **head commit**, not once per tick: a PR that goes red and green again is a new green, and
-so is a PR that gains a new commit — even on a repo with no CI at all, where nothing else about the
-PR would change. **Green needs evidence at the head, too.** The PR watch compares the commit the
+per green **head commit**, not once per tick: a PR that goes red and green again on the same head is
+not news, while a PR that gains a new commit that is green is — even on a repo with no CI at all,
+where nothing else about the PR would change. **Green needs evidence at the head, too.** The PR watch compares the commit the
 belt's read-only gates (evidence, review, and any read-only step between them) judged with the PR's
 head. When a push — a resolver fixing a review thread, the `pr` step fixing CI — changes **code**
 since then, the run goes back through those gates and the `pr` step against the new head (once the

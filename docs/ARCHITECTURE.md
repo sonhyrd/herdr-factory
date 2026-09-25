@@ -691,7 +691,9 @@ reverse-engineered during the bash prototype.
 - **`github.ts`** (`gh` via execFile) — `prForBranch(repo, branch)` (first-sighting discovery
   only), `prByNumber(repo, n)` (the durable identity once adopted — survives head-branch deletion
   on merge; both it and the batched query carry `headRefOid`, which the ready-to-merge watch keys
-  its once-per-green mark on), `reviewSignature(repo, n) → {unresolved, failing, pending, sig}` (graphql review threads +
+  its once-per-head mark on, and `mergeable` / `mergeStateStatus`; the batched query also reads the
+  base's `branchProtectionRule.requiresStrictStatusChecks` as `strictBase` — null, i.e. no classic
+  rule or no permission to read it, is non-strict), `reviewSignature(repo, n) → {unresolved, failing, pending, sig}` (graphql review threads +
   `statusCheckRollup`; `pending` counts checks that have NOT concluded — a CheckRun with a null
   conclusion, a PENDING/EXPECTED StatusContext — and is deliberately **outside** the hash, so a
   check merely finishing is not a new review round for the resolver), and **`prSnapshots(repo, numbers[]) → Map<number, PrSnapshot>`** — one
@@ -882,8 +884,9 @@ CREATE TABLE watch_state(                -- per-watch clocks/signatures (v34): o
   meta TEXT NOT NULL DEFAULT '{}',       -- GuardSpec.rebaseOn); heartbeat: sig/based_at = last-seen
   updated_at INTEGER NOT NULL,           -- HEAD + when; read_only: sig = the baseline, based_at =
   PRIMARY KEY (run_id, step, watch));    -- the freeze marker; pr_green (step 'pull_request'):
-                                         -- sig = the head commit the operator was told about (cleared
-                                         -- when the PR stops being green; a different head is a new
+                                         -- sig = the head that is green now (cleared when it stops
+                                         -- being green), meta.toldHead = the head the operator was told
+                                         -- about (kept across a flicker; a new head is a new
                                          -- green). A plugin watch stores state without a
                                          -- migration. Re-bases WRITE NULL ROWS, never delete — the
                                          -- legacy run_steps-column fallback (one release) must not
@@ -1335,7 +1338,8 @@ the adopted PR) — it tears the run down with outcome `merged`.
 **Ready-to-merge notification (the factory never merges).** Every `reviewing` pass evaluates the
 PR's *green* predicate on the signature it already has — open, not a draft, `unresolved === 0`,
 `failing === 0` **and `pending === 0`** ("not failing" is true the instant CI starts; green means
-every check CONCLUDED) — **and the PR-opening step finished**: `enterReviewing` hands off the moment
+every check CONCLUDED), mergeable (`mergeable` not `CONFLICTING` or still `UNKNOWN`, and not
+`BEHIND` a `strictBase`) — **and the PR-opening step finished**: `enterReviewing` hands off the moment
 a review-ready PR is adopted, *before* `step-done`, so that agent may still be polling CI and may
 still push. While its `run_steps` row exists and is not `done` the PR is treated as not green (any
 existing mark is cleared), so the first tick after its `step-done` is the one that notifies — and a
@@ -1345,19 +1349,30 @@ has no row and keeps the unconditional behaviour. Because the run's active step 
 "must name the active step" identity check. On the first pass that sees it green, notify once through the
 same `deps.herdr.notify` path as attention/auth escalations, with the key, PR title, repo and URL.
 It is a notification *only*: nothing in the engine merges, and `gh pr merge` appears nowhere in the
-codebase. The episode state is one row in `watch_state` (run, `'pull_request'`, `'pr_green'`) whose
-`sig` is the "told them" mark — **the PR's head commit SHA**. Two things end an episode, and both
-must, because either alone is inert on some real repo: the PR stops being green (mark cleared), or
-the **head commit changes** — a push is a new green even where there is no CI, and the rollup
-therefore never moves. Between them it is once per green head, never once per tick, and red → green
-→ red → green is two notifications, not four. No duration is reported: the watch fires on the first
+codebase. The episode state is one row in `watch_state` (run, `'pull_request'`, `'pr_green'`):
+`sig` is the head that is green *now* (cleared when it stops being green — the dashboard's `prGreen`
+reads it) and `meta` (`{"toldHead": <sha>}`) is the "told them" mark — **the head commit SHA the operator was notified
+about** (issue #114). A red flicker clears `sig` but keeps `meta`, so the same head never notifies
+twice; only a **new head** that is green is news — a push is a new green even where there is no CI
+and the rollup never moves. A lookup with no head SHA marks `"green"` and degrades to once per
+green episode (that mark alone is cleared on not-green). A row written before `meta` carried the
+mark (its `meta` is the column default `{}`) is read from `sig`.
+
+**A conflicted PR wakes the resolver.** `baseMergeNeeded` is `conflicting` for `mergeable ===
+CONFLICTING`, `behind` for `mergeStateStatus === BEHIND` on a `strictBase`, else null — a BEHIND
+PR on a non-strict base is left alone, so PRs don't churn every time main moves. A non-null value
+makes the round actionable, and the round signature (`lastThreadSig`) becomes
+`<sig>:<conflicting|behind>:<head>`, so the resolver wakes once per conflicted head; its prompt
+tells it to merge the base (never rebase, never force-push, never merge the PR). The merge commit is
+a code change past the evidence head, so the stale-evidence rule sends the run back through the
+gates. Merging stays with the operator (decision 0005). No duration is reported: the watch fires on the first
 tick that sees green, so any "green for …" would be zero or invented. The check costs nothing extra:
 it rides the batched snapshot the watch already fetches (`headRefOid` is one more field on a query
 that was already being made). **Accepted edge:** on a repo that *does* run CI, GitHub can report a
 pushed commit for a few seconds before its check runs exist — an empty rollup reads as green, so a
 tick landing in that window pings early. Waiting a tick to confirm would break the "within a tick of
-the rollup going green" requirement for every normal case; the mis-timed ping self-corrects when the
-next tick sees the checks pending.
+the rollup going green" requirement for every normal case; since that head is then marked told, the
+real green on it stays quiet.
 
 **Evidence belongs to a head (`core/evidence-head.ts`, issue #84).** CI green alone is not "ready":
 the belt's evidence and review judged one commit, and anything pushed during the watch (a resolver's

@@ -23,6 +23,7 @@ gh.write(initialGhState({ repo: "acme/widget", login: "factory-bot" }));   // be
 const pr = gh.prForBranch("factory/KEY-1")!;
 gh.markReady(pr.number);                     // draft → ready-for-review (releases the handoff gate)
 gh.setChecks(pr.number, [{ name: "ci", conclusion: "SUCCESS" }]);
+gh.setMergeState(pr.number, { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }); // or BEHIND (+ strictBase: true)
 gh.push(pr.number);                          // the head moves to a new commit (a new green)
 gh.merge(pr.number);                         // OPEN → MERGED
 expect(gh.graphqlCallCount()).toBeLessThanOrEqual(ticks);   // ≤1 batched query per tick

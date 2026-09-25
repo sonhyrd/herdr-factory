@@ -96,11 +96,16 @@ export class GitHubClient {
   /** Look up a PR by number — the durable identity once a run has adopted one. Unlike `--head`,
    *  this keeps resolving after the head branch is deleted (e.g. GitHub auto-delete-on-merge). */
   async prByNumber(repo: string, prNumber: number): Promise<PrInfo | null> {
-    const pr = await this.runJson<{ number: number; state: string; url: string; isDraft: boolean; title?: string; headRefOid?: string }>(
-      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft,title,headRefOid"],
+    type Row = { number: number; state: string; url: string; isDraft: boolean; title?: string; headRefOid?: string; mergeable?: string; mergeStateStatus?: string };
+    const pr = await this.runJson<Row>(
+      ["pr", "view", String(prNumber), "--repo", repo, "--json", "number,state,url,isDraft,title,headRefOid,mergeable,mergeStateStatus"],
       { allowFail: true },
     ).catch(() => null);
-    return pr && pr.number ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft, title: pr.title, headOid: pr.headRefOid } : null;
+    // No strictBase here: `gh pr view` can't see branch protection, so a BEHIND PR on this fallback
+    // path reads as non-strict (notify normally) — the batched prSnapshots path carries it.
+    return pr && pr.number
+      ? { number: pr.number, state: pr.state as PrState, url: pr.url, isDraft: !!pr.isDraft, title: pr.title, headOid: pr.headRefOid, mergeable: pr.mergeable, mergeStateStatus: pr.mergeStateStatus }
+      : null;
   }
 
   /**
@@ -122,7 +127,8 @@ export class GitHubClient {
       const fields = chunk
         .map(
           (n) =>
-            `pr${n}: pullRequest(number: ${n}) { number state url isDraft title headRefOid ` +
+            `pr${n}: pullRequest(number: ${n}) { number state url isDraft title headRefOid mergeable mergeStateStatus ` +
+            `baseRef { branchProtectionRule { requiresStrictStatusChecks } } ` +
             `reviewThreads(first: 100) { nodes { isResolved comments(last: 1) { nodes { id } } } } ` +
             `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ` +
             `__typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } } }`,
@@ -136,6 +142,9 @@ export class GitHubClient {
         isDraft?: boolean;
         title?: string;
         headRefOid?: string;
+        mergeable?: string;
+        mergeStateStatus?: string;
+        baseRef?: { branchProtectionRule?: { requiresStrictStatusChecks?: boolean } | null } | null;
         reviewThreads?: { nodes?: { isResolved: boolean; comments?: { nodes?: { id: string }[] } }[] };
         commits?: {
           nodes?: {
@@ -165,6 +174,11 @@ export class GitHubClient {
           isDraft: !!pr.isDraft,
           title: pr.title,
           headOid: pr.headRefOid,
+          mergeable: pr.mergeable,
+          mergeStateStatus: pr.mergeStateStatus,
+          // null when there is no classic protection rule OR the token can't read it — both read as
+          // non-strict, the safe side (a BEHIND PR notifies instead of churning on every main push).
+          strictBase: pr.baseRef?.branchProtectionRule?.requiresStrictStatusChecks === true,
           sig: { unresolved: unresolvedIds.length, failing: failing.length, pending, sig },
         });
       }
