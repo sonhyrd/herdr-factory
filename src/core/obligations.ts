@@ -147,11 +147,12 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
   });
 
   // The proactive idle nudge's episode (watch_state row, not a declared guard — it never parks).
-  // `sig` is set only once the nudge has actually been sent, so its row-updated time IS the nudge.
+  // `sig` is set only once a nudge has actually been sent; `meta.at` is when the latest one went out
+  // (a row predating it falls back to the row-updated time).
   const nudgeRow = watched ? deps.store.getWatchState(run.id, watched.name, "idle_nudge") : undefined;
   const idleNudge =
     nudgeRow && (nudgeRow.basedAt != null || nudgeRow.sig != null)
-      ? { idleSince: nudgeRow.basedAt, nudgedAt: nudgeRow.sig != null ? nudgeRow.updatedAt : null }
+      ? { idleSince: nudgeRow.basedAt, nudgedAt: nudgeRow.sig != null ? (nudgeAt(nudgeRow.meta) ?? nudgeRow.updatedAt) : null }
       : null;
 
   const maxBounces = belt?.maxBounces ?? deps.config.limits.maxBounces;
@@ -182,4 +183,13 @@ export function runObligations(deps: Deps, run: Run): RunObligations {
     watches: { step: watched?.name ?? null, guards, engine, bounceCaps, idleNudge },
     evidence: readEvidenceHead(deps.store.getWatchState(run.id, EVIDENCE_WATCH.step, EVIDENCE_WATCH.watch)),
   };
+}
+
+function nudgeAt(meta: string | null | undefined): number | null {
+  try {
+    const at = (JSON.parse(meta || "{}") as { at?: unknown }).at;
+    return typeof at === "number" ? at : null;
+  } catch {
+    return null;
+  }
 }

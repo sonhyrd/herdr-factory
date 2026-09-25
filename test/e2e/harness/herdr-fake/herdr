@@ -1093,6 +1093,20 @@ function handleAgent(argv) {
     }
   }
 
+  if (verb === "send-keys") {
+    // Only `enter` means anything to a line-oriented harness: it submits whatever is typed (here, an
+    // empty line — the scripted agent ignores it, as a real one ignores Enter on an empty input).
+    const target = argv[2] ?? "";
+    const pane = liveAgentPanes(s).find((p) => p.pane_id === target || p.agent.name === target);
+    if (!pane) return fail(`agent_not_found: ${target}`);
+    for (const key of argv.slice(3)) {
+      if (key.toLowerCase() !== "enter") continue;
+      const problem = deliver(pane.pane_id, "");
+      if (problem) return fail(`agent_send_keys_undeliverable: ${problem}`);
+    }
+    return ok({ type: "agent_send_keys", pane_id: pane.pane_id });
+  }
+
   if (verb === "focus") {
     const target = argv[2] ?? "";
     const pane = Object.values(s.panes).find((p) => p.pane_id === target || (p.agent && p.agent.name === target));

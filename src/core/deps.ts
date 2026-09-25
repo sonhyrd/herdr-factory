@@ -115,6 +115,11 @@ export interface HerdrApi {
    *  flips (cursor-agent reports `idle` while it works), and returns false only when the pane showed
    *  no sign of the submission at all — the prompt never landed. */
   agentSend(paneId: string, text: string, opts?: { confirm?: boolean }): Promise<boolean>;
+  /** herdr's per-pane `revision` (bumped on every screen change), or null when unknown. Optional:
+   *  absent ⇒ an `unknown`-status pane can never be proven quiet, so the idle nudge leaves it alone. */
+  paneRevision?(paneId: string, opts?: LivenessOpts): Promise<number | null>;
+  /** Press keys in an agent's pane (`["enter"]`). Optional: absent ⇒ no follow-up Enter is sent. */
+  agentSendKeys?(paneId: string, keys: string[]): Promise<void>;
   agentFocus(paneId: string): Promise<void>;
   focusedPane(): Promise<FocusedPane | null>;
   /** Publish display-only run state on a pane (never renames it) — see core/pane-display.ts. */

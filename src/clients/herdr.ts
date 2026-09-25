@@ -573,11 +573,17 @@ export class HerdrClient {
   }
 
   /** herdr's `revision` for a pane — a counter it bumps every time the pane's terminal content
-   *  changes — read FRESH (never the agents memo, whose whole point is to be a few seconds stale).
+   *  changes. FRESH by default (the dispatch probe must not read the agents memo, whose whole point is
+   *  to be a few seconds stale); the per-tick idle nudge passes `fresh: false` to ride the memo.
    *  null when the pane is gone, herdr is unreachable, or this herdr doesn't report the field. */
-  private async paneRevision(paneId: string): Promise<number | null> {
-    const agents = await this.agents({ fresh: true }).catch(() => [] as Agent[]);
+  async paneRevision(paneId: string, opts: LivenessOpts = { fresh: true }): Promise<number | null> {
+    const agents = await this.agents(opts).catch(() => [] as Agent[]);
     return agents.find((a) => a.paneId === paneId)?.revision ?? null;
+  }
+
+  /** Press keys in an agent's pane (`agent send-keys`, e.g. `["enter"]`). Best-effort. */
+  async agentSendKeys(paneId: string, keys: string[]): Promise<void> {
+    await run(this.bin, ["agent", "send-keys", paneId, ...keys], { allowFail: true });
   }
 
   /** Did the pane visibly react to a submission whose handshake stalled?

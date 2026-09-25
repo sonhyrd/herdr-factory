@@ -115,7 +115,8 @@ export function followEventExtra(type: string, detail: string | null): string {
     }
     case "idle_nudge": {
       const step = str(d, "step");
-      return `${step ?? "?"}${d.nudged === false ? " (not confirmed)" : ""}`;
+      const nth = num(d, "nth");
+      return `${step ?? "?"}${nth === 2 ? " (2nd, with step-done)" : ""}${d.nudged === false ? " (not confirmed)" : ""}`;
     }
     case "resolver_woken": {
       const unresolved = num(d, "unresolved");

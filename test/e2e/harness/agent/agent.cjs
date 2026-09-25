@@ -228,7 +228,15 @@ function handle(text) {
     if (b.hangMs === "forever") {
       for (;;) sleep(60_000);
     }
-    sleep(Number(b.hangMs));
+    if (b.chatterMs) {
+      // Busy with output the whole hang: the pane's revision keeps moving even when no status is
+      // reported (HF_AGENT_SILENT) — the only sign of life an `unknown` pane gives.
+      const end = Date.now() + Number(b.hangMs);
+      while (Date.now() < end) {
+        process.stdout.write(".");
+        sleep(Number(b.chatterMs));
+      }
+    } else sleep(Number(b.hangMs));
     setState(b.status || "idle");
     return; // never signals: the run must be rescued by a watchdog / resume / human
   }
