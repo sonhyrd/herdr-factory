@@ -54,6 +54,7 @@ this command needs a repo: herdr-factory --repo <name> <command>
 | Is the install healthy? | `herdr-factory doctor`, then `herdr-factory --repo <r> doctor --deep` |
 | What's in flight right now? | `herdr-factory --repo <r> status` (add `runs --all` for history) |
 | What's in flight on **every machine**? | `herdr-factory fleet` (`--json` to script it) — this machine plus every enabled `herdr machine list` entry |
+| What needs me, fleet-wide? / a tab-bar count | `herdr-factory needs-you` (the dashboard's needs-you items) / `needs-you --line` (`hf: N need you`) |
 | Why is *this* run stuck? | `herdr-factory --repo <r> explain <KEY>` (the narrative), then `--repo <r> timeline <KEY>` and `--repo <r> logs 200`; raw JSON: `curl -s 127.0.0.1:8765/repos/<r>/obligations?key=<KEY>` (§10) |
 | Hand the diagnosis to an agent | `herdr-factory --repo <r> triage <KEY>` — launches the operator's agent CLI pre-briefed (`--print` to just emit the briefing) |
 | What happened to this item? | `herdr-factory --repo <r> timeline <KEY>` |
@@ -90,6 +91,7 @@ this command needs a repo: herdr-factory --repo <name> <command>
 | `auth status` | yes | in-process (env only, **no network**) | one line per source; presence of each source's declared secrets |
 | `doctor [--deep]` | optional (adds a repo group, **and** the config-driven agent-tooling rows in `you provide`) | in-process; `--deep` adds network | grouped `✓ / ⚠ / ✗` checks + one `Next:` hint. `process.exitCode = 1` iff any `✗`; `⚠` never fails it |
 | `fleet [--json] [--timeout <ms>]` | **no** (a `--repo` narrows it to that repo) | HTTP to every machine's `/health` + `/repos/*/status`, in parallel | a line per machine then the run table (§6 anatomy). `--json` = the whole snapshot. Never non-zero for an unreachable machine — that is reported, not raised |
+| `needs-you [--line]` | **no** | the fleet's quick status read only (no eligible fold-in); 4 s per machine, 8 s hard ceiling | the dashboard's needs-you items, one per line; `--line` = `hf: N need you` (N = the dashboard's `needs you · N`; an unverifiable remote counts as one item). **Prints nothing, exit 0** when N is 0, the local server is down, or the read fails. For Herdr's `tab_bar_right` command entry |
 
 Notes:
 - `runs`/`status` pad columns with `padEnd` and never truncate them — long keys just push columns right (`status`'s trailing summary is the one exception: it is cut at 50 chars). Parse by splitting on whitespace, not fixed offsets.

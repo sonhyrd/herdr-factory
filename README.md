@@ -855,6 +855,7 @@ few settings that describe the **host's herdr** rather than any repo (`layout_ho
 max_active_workspaces: 2   # worked runs across ALL repos on this host (same count as the per-repo cap)
 min_free_memory_mb: 4096   # don't claim while available memory is below this
 host_alias: contabo        # what this host calls itself in the claim ledger (instead of its hostname)
+notify_needs_you: true     # announce fleet-wide "needs you" arrivals from THIS machine (the one you sit at)
 layout_hook:
   ignore_pane_labels: [Sidebar]   # panes a herdr PLUGIN adds — not "this workspace is arranged"
 ```
@@ -864,6 +865,7 @@ layout_hook:
 | `max_active_workspaces` | unset (no machine cap) | ceiling on **worked** runs across every repo this host serves; parked + idle PR-watch runs hold no slot. Checked before each repo's claims under a machine-wide lock; a manual `claim` honours it too |
 | `min_free_memory_mb` | unset (no memory gate) | skip claiming while available memory is below it — Linux `MemAvailable`, macOS `vm_stat` free + inactive + speculative pages, `os.freemem()` elsewhere |
 | `host_alias` | unset (`os.hostname()`) | what this host calls itself in the [claim ledger](#several-factories-on-one-source-claim_guard) — so a public tracker shows `contabo`, not the machine's real name. Letters, digits, `.`, `_`, `-`. A source's `claim_guard.host` still wins over it. Ledger lines this host wrote under its hostname **before** the alias was set are still recognised as its own, so renaming a live host never makes it fence itself |
+| `notify_needs_you` | unset (off) | send a `herdr notification show` when an item **enters** the fleet's [needs-you](#needs-you--the-dashboards-needs-you-outside-the-dashboard) set — see there. Turn it on only on the machine you sit at: the watch is fleet-wide, so every host that enables it announces the same item |
 | `layout_hook.ignore_pane_labels` | `[Sidebar]` | pane labels the layout hook's freshness gate ignores. A herdr plugin that adds its own pane to every new tab (`herdr-sidebar`'s `Sidebar`) makes every brand-new workspace 2 panes, which would decline **every** layout build on that host; panes bearing these labels don't count. Matched case-insensitively. Set it to the labels your plugins use, or `[]` to ignore none. A pane the **user** opened still declines the build |
 
 Both gates only stop **new** claims — running work is never parked, killed, or torn down. The factory logs
@@ -1739,6 +1741,7 @@ herdr-factory skill install [--into <dir>] [--copy|--symlink] [--force]  # insta
 
 # the whole fleet — every run on every machine (no --repo; pass one to narrow it)
 herdr-factory fleet [--json] [--timeout <ms>]
+herdr-factory needs-you [--line]   # the dashboard's "needs you" items, fleet-wide; --line for Herdr's tab bar
 
 # the machine-wide server + supervisor (no --repo)
 herdr-factory serve | ensure-up [--restart] | restart | reload | update | provision-node
@@ -1873,6 +1876,41 @@ plus the flattened run list — which is the shape to script against.
 
 The [TUI](#the-tui) reads the same fleet: the dashboard shows every machine's board, and its keys
 act on the machine that owns the run.
+
+### `needs-you` — the dashboard's needs-you, outside the dashboard
+
+The dashboard's **needs you** section is the operator's to-do list, but it is only visible while the
+dashboard is open. Two things carry it elsewhere:
+
+- **`herdr-factory needs-you --line`** prints `hf: N need you`, where N is exactly the dashboard's
+  `needs you · N` for the same fleet (this machine plus every enabled saved machine — the set `fleet`
+  reads). It prints **nothing** (exit 0) when N is 0, when this machine's server is down, and when the
+  count can't be read: a stale or wrong number must never sit in the tab bar. An unreachable remote does
+  not block it — it counts as the board counts it (one `unverifiable` item) and the rest are read. Only
+  the quick status read is made, never the slow eligible-items fold-in; each machine gets 4 s and the
+  command a hard 8 s ceiling. Without `--line` it prints the items themselves, one per line. Wire it
+  into Herdr's tab bar as a `tab_bar_right` command entry:
+
+  ```toml
+  [ui]
+  tab_bar_right = [
+    { type = "command", command = "herdr-factory needs-you --line", interval_seconds = 60, timeout_seconds = 10 },
+  ]
+  ```
+
+  then `herdr server reload-config`.
+
+- **A notification when something newly needs you.** With `notify_needs_you: true` in
+  [`machine.yml`](#machine-limits--machineyml-host-local-optional), the server reads the fleet's
+  needs-you set every 30 s and, for each item that **entered** it, calls
+  `herdr notification show "<repo> <key>" --body "<reason> · on <machine>"` once — `parked — <why>`,
+  `waiting for a human reply`, `PR #N is green — ready to merge`, a config that stopped loading. No
+  repeat while it stays; a new one only if it leaves and comes back. An item is its machine, repo and
+  run, so a parked run that also goes green is still one item. A machine that stopped answering is not
+  announced, and its items are not treated as having left (so they are not re-announced when it
+  answers again). What was announced is kept in `<stateRoot>/needs-you-notified.json`, so a restart
+  does not re-announce everything already waiting. A headless herdr answers `{"shown": false,
+  "reason": "disabled"}` — that counts as sent. Opt in only on the machine you sit at.
 
 ## The TUI
 
@@ -2072,6 +2110,7 @@ harness with no skill mechanism can be pointed at the folder directly.
                                  update-status.json (last auto-update outcome — surfaced in doctor/TUI)
                                  checkout-sync.json (last main-checkout fast-forward per repo — ditto)
                                  fleet-last-seen.json (when each fleet machine last answered)
+                                 needs-you-notified.json (needs-you items already announced — notify_needs_you)
                                  fleet-ssh/ (ControlMaster sockets — only when this path fits a Unix
                                  socket's 104 bytes; otherwise /tmp/hf-<uid>/, mode 0700)
                                  logs/ (supervisor + server) · <repo>/logs/<date>.log (per-repo)

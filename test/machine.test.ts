@@ -55,6 +55,15 @@ describe("machine.yml", () => {
     expect(machineHostAlias()).toBeUndefined(); // tolerant: a broken machine.yml fails in doctor, not every config load
   });
 
+  it("notify_needs_you opts this host into fleet-wide needs-you notifications (issue #130)", () => {
+    configDir();
+    expect(loadMachineConfig().notifyNeedsYou).toBeUndefined();
+    writeFileSync(machineConfigPath(), "notify_needs_you: true\n");
+    expect(loadMachineConfig().notifyNeedsYou).toBe(true);
+    writeFileSync(machineConfigPath(), "notify_needs_you: yes please\n");
+    expect(() => loadMachineConfig()).toThrow(/notify_needs_you/);
+  });
+
   it("rejects unknown keys and bad values with a readable error", () => {
     configDir();
     writeFileSync(machineConfigPath(), "max_active_workspace: 2\n");

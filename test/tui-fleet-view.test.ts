@@ -21,6 +21,8 @@ import {
   isIdleRepo,
   machineHeader,
   needsYou,
+  needsYouLine,
+  quickView,
   sharedProblems,
   shortProblem,
   staleRunLine,
@@ -406,5 +408,42 @@ describe("what the board leads with", () => {
   it("collapsed rows on a silent machine read as unverified, never as idle", () => {
     expect(idleLine(["a", "b"], false)).toBe("  idle · a · b");
     expect(idleLine(["a", "b"], true)).toBe("  unverified · a · b");
+  });
+});
+
+describe("needs-you --line", () => {
+  const parked = (key: string) => activeRun({ ticketKey: key, phase: "attention", attentionReason: "budget exhausted" });
+
+  it("counts exactly what the dashboard's section counts, across the fleet", async () => {
+    const here = await fakeMachine({ name: "local", local: true, repos: { app: repoStatus("app", [parked("HF-1"), activeRun({ id: 2, ticketKey: "HF-2" })]) } });
+    const there = await fakeMachine({ name: "build-box", repos: { api: repoStatus("api", [activeRun({ id: 3, ticketKey: "HF-3", phase: "waiting_for_human" })]) } });
+    const view = await quickView(sourceOver([here, there]));
+    expect(needsYou(view!.machines)).toHaveLength(2);
+    expect(needsYouLine(view)).toBe("hf: 2 need you");
+  });
+
+  it("prints nothing when nothing needs you", async () => {
+    const here = await fakeMachine({ name: "local", local: true, repos: { app: repoStatus("app", [activeRun()]) } });
+    expect(needsYouLine(await quickView(sourceOver([here])))).toBe("");
+  });
+
+  it("prints nothing when this machine's server is down — a partial count never reaches the tab bar", async () => {
+    const here = await fakeMachine({ name: "local", local: true, repos: { app: repoStatus("app", [parked("HF-1")]) } });
+    const there = await fakeMachine({ name: "build-box", repos: { api: repoStatus("api", [parked("HF-3")]) } });
+    here.down();
+    expect(needsYouLine(await quickView(sourceOver([here, there])))).toBe("");
+    expect(needsYouLine(null)).toBe("");
+  });
+
+  it("an unreachable remote costs its own budget and still counts the rest, as the board does", async () => {
+    const here = await fakeMachine({ name: "local", local: true, repos: { app: repoStatus("app", [parked("HF-1")]) } });
+    const there = await fakeMachine({ name: "build-box", repos: { api: repoStatus("api", [parked("HF-3")]) } });
+    there.down();
+    const started = Date.now();
+    const view = await quickView(sourceOver([here, there]));
+    expect(Date.now() - started).toBeLessThan(5000);
+    // The local park plus the board's `build-box unverifiable` row — the same N the section shows.
+    expect(needsYouLine(view)).toBe(`hf: ${needsYou(view!.machines).length} need you`);
+    expect(needsYouLine(view)).toBe("hf: 2 need you");
   });
 });

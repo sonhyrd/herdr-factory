@@ -25,6 +25,10 @@ export const MachineConfigSchema = z
       .trim()
       .regex(/^[A-Za-z0-9._-]+$/, "`host_alias` may only contain letters, digits, '.', '_' and '-'")
       .optional(),
+    /** Send a `herdr notification show` when an item ENTERS the fleet's needs-you set (the
+     *  dashboard's top section), once per entry. Host-local because it names the machine the operator
+     *  sits at: the watch is fleet-wide, so turning it on everywhere would announce everything twice. */
+    notify_needs_you: z.boolean().optional(),
     /** Layout event hook settings. Host-local because they describe the HOST's herdr — which plugins
      *  are installed there, not what any repo wants. */
     layout_hook: z
@@ -45,6 +49,8 @@ export interface MachineConfig {
   hostAlias?: string;
   /** Absent ⇒ the layout hook's own default (see DEFAULT_IGNORED_PANE_LABELS). */
   layoutHookIgnorePaneLabels?: string[];
+  /** `notify_needs_you` — this machine announces fleet-wide needs-you arrivals. */
+  notifyNeedsYou?: boolean;
 }
 
 export function machineConfigPath(): string {
@@ -64,6 +70,7 @@ export function loadMachineConfig(path = machineConfigPath()): MachineConfig {
     minFreeMemoryMb: result.data.min_free_memory_mb,
     hostAlias: result.data.host_alias,
     layoutHookIgnorePaneLabels: result.data.layout_hook?.ignore_pane_labels,
+    notifyNeedsYou: result.data.notify_needs_you,
   };
 }
 
