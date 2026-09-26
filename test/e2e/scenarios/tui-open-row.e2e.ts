@@ -167,9 +167,10 @@ scenario(
     agent: {
       steps: {
         shipwork: { commit: true },
-        // Opens the PR and stops: the belt's PR is not a draft and the gh fake's PR has no checks and
-        // no threads, so the review watch marks it green — the row this scenario is named for.
-        shippr: { signal: "none" },
+        // Opens the PR and signals done: the belt's PR is not a draft and the gh fake's PR has no checks
+        // and no threads, so the review watch marks it green — the row this scenario is named for. It
+        // must signal: a PR whose pr step is still running is never called green.
+        shippr: {},
         holdwork: { signal: "none" },
         mdwork: { signal: "none" },
         boxwork: { signal: "none" },
