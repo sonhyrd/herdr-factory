@@ -10,7 +10,9 @@
 //     keymap, on a needs-you row AND on a belt card;
 //   * a run on ANOTHER machine opens in THIS machine's browser (the URL travels on `/status`);
 //   * a source with no web page for its items says so instead of doing nothing;
-//   * over SSH with no display the URL lands on the action line rather than failing silently.
+//   * over SSH with no display the URL lands on the action line rather than failing silently;
+//   * a second CLICK on the highlighted needs-you row opens its PR the same way, while the same run's
+//     card on the board still opens the timeline on a click — and `↵` on the needs-you row does too.
 //
 // The browser is a recorder script on `$BROWSER`: the container has no display, and the point is
 // which URL was handed to the opener, which is exactly what the recorder writes down.
@@ -91,6 +93,24 @@ async function focusRow(w: World, pane: string, token: string, max = 30): Promis
   }
   throw new Error(`the highlight never reached a row containing "${token}"; it stopped on: ${focused(w, pane)}`);
 }
+
+/** Click the highlighted card, where the newest visible frame draws it. A click on a card that is
+ *  already highlighted is the "act on it" click. */
+function clickFocused(w: World, pane: string): void {
+  const screen = w.herdr.cli(["pane", "read", pane, "--source", "visible", "--format", "text"]).stdout.split("\n");
+  const y = screen.findIndex((l) => l.includes("▶ "));
+  expect(y, `a highlighted row is on screen:\n${screen.join("\n")}`).toBeGreaterThanOrEqual(0);
+  // Cells, not UTF-16 units — land two cells into the card, on its text rather than its edge.
+  const x = [...screen[y]!.slice(0, screen[y]!.indexOf("▶ "))].length + 3;
+  // An SGR mouse press + release typed into the PTY: the TUI turns mouse tracking on, so this is
+  // exactly what a terminal delivers for a real click.
+  const click = `\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`;
+  const r = w.herdr.cli(["pane", "send-text", pane, click]);
+  expect(r.code, `pane send-text delivered the click: ${r.stderr}`).toBe(0);
+}
+
+/** The timeline modal is up (its title is `<key>… — timeline`). */
+const timelineUp = (w: World, pane: string) => /— timeline/.test(w.herdr.cli(["pane", "read", pane, "--source", "visible", "--format", "text"]).stdout);
 
 /** Press a key on the focused row and return the action line it left behind. */
 async function press(w: World, pane: string, key: string): Promise<string> {
@@ -187,6 +207,31 @@ scenario(
     // ── 2. `O` on the same row opens the WORK ITEM, not the PR ─────────────────────────────────
     await press(w, pane, "O");
     expect(opened(w).at(-1), "`O` opens the issue even though the run has a PR").toBe(`https://github.com/${gh.repo}/issues/${SHIP}`);
+
+    // ── 2b. a second click on the highlighted needs-you row opens its PR, like `o` — not the timeline ─
+    const clicks = opened(w).length;
+    clickFocused(w, pane);
+    await delay(1200);
+    expect(opened(w).length, "the click handed exactly one URL to the browser").toBe(clicks + 1);
+    expect(opened(w).at(-1), "…the PR's").toBe(`https://github.com/${w.ghRepo}/pull/${pr}`);
+    expect(timelineUp(w, pane), "…and no timeline opened").toBe(false);
+
+    // ── 2c. `↵` on the same needs-you row still opens the timeline ─────────────────────────────
+    await press(w, pane, "return");
+    await w.waitFor(() => timelineUp(w, pane), { label: "↵ opens the timeline from needs you", timeoutMs: 15_000, pollMs: 500 });
+    await press(w, pane, "escape");
+    expect(timelineUp(w, pane), "Esc closed the timeline").toBe(false);
+
+    // ── 2d. the same run's card under its machine: a second click opens the timeline, not the PR ─
+    // Step off the needs-you row first — it names the key too — then walk to the board card.
+    w.herdr.sendKeys(pane, "down");
+    await delay(300);
+    await focusRow(w, pane, SHIP);
+    const boardClicks = opened(w).length;
+    clickFocused(w, pane);
+    await w.waitFor(() => timelineUp(w, pane), { label: "a click on the highlighted board card opens the timeline", timeoutMs: 15_000, pollMs: 500 });
+    expect(opened(w).length, "…and hands nothing to the browser").toBe(boardClicks);
+    await press(w, pane, "escape");
 
     // ── 3. a belt card, and `o`'s fallback before there is a PR ────────────────────────────────
     await focusRow(w, pane, HOLD);
