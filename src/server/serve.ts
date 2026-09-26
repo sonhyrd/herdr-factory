@@ -14,6 +14,7 @@ import { reconcileRepo, withTickLock } from "../core/reconcile.ts";
 import { applyBeltChanges as applyBeltChangesCore, type BeltChanges } from "../core/belt-admin.ts";
 import { systemClock } from "../types.ts";
 import { VERSION } from "../version.ts";
+import { NEEDS_YOU_POLL_MS, needsYouNotifier, type NeedsYouNotifier } from "../watchers/needs-you.ts";
 import { shutdownTelemetry, withRootTelemetryContext } from "../telemetry/index.ts";
 import { disposeEffectRuntime, runEffect } from "../runtime/effect.ts";
 import { annotateCurrentSpan, withTelemetrySpan } from "../telemetry/effect.ts";
@@ -32,6 +33,7 @@ const repos = new Map<string, RepoRuntime>();
 let httpServer: ReturnType<typeof nodeServe> | undefined;
 let startedAt = 0;
 let shuttingDown = false;
+let notifier: NeedsYouNotifier | undefined;
 
 /** (Re)build the per-repo runtimes from config. Clears any existing tick timers first. Returns
  *  the repos that FAILED to load (schema-valid config whose source construction threw, etc.) —
@@ -173,6 +175,7 @@ async function shutdown(why: string): Promise<void> {
   shuttingDown = true;
   slog("info", `shutting down (${why})`);
   for (const rt of repos.values()) if (rt.timer) clearInterval(rt.timer);
+  notifier?.stop();
   httpServer?.close();
   // Let any in-flight tick finish (state is idempotent + on disk, so a hard kill is safe too;
   // this just avoids a torn mid-pass log).
@@ -283,6 +286,10 @@ async function serveImpl(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
   startLoops();
+  // Fleet-wide needs-you notifications — a no-op poll unless machine.yml opts this host in.
+  notifier = needsYouNotifier({ log: slog });
+  void notifier.poll();
+  setInterval(() => void notifier?.poll(), NEEDS_YOU_POLL_MS);
   // The bound server + interval timers keep the event loop alive; this returns and the process
   // stays resident until a signal / POST /shutdown.
 }

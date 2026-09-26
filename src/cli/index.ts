@@ -30,6 +30,7 @@ import { runForeground } from "./run.ts";
 import { triageRun } from "./triage.ts";
 import { renderFleet } from "./fleet.ts";
 import { buildFleet, DEFAULT_MACHINE_TIMEOUT_MS, DEFAULT_REMOTE_MACHINE_TIMEOUT_MS, readFleet } from "../fleet/index.ts";
+import { createFleetSource, needsYou, needsYouLine, quickView } from "../tui/fleet-view.ts";
 import { MEMORY_DIR } from "../core/step.ts";
 import * as service from "../watchers/service.ts";
 import { buildDeps, today } from "../build-deps.ts";
@@ -382,6 +383,33 @@ program
       console.log(opts.json ? JSON.stringify(snapshot, null, 2) : renderFleet(snapshot));
     } finally {
       fleet.close();
+    }
+  }));
+
+/** `needs-you` runs under Herdr's tab-bar timeout: each machine gets a short budget (one that misses
+ *  it is counted as unverifiable, never waited on), and the whole command a hard ceiling under 10s. */
+const NEEDS_YOU_MACHINE_TIMEOUT_MS = 4000;
+const NEEDS_YOU_DEADLINE_MS = 8000;
+
+program
+  .command("needs-you")
+  .description(
+    "what the dashboard's `needs you` section shows, across the whole fleet (this machine plus every enabled herdr saved machine): one line per item. Prints nothing when nothing needs you or this machine's server is down",
+  )
+  .option("--line", "print only `hf: N need you` — for Herdr's tab bar (`tab_bar_right` command entry); nothing when N is 0 or the count can't be read")
+  .action(cliAction("needs-you", async (opts: { line?: boolean }) => {
+    // Called every minute by the tab bar with a short timeout: a hard ceiling, and silence past it.
+    setTimeout(() => process.exit(0), NEEDS_YOU_DEADLINE_MS).unref();
+    const source = createFleetSource({ timeoutMs: NEEDS_YOU_MACHINE_TIMEOUT_MS });
+    try {
+      const view = await quickView(source);
+      const line = needsYouLine(view);
+      if (!line) return;
+      console.log(opts.line ? line : needsYou(view!.machines).map((i) => i.text).join("\n"));
+    } catch {
+      /* the server is down or the fleet can't be read — a stale or wrong count must never print */
+    } finally {
+      source.close();
     }
   }));
 

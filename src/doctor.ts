@@ -486,6 +486,7 @@ export async function baseGroups(deep = false, repo?: string): Promise<DoctorGro
       const parts = [
         m.maxActiveWorkspaces !== undefined && `cap ${m.maxActiveWorkspaces} working across all repos`,
         m.minFreeMemoryMb !== undefined && `claims pause below ${m.minFreeMemoryMb} MB available (now ${availableMemoryMb()} MB)`,
+        m.notifyNeedsYou && "notifies when a fleet item newly needs you",
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : `none — per-repo caps only (${machineConfigPath()} absent or empty)`;
     }),

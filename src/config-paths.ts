@@ -37,6 +37,12 @@ export function fleetLastSeenPath(): string {
   return join(stateRoot(), "fleet-last-seen.json");
 }
 
+/** The needs-you items this machine has already sent a notification for (`machine.yml`
+ *  `notify_needs_you`). On disk so a server restart does not re-announce everything still waiting. */
+export function needsYouNotifiedPath(): string {
+  return join(stateRoot(), "needs-you-notified.json");
+}
+
 /** Where the supervised auto-updater records its LAST attempt's outcome (channel, whether it
  *  updated / was skipped for a dirty checkout / failed, and the current-vs-target commit). Sits
  *  next to server.json so `doctor` and the TUI can surface a failed/behind update instead of it

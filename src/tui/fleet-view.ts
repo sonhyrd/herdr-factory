@@ -211,6 +211,8 @@ export function idleLine(names: string[], stale: boolean): string {
 export interface NeedsYouItem {
   text: string;
   tone: "good" | "warn" | "bad";
+  /** Why it is here, in words, without the key or the place — what a notification's body says. */
+  reason: string;
   machine: string;
   repo: string;
   /** The run it points at; absent for a machine-level entry. */
@@ -246,26 +248,31 @@ export function needsYou(machines: MachineView[]): NeedsYouItem[] {
     // just "the server is down", which the status line says at the top of the screen already — and
     // repeating it here would put a permanent section above a board that is telling you the same.
     if (m.state === "unverifiable" && machines.length > 1) {
-      blind.push({ text: `✗ ${m.name} unverifiable — ${m.detail ?? "no answer"}`, tone: "bad", machine: m.name, repo: "" });
+      const reason = `unverifiable — ${m.detail ?? "no answer"}`;
+      blind.push({ text: `✗ ${m.name} ${reason}`, tone: "bad", reason, machine: m.name, repo: "" });
     }
     for (const r of m.repos) {
       const at = `${r.repo}${m.local ? "" : ` @${m.name}`}`;
       // A repo whose config file no longer loads has stopped claiming — nothing moves until it's fixed.
       for (const p of r.status?.problems ?? []) {
-        if (p.kind === "config") broken.push({ text: `✗ ${at}  ${p.detail}`, tone: "bad", machine: m.name, repo: r.repo, stale: m.stale });
+        if (p.kind === "config") broken.push({ text: `✗ ${at}  ${p.detail}`, tone: "bad", reason: p.detail, machine: m.name, repo: r.repo, stale: m.stale });
       }
       for (const run of r.status?.active ?? []) {
         const base = { machine: m.name, repo: r.repo, key: run.ticketKey, source: run.workSource, phase: run.phase, prUrl: run.prUrl, itemUrl: run.itemUrl, stale: m.stale };
         if (run.prGreen && run.prNumber != null) {
-          green.push({ ...base, text: `✓ ${run.ticketKey}  PR #${run.prNumber} is green — ready to merge  (${at})`, tone: "good" });
+          const reason = `PR #${run.prNumber} is green — ready to merge`;
+          green.push({ ...base, text: `✓ ${run.ticketKey}  ${reason}  (${at})`, tone: "good", reason });
         } else if (run.evidenceStale && run.prNumber != null) {
           const { evidenceHead, prHead } = run.evidenceStale;
-          green.push({ ...base, text: `↻ ${run.ticketKey}  PR #${run.prNumber} evidence stale since ${evidenceHead.slice(0, 7)} (head ${prHead.slice(0, 7)}) — re-running  (${at})`, tone: "warn" });
+          const reason = `PR #${run.prNumber} evidence stale since ${evidenceHead.slice(0, 7)} (head ${prHead.slice(0, 7)}) — re-running`;
+          green.push({ ...base, text: `↻ ${run.ticketKey}  ${reason}  (${at})`, tone: "warn", reason });
         }
         if (run.phase === "attention") {
-          parked.push({ ...base, text: `⚠ ${run.ticketKey}  parked — ${run.attentionReason ?? "needs attention"}  (${at})`, tone: "bad" });
+          const reason = `parked — ${run.attentionReason ?? "needs attention"}`;
+          parked.push({ ...base, text: `⚠ ${run.ticketKey}  ${reason}  (${at})`, tone: "bad", reason });
         } else if (run.phase === "waiting_for_human") {
-          asking.push({ ...base, text: `? ${run.ticketKey}  waiting for a human reply  (${at})`, tone: "warn" });
+          const reason = "waiting for a human reply";
+          asking.push({ ...base, text: `? ${run.ticketKey}  ${reason}  (${at})`, tone: "warn", reason });
         }
       }
     }
@@ -320,12 +327,8 @@ export function fleetStatusLine(view: FleetView, updateNote: string | null): { t
  *  other check on that tab is already about it. */
 export async function fleetHealthLines(opts: FleetSourceOpts = {}): Promise<{ ok: boolean; label: string; detail: string | null }[]> {
   const source = createFleetSource(opts);
-  const views: FleetView[] = [];
   try {
-    // Only the quick phase matters here, so the poll is cancelled the moment it has painted once —
-    // the doctor has no use for eligible work, and no reason to make every source query for it.
-    await source.poll((v) => void views.push(v), () => views.length > 0);
-    const view = views[0];
+    const view = await quickView(source);
     if (!view) return [];
     return view.machines
       .filter((m) => !m.local)
@@ -336,6 +339,26 @@ export async function fleetHealthLines(opts: FleetSourceOpts = {}): Promise<{ ok
   } finally {
     source.close();
   }
+}
+
+/** One poll's QUICK phase only — every machine's status, never the slow eligible fold-in. The poll
+ *  is cancelled the moment it has painted once: the doctor, `needs-you` and the notifier have no use
+ *  for eligible work, and no reason to make every source query for it. */
+export async function quickView(source: FleetSource): Promise<FleetView | null> {
+  let view: FleetView | null = null;
+  await source.poll((v) => void (view = v), () => view !== null);
+  return view;
+}
+
+/**
+ * `needs-you --line`: `hf: N need you`, N being exactly the dashboard's `needs you · N` for this view.
+ * Empty when N is 0 — and when this machine's server did not answer, because a count read without it
+ * is a count of the rest of the fleet, and a wrong number must never sit in the tab bar.
+ */
+export function needsYouLine(view: FleetView | null): string {
+  if (!view || view.machines.find((m) => m.local)?.state !== "ok") return "";
+  const n = needsYou(view.machines).length;
+  return n ? `hf: ${n} need you` : "";
 }
 
 export interface FleetSourceOpts extends ListMachinesOpts {
