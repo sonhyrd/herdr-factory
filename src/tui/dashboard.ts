@@ -18,7 +18,8 @@
 // each behind the shell's confirmation modal:  t = tick a repo,  c = claim a ready item,  x = teardown
 // an active run,  s = resume a parked run / clear its (or the repo's) suspended + waiting background
 // jobs and retry them now,
-// d = open repo/work detail,  ↵ = timeline,  r = refresh. Auto-refreshes every 3s while active; when
+// d = open repo/work detail,  ↵ = timeline (a second click on a highlighted card too — or, on a
+// needs-you row, its PR, like o),  r = refresh. Auto-refreshes every 3s while active; when
 // the server is down it lists the repos with a hint and actions no-op.
 //
 // Refresh is flicker-free: quick status paints first, eligible source queries fold in afterward, and
@@ -398,15 +399,20 @@ export function createDashboard(
         const t = text(renderer, { content: "", fg: theme.text.primary, width: "100%", height: 1, wrapMode: "none" });
         list.add(t);
         const node: LineNode = { text: t, spec: specs[i]!, hoverCell: -1 };
-        // Click a card to highlight it; click the highlighted run card again to open its timeline. Nodes
-        // are reused across reconciles (spec reassigned), so resolve what was clicked at click time.
+        // Click a card to highlight it; click the highlighted run card again to open its timeline — or,
+        // in the needs-you section, its PR (what `o` does): that row is waiting on a merge or a reply,
+        // and a raw event dump doesn't help decide either. Nodes are reused across reconciles (spec
+        // reassigned), so resolve what was clicked at click time.
         t.onMouseDown = (e) => {
           const target = hit(node, e.x);
           if (!target) return; // a header/rule/gap — nothing to select
           const wasCurrent = list.focused && rows[hi] === target;
           list.focus();
           setHighlight(rows.indexOf(target));
-          if (wasCurrent && target.target.kind === "run") void openTimeline(target.target);
+          if (wasCurrent && target.target.kind === "run") {
+            if (target.target.section === "needs") doOpen(target.target, "pr");
+            else void openTimeline(target.target);
+          }
           e.stopPropagation();
         };
         // Hover tint. On a board line it follows the cell under the pointer (a whole-line tint would
