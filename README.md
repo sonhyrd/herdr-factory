@@ -1892,6 +1892,8 @@ cursor.
   items. `↑↓` navigates, `↵` opens a run's event timeline, `t` ticks, `c` claims an eligible item,
   `x` tears down, `o`/`O` open the run's PR / work item in a browser, `i` expands the collapsed idle
   repos, and `r` refreshes (mutating actions require confirmation). Empty belts stay hidden.
+  Clicking an already-highlighted run card opens its timeline, except in the **needs you** section,
+  where it opens the PR (or the work item while there is no PR), like `o`.
   The board is built to be read at a glance, so it says each thing once and leads with the part that
   is waiting on you:
   - **"needs you" heads the board**, above the hosts and never narrowed by the machine filter: PRs

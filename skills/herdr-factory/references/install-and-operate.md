@@ -564,7 +564,7 @@ scrollable info panes such as a timeline (`↑↓`/wheel scroll, `Esc` or `q` cl
 dismisses any of them.
 
 **It is fully mouse-navigable.** Click a tab to switch; click a row — or a single kanban card, resolved
-from the click's column — to select it (click an already-highlighted run again to open its timeline);
+from the click's column — to select it (click an already-highlighted run again to open its timeline — or, on a **needs you** row, its PR / work item, like `o`);
 click a panel to focus its section; click a chooser option or a `[y] yes` / `[n] no` to answer a modal;
 the wheel scrolls any scroll box. Rows tint on hover (on the board, just the card under the pointer)
 and the pointer switches to an I-beam over text inputs.
